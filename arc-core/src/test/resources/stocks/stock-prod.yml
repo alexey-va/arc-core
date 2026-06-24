@@ -1,0 +1,595 @@
+main-server: true
+stock-refresh-rate: 300
+commission: 0.005
+leverage-power: 0.7
+finn-api-key: cn7rbt9r01qplv1e8j50cn7rbt9r01qplv1e8j5g
+poly-api-key: l6SQGsz3pFyNn7BW6_dQdP0esDqP5Pwr
+main-menu-back-command: menu
+default-max-stock-amount: 10
+stock-market-location: 0,0,0,sp11
+update-images-radius: 1000
+max-buy-price: 100000
+max-leveraged-price: 5000000
+dividend-period: 86400
+history-lifetime: 259200
+dividend-percent-from-price: 0.02
+max-stock-permissions:
+- arc.invest.max.20:20
+- arc.invest.max.30:30
+stocks:
+- symbol: AAPL
+  isStock: true
+  display: '                 <gray><bold>Apple'
+  icon: '{"material":"APPLE"}'
+  maxLeverage: 1000
+  lore:
+  - '                <gray><strikethrough>          '
+  - ''
+  - '  <white>💲 Цена сейчас:<color:#4CAF50> <stock_price><white>💰  '
+  - '  <white>💼 Ваши позиции:<color:#4CAF50> <positions_in_symbol>  '
+  - ''
+  - '  <white>📊 Дивидендные выплаты:<color:#FF9800> <stock_dividend><white>💰  '
+  - '  <white>🕒 Следующий дивиденд:<color:#FF9800> <hours_till_dividend>ч  '
+  - '  <white>⌛ Последние дивиденды:<color:#FF9800> <hours_since_dividend>ч  '
+  - '  <white>🔄 Регулярные дивиденды:<color:#FF9800> <dividends_period_hours>ч  '
+  - ''
+  - '  <white>📉 Минимальная цена:<color:#E91E63> <lowest_recent_price><white>💰  '
+  - '  <white>📈 Максимальная цена:<color:#E91E63> <highest_recent_price><white>💰  '
+  - '  <white>🌪 Колебания:<color:#E91E63> <volatility>  '
+  - ''
+  - '     <color:#8c8c8c>• <color:#92bed8>Нажмите <color:#e6fff3>чтобы открыть <color:#8c8c8c>• '
+  - ''
+- symbol: NVDA
+  isStock: true
+  display: '                 <green><bold>Nvidia'
+  icon: '{"material":"EMERALD"}'
+  maxLeverage: 1000
+  lore:
+  - '                <gray><strikethrough>          '
+  - ''
+  - '  <white>💲 Цена сейчас:<color:#4CAF50> <stock_price><white>💰  '
+  - '  <white>💼 Ваши позиции:<color:#4CAF50> <positions_in_symbol>  '
+  - ''
+  - '  <white>📊 Дивидендные выплаты:<color:#FF9800> <stock_dividend><white>💰  '
+  - '  <white>🕒 Следующий дивиденд:<color:#FF9800> <hours_till_dividend>ч  '
+  - '  <white>⌛ Последние дивиденды:<color:#FF9800> <hours_since_dividend>ч  '
+  - '  <white>🔄 Регулярные дивиденды:<color:#FF9800> <dividends_period_hours>ч  '
+  - ''
+  - '  <white>📉 Минимальная цена:<color:#E91E63> <lowest_recent_price><white>💰  '
+  - '  <white>📈 Максимальная цена:<color:#E91E63> <highest_recent_price><white>💰  '
+  - '  <white>🌪 Колебания:<color:#E91E63> <volatility>  '
+  - ''
+  - '     <color:#8c8c8c>• <color:#92bed8>Нажмите <color:#e6fff3>чтобы открыть <color:#8c8c8c>• '
+  - ''
+  type: stock
+- symbol: KO
+  isStock: true
+  display: '              <red><bold>Coca-Cola'
+  icon: '{"material":"POTION"}'
+  maxLeverage: 1000
+  lore:
+  - '                <gray><strikethrough>          '
+  - ''
+  - '  <white>💲 Цена сейчас:<color:#4CAF50> <stock_price><white>💰  '
+  - '  <white>💼 Ваши позиции:<color:#4CAF50> <positions_in_symbol>  '
+  - ''
+  - '  <white>📊 Дивидендные выплаты:<color:#FF9800> <stock_dividend><white>💰  '
+  - '  <white>🕒 Следующий дивиденд:<color:#FF9800> <hours_till_dividend>ч  '
+  - '  <white>⌛ Последние дивиденды:<color:#FF9800> <hours_since_dividend>ч  '
+  - '  <white>🔄 Регулярные дивиденды:<color:#FF9800> <dividends_period_hours>ч  '
+  - ''
+  - '  <white>📉 Минимальная цена:<color:#E91E63> <lowest_recent_price><white>💰  '
+  - '  <white>📈 Максимальная цена:<color:#E91E63> <highest_recent_price><white>💰  '
+  - '  <white>🌪 Колебания:<color:#E91E63> <volatility>  '
+  - ''
+  - '     <color:#8c8c8c>• <color:#92bed8>Нажмите <color:#e6fff3>чтобы открыть <color:#8c8c8c>• '
+  - ''
+  type: stock
+- symbol: TSLA
+  isStock: true
+  display: '                 <red><bold>Tesla'
+  icon: '{"material":"MINECART"}'
+  maxLeverage: 1000
+  lore:
+  - '                <gray><strikethrough>          '
+  - ''
+  - '  <white>💲 Цена сейчас:<color:#4CAF50> <stock_price><white>💰  '
+  - '  <white>💼 Ваши позиции:<color:#4CAF50> <positions_in_symbol>  '
+  - ''
+  - '  <white>📊 Дивидендные выплаты:<color:#FF9800> <stock_dividend><white>💰  '
+  - '  <white>🕒 Следующий дивиденд:<color:#FF9800> <hours_till_dividend>ч  '
+  - '  <white>⌛ Последние дивиденды:<color:#FF9800> <hours_since_dividend>ч  '
+  - '  <white>🔄 Регулярные дивиденды:<color:#FF9800> <dividends_period_hours>ч  '
+  - ''
+  - '  <white>📉 Минимальная цена:<color:#E91E63> <lowest_recent_price><white>💰  '
+  - '  <white>📈 Максимальная цена:<color:#E91E63> <highest_recent_price><white>💰  '
+  - '  <white>🌪 Колебания:<color:#E91E63> <volatility>  '
+  - ''
+  - '     <color:#8c8c8c>• <color:#92bed8>Нажмите <color:#e6fff3>чтобы открыть <color:#8c8c8c>• '
+  - ''
+  type: stock
+- symbol: bitcoin
+  display: '               <gold><bold>Биткоин'
+  maxLeverage: 100
+  lore:
+  - '                <gray><strikethrough>          '
+  - ''
+  - '  <white>💲 Цена сейчас:<color:#4CAF50> <stock_price><white>💰  '
+  - '  <white>💼 Ваши позиции:<color:#4CAF50> <positions_in_symbol>  '
+  - ''
+  - '  <white>📉 Минимальная цена:<color:#E91E63> <lowest_recent_price><white>💰  '
+  - '  <white>📈 Максимальная цена:<color:#E91E63> <highest_recent_price><white>💰  '
+  - '  <white>🌪 Колебания:<color:#E91E63> <volatility>  '
+  - ''
+  - '     <color:#8c8c8c>• <color:#92bed8>Нажмите <color:#e6fff3>чтобы открыть <color:#8c8c8c>• '
+  - ''
+  type: crypto
+  icon: '{"material":"COAL"}'
+- symbol: tron
+  display: '                 <dark_red><bold>Tron'
+  maxLeverage: 100
+  lore:
+  - '                <gray><strikethrough>          '
+  - ''
+  - '  <white>💲 Цена сейчас:<color:#4CAF50> <stock_price><white>💰  '
+  - '  <white>💼 Ваши позиции:<color:#4CAF50> <positions_in_symbol>  '
+  - ''
+  - '  <white>📉 Минимальная цена:<color:#E91E63> <lowest_recent_price><white>💰  '
+  - '  <white>📈 Максимальная цена:<color:#E91E63> <highest_recent_price><white>💰  '
+  - '  <white>🌪 Колебания:<color:#E91E63> <volatility>  '
+  - ''
+  - '     <color:#8c8c8c>• <color:#92bed8>Нажмите <color:#e6fff3>чтобы открыть <color:#8c8c8c>• '
+  - ''
+  type: crypto
+  icon: '{"material":"REDSTONE"}'
+- symbol: ethereum
+  display: '              <blue><bold>Ethereum'
+  maxLeverage: 100
+  lore:
+  - '                <gray><strikethrough>          '
+  - ''
+  - '  <white>💲 Цена сейчас:<color:#4CAF50> <stock_price><white>💰  '
+  - '  <white>💼 Ваши позиции:<color:#4CAF50> <positions_in_symbol>  '
+  - ''
+  - '  <white>📉 Минимальная цена:<color:#E91E63> <lowest_recent_price><white>💰  '
+  - '  <white>📈 Максимальная цена:<color:#E91E63> <highest_recent_price><white>💰  '
+  - '  <white>🌪 Колебания:<color:#E91E63> <volatility>  '
+  - ''
+  - '     <color:#8c8c8c>• <color:#92bed8>Нажмите <color:#e6fff3>чтобы открыть <color:#8c8c8c>• '
+  - ''
+  type: crypto
+  icon: '{"material":"HEART_OF_THE_SEA"}'
+- symbol: dogecoin
+  display: '                 <gold><bold>Doge'
+  maxLeverage: 100
+  lore:
+  - '                <gray><strikethrough>          '
+  - ''
+  - '  <white>💲 Цена сейчас:<color:#4CAF50> <stock_price><white>💰  '
+  - '  <white>💼 Ваши позиции:<color:#4CAF50> <positions_in_symbol>  '
+  - ''
+  - '  <white>📉 Минимальная цена:<color:#E91E63> <lowest_recent_price><white>💰  '
+  - '  <white>📈 Максимальная цена:<color:#E91E63> <highest_recent_price><white>💰  '
+  - '  <white>🌪 Колебания:<color:#E91E63> <volatility>  '
+  - ''
+  - '     <color:#8c8c8c>• <color:#92bed8>Нажмите <color:#e6fff3>чтобы открыть <color:#8c8c8c>• '
+  - ''
+  type: crypto
+  icon: '{"material":"BONE"}'
+- symbol: XBR/USD
+  maxLeverage: 100
+  lore:
+  - '                <gray><strikethrough>          '
+  - ''
+  - '  <white>💲 Цена сейчас:<color:#4CAF50> <stock_price><white>💰  '
+  - '  <white>💼 Ваши позиции:<color:#4CAF50> <positions_in_symbol>  '
+  - ''
+  - '  <white>📉 Минимальная цена:<color:#E91E63> <lowest_recent_price><white>💰  '
+  - '  <white>📈 Максимальная цена:<color:#E91E63> <highest_recent_price><white>💰  '
+  - '  <white>🌪 Колебания:<color:#E91E63> <volatility>  '
+  - ''
+  - '     <color:#8c8c8c>• <color:#92bed8>Нажмите <color:#e6fff3>чтобы открыть <color:#8c8c8c>• '
+  - ''
+  display: '                 <yellow><bold>Brent Oil'
+  icon: '{"material":"DRIED_KELP"}'
+  type: currency
+locale:
+  position-selector:
+    menu-title: <dark_gray><bold>Ваши позиции
+    back-display: <gray>Назад
+    back-lore: []
+    refresh-display: <blue>Обновить
+    refresh-lore:
+    - <gray>Нажмите чтобы обновить
+    create-display: '              <gold>Купить'
+    create-lore:
+    - '             <gray><strikethrough>             '
+    - ''
+    - '      <white>💼 У вас позиций: <position_count>'
+    - '      <white>🛑 Ваш лимит: <max_stock_amount>'
+    - ''
+    - '   <color:#8c8c8c>• <color:#92bed8>Нажмите <color:#e6fff3>чтобы открыть <color:#8c8c8c>•  '
+    - ''
+    profile-display: '              <gold>Профиль'
+    profile-lore:
+    - '             <gray><strikethrough>             '
+    - ''
+    - '      <white>₪ Ваш баланс: <color:#2196F3><balance><white>💰  '
+    - '      <white>💼 Всего позиций: <color:#4CAF50><position_count>'
+    - ''
+    - '   <color:#8c8c8c>• <color:#92bed8>Нажмите <color:#e6fff3>чтобы пополнить <color:#8c8c8c>•  '
+    - ''
+    position-display: '                    <dark_gray>💼 <gold><uuid> <dark_gray>💼'
+    position-lore:
+    - '                     <gray><strikethrough>               '
+    - ''
+    - '  <white>🔍 Символ: <gold><symbol>  '
+    - '  <white>۞ Текущая прибыль: <color:#4CAF50><position_gains><white>💰  '
+    - '  <white>🔥 Комиссия при покупке: <color:#4CAF50><commission><white>💰  '
+    - '  <white>📈 Общая прибыль без дивидендов: <color:#4CAF50><total_position_gains><white>💰  '
+    - '  <white>💸 Получено дивидендов: <color:#FF9800><received_dividend><white>💰  '
+    - '  <white>🔄 Дивиденды за цикл: <color:#FF9800><dividend_amount><white>💰  '
+    - '  <white>₪ Общая прибыль с дивидендами: <color:#FF9800><total_gains_with_dividends><white>💰  '
+    - ''
+    - '  <white>📄 Тип: <color:#E91E63><type>  '
+    - '  <white>🔢 Количество: <color:#E91E63><amount>  '
+    - '  <white>📈 Верхняя граница маржи: <color:#E91E63><upper><white>💰  '
+    - '  <white>📉 Нижняя граница маржи: <color:#E91E63><lower><white>💰  '
+    - '  <white>🛑 Авто закроется при падении до: <color:#E91E63><close_at_low><white>💰  '
+    - '  <white>🛑 Авто закроется при росте до: <color:#E91E63><close_at_high><white>💰  '
+    - ''
+    - '  <white>🏁 Начальная цена: <color:#E91E63><starting_price><white>💰  '
+    - '  <white>🛒 Цена покупки: <color:#E91E63><buy_price><white>💰  '
+    - '  <white>🔍 Текущая цена актива: <color:#E91E63><stock_price><white>💰  '
+    - '  <white>⚖ Рычаг: <color:#E91E63><leverage>  '
+    - '  <white>💹 Стоимость с учетом рычага: <color:#E91E63><leveraged_price><white>💰  '
+    - '  <white> '
+    - '  <white>⌛ Куплено часов назад: <color:#E91E63><hours_since_bought>  '
+    - ''
+    - '           <color:#8c8c8c>• <color:#92bed8>Нажмите <color:#e6fff3>чтобы закрыть
+      <color:#8c8c8c>•  '
+    - ''
+    create-display-limit: ' <red>Вы достигли лимита активов '
+    create-lore-limit:
+    - '            <gray><strikethrough>               '
+    - ''
+    - '    <white>💼 У вас позиций: <color:#4CAF50><position_amount>'
+    - '    <white>🛑 Ваш лимит: <color:#E91E63><max_stock_amount>'
+    - '    <white>🛑 Максимум в <yellow><symbol><white>: <color:#E91E63>9'
+    - ''
+    all-positions-menu-title: <dark_gray>Все позиции
+    back:
+      material: blue_stained_glass_pane
+      display: <gray>Назад
+      customModelData: 11013
+    # Available tags: <max_stock_amount>, <position_count>
+    create:
+      material: green_stained_glass_pane
+      display: '              <gold>Купить'
+      lore:
+      - '             <gray><strikethrough>             '
+      - ''
+      - '      <white>💼 У вас позиций: <position_count>'
+      - '      <white>🛑 Ваш лимит: <max_stock_amount>'
+      - ''
+      - '   <#8c8c8c>• <#92bed8>Нажмите <#e6fff3>чтобы открыть <#8c8c8c>•  '
+      - ''
+    # Available tags: <balance>, <position_count>
+    profile:
+      material: player_head
+      display: '              <gold>Профиль'
+      lore:
+      - '             <gray><strikethrough>             '
+      - ''
+      - '      <white>₪ Ваш баланс: <#2196F3><balance><white>💰  '
+      - '      <white>💼 Всего позиций: <#4CAF50><position_count>'
+      - ''
+      - '   <#8c8c8c>• <#92bed8>Нажмите <#e6fff3>чтобы пополнить <#8c8c8c>•  '
+      - ''
+  symbol-selector:
+    menu-title: <dark_gray><bold>Меню активов
+    back-display: <gray>Назад
+    back-lore: []
+    profile-display: '              <gold>Профиль'
+    profile-lore:
+    - '             <gray><strikethrough>             '
+    - ''
+    - '      <white>₪ Ваш баланс: <color:#2196F3><balance><white>💰  '
+    - '      <white>💼 Всего позиций: <color:#4CAF50><position_count>'
+    - ''
+    - '   <color:#8c8c8c>• <color:#92bed8>Нажмите <color:#e6fff3>чтобы пополнить <color:#8c8c8c>•  '
+    - ''
+    all-positions-display: '           <gold>Все позиции'
+    all-positions-lore:
+    - '             <gray><strikethrough>             '
+    - ''
+    - '      <white>💼 Всего позиций: <color:#4CAF50><position_count>'
+    - ''
+    - '   <color:#8c8c8c>• <color:#92bed8>Нажмите <color:#e6fff3>чтобы открыть <color:#8c8c8c>•  '
+    - ''
+    market-display: '                 <gold>Биржа'
+    market-lore:
+    - '                 <gray><strikethrough>        '
+    - ' <color:#8c8c8c>• <color:#92bed8>Нажмите <color:#e6fff3>чтобы отправиться <color:#8c8c8c>•  '
+    back:
+      material: blue_stained_glass_pane
+    # Available tags: <position_count>
+    all-positions:
+      material: green_stained_glass_pane
+      display: '           <gold>Все позиции'
+      lore:
+      - '             <gray><strikethrough>             '
+      - ''
+      - '      <white>💼 Всего позиций: <#4CAF50><position_count>'
+      - ''
+      - '   <#8c8c8c>• <#92bed8>Нажмите <#e6fff3>чтобы открыть <#8c8c8c>•  '
+      - ''
+    # Available tags: <balance>, <position_count>
+    profile:
+      material: player_head
+      display: '              <gold>Профиль'
+      lore:
+      - '             <gray><strikethrough>             '
+      - ''
+      - '      <white>₪ Ваш баланс: <#2196F3><balance><white>💰  '
+      - '      <white>💼 Всего позиций: <#4CAF50><position_count>'
+      - ''
+      - '   <#8c8c8c>• <#92bed8>Нажмите <#e6fff3>чтобы пополнить <#8c8c8c>•  '
+      - ''
+    market:
+      material: bell
+      display: '                 <gold>Биржа'
+      lore:
+      - '                 <gray><strikethrough>        '
+      - ' <#8c8c8c>• <#92bed8>Нажмите <#e6fff3>чтобы отправиться <#8c8c8c>•  '
+  position-creator:
+    menu-title: <dark_gray>Создание позиции <symbol>
+    back-display: <gray>Назад
+    amount-display: '                      <gold>Количество'
+    amount-lore:
+    - '                       <gray><strikethrough>             '
+    - ''
+    - '  <white>💼 Количество: <color:#2196F3><amount>  '
+    - ''
+    - '  <white>💲 Цена:<color:#4CAF50> <cost><white>💰  '
+    - '  <white>🔥 Комиссия: <color:#4CAF50><commission><white>💰  '
+    - '  <white>📈 Общая цена: <color:#4CAF50><total_cost><white>💰  '
+    - '  <white>₪ Ваш баланс: <color:#2196F3><balance><white>💰  '
+    - ''
+    - '  <white>📈 Верхняя граница маржи: <color:#E91E63><upper><white>💰  '
+    - '  <white>📉 Нижняя граница маржи: <color:#E91E63><lower><white>💰  '
+    - '  <white>🛑 Авто-закроется при падении цены до: <color:#E91E63><close_at_low><white>💰  '
+    - '  <white>🛑 Авто-закроется при росте цены до: <color:#E91E63><close_at_high><white>💰  '
+    - ''
+    - '           <color:#8c8c8c>• <color:#92bed8>Нажмите <color:#e6fff3>чтобы изменить
+      <color:#8c8c8c>•  '
+    - ''
+    type-display: '                 <gold>Тип'
+    type-lore:
+    - '               <gray><strikethrough>         '
+    - ''
+    - '            <white>🔥 <gray><type>'
+    - ''
+    - '   <color:#8c8c8c>• <color:#92bed8>Нажмите <color:#e6fff3>чтобы изменить <color:#8c8c8c>•  '
+    - ''
+    create-display: '                       <gold>Создать'
+    create-lore:
+    - '                       <gray><strikethrough>           '
+    - ''
+    - '  <white>🏁 Цена: <color:#4CAF50><cost><white>💰  '
+    - '  <white>🔥 Комиссия: <color:#E91E63><commission><white>💰  '
+    - '  <white>📈 Общая цена: <color:#FF9800><total_cost><white>💰  '
+    - '  <white>₪ Ваш баланс: <color:#2196F3><balance><white>💰  '
+    - '  <white>🛑 Авто закроется при падении до: <color:#F44336><close_at_low><white>💰  '
+    - '  <white>🛑 Авто закроется при росте до: <color:#9C27B0><close_at_high><white>💰  '
+    - '  '
+    - '  <white>🛒 У вас позиций: <color:#FFC107><position_amount>  '
+    - '  <white>🛑 Ваш лимит: <color:#E91E63><max_stock_amount>  '
+    - ''
+    - '           <color:#8c8c8c>• <color:#92bed8>Нажмите <color:#e6fff3>чтобы изменить
+      <color:#8c8c8c>•  '
+    - ''
+    back-lore: []
+    create-display-no-money: <red>У вас недостаточно денег на балансе
+    leverage-display: '                      <gold>Рычаг'
+    leverage-lore:
+    - '                    <gray><strikethrough>             '
+    - ''
+    - '  <white>⚖ Рычаг: <color:#E91E63><leverage>  '
+    - '  <white>🛑 Максимальный рычаг: <color:#E91E63><max_leverage>  '
+    - '  <white>💹 Стоимость с учетом рычага: <color:#E91E63><leveraged_price><white>💰  '
+    - '  <white>🛑 Макс. стоимость с учетом рычага: <color:#E91E63><max_leveraged_price><white>💰  '
+    - ''
+    - '             <color:#8c8c8c>• <color:#92bed8>Нажмите <color:#e6fff3>чтобы изменить
+      <color:#8c8c8c>•  '
+    - ''
+    too-much-leverage: '<red>Максимальная цена с учетом рычага: <gray><max_leveraged_price><white>💰'
+    upper-display: '              <gold>Максимальная прибыль'
+    upper-lore:
+    - '                      <gray><strikethrough>             '
+    - ''
+    - '    <white>📈 Граница: <green><upper><white>💰  '
+    - ''
+    - '    <gray>Позиция автоматически закроется при  '
+    - '    <gray>достижении <green>прибыли<gray> в указаную величину  '
+    - ''
+    - '             <color:#8c8c8c>• <color:#92bed8>Нажмите <color:#e6fff3>чтобы изменить
+      <color:#8c8c8c>•  '
+    - ''
+    lower-display: '              <gold>Максимальные потери'
+    lower-lore:
+    - '                      <gray><strikethrough>             '
+    - ''
+    - '    <white>📈 Граница: <green><lower><white>💰  '
+    - ''
+    - '    <gray>Позиция автоматически закроется при  '
+    - '    <gray>достижении <green>прибыли<gray> в указаную величину  '
+    - ''
+    - '             <color:#8c8c8c>• <color:#92bed8>Нажмите <color:#e6fff3>чтобы изменить
+      <color:#8c8c8c>•  '
+    - ''
+    create-lore-no-money: []
+    too-expensive-position: <red>Цена покупки превышает лимит <gray><max_buy_price><white>💰
+  position-menu:
+    menu-title: <dark_gray><bold><symbol> <gray><uuid>
+    close-button-display: <red>Закрыть позицию
+    close-button-confirm-display: <dark_red>Нажмите для потверждения
+    close-button-lore:
+    - '<gray>Нажмите чтобы закрыть с прибылью: <total_position_gains><white>💰'
+    - <gray>Деньги будут отправлены на ваш брокерский счет
+    back-display: <gray>Назад
+    back-lore: []
+    info-button-display: '         <gold>Информация'
+    info-button-lore:
+    - '                     <gray><strikethrough>               '
+    - ''
+    - '  <white>🔍 Символ: <gold><symbol>'
+    - '  <white>۞ Текущая прибыль: <color:#4CAF50><position_gains><white>💰'
+    - '  <white>🔥 Комиссия при покупке: <color:#4CAF50><commission><white>💰'
+    - '  <white>📈 Общая прибыль без дивидендов: <color:#4CAF50><total_position_gains><white>💰'
+    - '  <white>💸 Получено дивидендов: <color:#FF9800><received_dividend><white>💰'
+    - '  <white>🔄 Дивиденды за цикл: <color:#FF9800><dividend_amount><white>💰'
+    - '  <white>₪ Общая прибыль с дивидендами: <color:#FF9800><total_gains_with_dividends><white>💰'
+    - ''
+    - '  <white>📄 Тип: <color:#E91E63><type>'
+    - '  <white>🔢 Количество: <color:#E91E63><amount>'
+    - '  <white>📈 Верхняя граница маржи: <color:#E91E63><upper><white>💰'
+    - '  <white>📉 Нижняя граница маржи: <color:#E91E63><lower><white>💰'
+    - '  <white>🛑 Авто закроется при падении до: <color:#E91E63><close_at_low><white>💰'
+    - '  <white>🛑 Авто закроется при росте до: <color:#E91E63><close_at_high><white>💰'
+    - ''
+    - '  <white>🏁 Начальная цена: <color:#E91E63><starting_price><white>💰'
+    - '  <white>🛒 Цена покупки: <color:#E91E63><buy_price><white>💰'
+    - '  <white>🔍 Текущая цена актива: <color:#E91E63><stock_price><white>💰'
+    - '  <white>⚖ Рычаг: <color:#E91E63><leverage>'
+    - '  <white>💹 Стоимость с учетом рычага: <color:#E91E63><leveraged_price><white>💰'
+    - '  <white> '
+    - '  <white>⌛ Куплено часов назад: <color:#E91E63><hours_since_bought>'
+    - ''
+  profile-menu:
+    menu-title: <dark_gray><bold>Ваш профиль
+    back-display: <gray>Назад
+    back-lore: []
+    statistic-display: <yellow>Статистика
+    statistic-lore:
+    - '<gray>Текущая прибыль: <gains><white>💰'
+    - '<gray>Общая прибыль: <total_gains><white>💰'
+    - '<gray>Получено дивидендов: <received_dividends><white>💰'
+    - '<gray>Количество позиций: <position_count>'
+    balance-display: <gold>Баланс
+    balance-lore:
+    - '<gray>Баланс: <balance><white>💰'
+    - '<gray>Суммарный баланс: <total_balance><white>💰'
+    not-enough-money-lore: []
+    not-enough-money-display: <red>У вас недостаточно <white>💰
+    auto-take-display: <green>Автоматически пополнять счет
+    auto-take-lore:
+    - '<gray>Включено: <auto_take>'
+    will-go-bankrupt-display: <red>Это вас обанкротит!
+    will-go-bankrupt-lore: []
+  message:
+    closed-1: <gray>Ваша позиция <symbol> была закрыта с прибылью <gains><white>💰<gray>
+      из-за margin call. Вы получили <money_received> на свой счет
+    closed-2: <gray>Ваша позиция <symbol> была закрыта с прибылью <gains><white>💰<gray>
+      из-за банкротства. Вы получили <money_received> на свой счет
+    closed-3: <gray>Ваша позиция <symbol> была закрыта с прибылью <gains><white>💰<gray>.
+      Вы получили <money_received><white>💰<gray> на свой счет
+    received-dividend: <gray>Вы получили дивиденды от <symbol> в размере <amount><white>💰<gray>.
+    too-many-positions: message.too-many-positions
+  market-command: pw stock
+icon-materials:
+- DIAMOND_SWORD
+- GOLDEN_APPLE
+- DIAMOND_CHESTPLATE
+- ENDER_PEARL
+- ENCHANTED_BOOK
+- DIAMOND_PICKAXE
+- ENDER_EYE
+- BOOK
+- DIAMOND_AXE
+- ENDER_CHEST
+- EMERALD
+- BLAZE_POWDER
+- BLAZE_ROD
+- CARROT
+- COAL
+- DIAMOND
+- DIAMOND_BLOCK
+- EMERALD_BLOCK
+- ENDER_PEARL
+- GLOWSTONE_DUST
+- GOLDEN_CARROT
+- IRON_SWORD
+- IRON_BLOCK
+- JUKEBOX
+- LAPIS_BLOCK
+- LAVA_BUCKET
+- MAP
+- MELON
+- NETHER_STAR
+- OBSIDIAN
+- PUMPKIN
+- REDSTONE
+- REDSTONE_BLOCK
+- SADDLE
+- SLIME_BALL
+- SNOWBALL
+- SPAWNER
+- SPECTRAL_ARROW
+- SPIDER_EYE
+- SPRUCE_DOOR
+- TNT
+- TOTEM_OF_UNDYING
+- TRIDENT
+- WATER_BUCKET
+- WHEAT
+- WOODEN_AXE
+- WOODEN_HOE
+- WRITTEN_BOOK
+- ACACIA_BOAT
+- ARROW
+- BIRCH_BOAT
+- BLAZE_SPAWN_EGG
+- BLUE_BED
+- BONE
+- BRICK
+- CAMPFIRE
+- CAT_SPAWN_EGG
+- CHAINMAIL_BOOTS
+- CHICKEN
+- COOKIE
+- CREEPER_SPAWN_EGG
+- DIAMOND_BOOTS
+- DIAMOND_ORE
+- DRAGON_EGG
+- ELYTRA
+- ENDERMAN_SPAWN_EGG
+- FIRE_CHARGE
+- FISHING_ROD
+- GHAST_SPAWN_EGG
+- GOLDEN_AXE
+- HONEY_BOTTLE
+- ICE
+- JUNGLE_BOAT
+- LEAD
+- MUSIC_DISC_11
+- NETHER_BRICK
+- NETHER_WART
+- OAK_BOAT
+- PAPER
+- PINK_TULIP
+- POISONOUS_POTATO
+- QUARTZ
+- RABBIT
+- RABBIT_FOOT
+- SADDLE
+- SEA_LANTERN
+- SKELETON_SPAWN_EGG
+- SOUL_SAND
+- SPRUCE_BOAT
+- STRING
+- TROPICAL_FISH
+- VILLAGER_SPAWN_EGG
+- WITCH_SPAWN_EGG
+- YELLOW_BED
+enabled: true

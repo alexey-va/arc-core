@@ -966,9 +966,12 @@ open class Config(
             }
 
             else -> {
-                node.value
+                stripYamlEnginePadding(node.value)
             }
         }
+
+    /** Removes parse-time padding inserted by [padSupplementaryCodePointsForYamlEngine]. */
+    private fun stripYamlEnginePadding(value: String): String = value.replace(YAML_ENGINE_PADDING, "")
 
     private fun convertNodeToMap(node: MappingNode): Map<String, Any?> =
         buildMap {
@@ -1065,10 +1068,31 @@ internal fun prepareYamlContentForParsing(content: String): String {
             "<color:#${match.groupValues[1]}>"
         }
     normalized = sanitizeUnpairedSurrogates(normalized)
+    normalized = padSupplementaryCodePointsForYamlEngine(normalized)
     if (Character.isHighSurrogate(normalized.last())) {
         normalized += ' '
     }
     return normalized
+}
+
+/**
+ * SnakeYAML Engine [StreamReader] uses a fixed char window (~1024). When it ends on a UTF-16
+ * high surrogate mid-file, [StringReader.read] throws [IndexOutOfBoundsException] (emoji in flow scalars).
+ * A zero-width space after each supplementary character avoids the edge without visible lore changes.
+ */
+internal fun padSupplementaryCodePointsForYamlEngine(content: String): String {
+    if (content.isEmpty()) return content
+    val out = StringBuilder(content.length + 32)
+    var i = 0
+    while (i < content.length) {
+        val cp = content.codePointAt(i)
+        out.appendCodePoint(cp)
+        if (cp > 0xFFFF) {
+            out.append(YAML_ENGINE_PADDING)
+        }
+        i += Character.charCount(cp)
+    }
+    return out.toString()
 }
 
 /** Strips lone UTF-16 surrogates that break SnakeYAML Engine on some large files. */
@@ -1104,6 +1128,7 @@ fun sanitizeUnpairedSurrogates(content: String): String {
 }
 
 private val MINIMESSAGE_HEX_SHORTHAND = Regex("""<#([0-9A-Fa-f]{6})>""")
+private const val YAML_ENGINE_PADDING = "\u200B"
 
 // ── CachedConfigValue ──────────────────────────────────────────────────────────
 

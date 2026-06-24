@@ -59,5 +59,18 @@ class ConfigTest : FreeSpec({
 
             Files.readString(yaml) shouldContain "header comment"
         }
+
+        "should load production stock yaml with emoji lore" {
+            val dir = Files.createTempDirectory("arc-core-stock-prod")
+            val resource =
+                java.util.Objects.requireNonNull(
+                    javaClass.classLoader.getResourceAsStream("stocks/stock-prod.yml"),
+                ) { "stocks/stock-prod.yml fixture missing" }
+            resource.use { Files.copy(it, dir.resolve("stock.yml")) }
+            ConfigManager.clear()
+            val config = ConfigManager.of(dir, "stock.yml")
+            config.load()
+            config.list<Map<String, Any>>("stocks").isNotEmpty() shouldBe true
+        }
     }
 })
