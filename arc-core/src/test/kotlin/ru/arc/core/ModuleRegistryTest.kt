@@ -45,5 +45,31 @@ class ModuleRegistryTest : FreeSpec({
             called shouldBe false
             ModuleRegistry.shutdownAll()
         }
+
+        "should notify lifecycle reporter" {
+            var initCount = 0
+            var completedOk = -1
+            ModuleRegistry.lifecycleReporter =
+                object : ModuleLifecycleReporter {
+                    override fun onInitStart(moduleCount: Int) {
+                        initCount = moduleCount
+                    }
+
+                    override fun onInitComplete(ok: Int, failed: Int, totalMs: Long) {
+                        completedOk = ok
+                    }
+                }
+            ModuleRegistry.register(
+                object : PluginModule {
+                    override val name = "a"
+                    override fun init() {}
+                    override fun shutdown() {}
+                },
+            )
+            ModuleRegistry.initAll()
+            initCount shouldBe 1
+            completedOk shouldBe 1
+            ModuleRegistry.shutdownAll()
+        }
     }
 })

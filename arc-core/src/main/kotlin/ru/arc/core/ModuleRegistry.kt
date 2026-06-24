@@ -11,6 +11,9 @@ object ModuleRegistry {
     private val modules = mutableListOf<PluginModule>()
     private var initialized = false
 
+    /** Set before [initAll] for platform-specific console output. */
+    var lifecycleReporter: ModuleLifecycleReporter = NoOpModuleLifecycleReporter
+
     fun register(module: PluginModule) {
         if (initialized) {
             moduleLog.error("Cannot register module '{}' after initialization", module.name)
@@ -29,46 +32,77 @@ object ModuleRegistry {
             return
         }
         val sorted = modules.filter { it.enabled }.sortedBy { it.priority }
-        moduleLog.debug("Initializing {} modules", sorted.size)
-        for (module in sorted) {
-            val start = System.currentTimeMillis()
-            try {
-                module.init()
-                moduleLog.debug("Module '{}' ready ({}ms)", module.name, System.currentTimeMillis() - start)
-            } catch (e: Exception) {
-                moduleLog.error("Module '${module.name}' failed to initialize", e)
+        val reporter = lifecycleReporter
+        reporter.onInitStart(sorted.size)
+
+        data class Result(val name: String, val ms: Long, val error: Exception?)
+
+        val startAll = System.currentTimeMillis()
+        val results =
+            sorted.map { module ->
+                val start = System.currentTimeMillis()
+                try {
+                    module.init()
+                    Result(module.name, System.currentTimeMillis() - start, null)
+                } catch (e: Exception) {
+                    Result(module.name, System.currentTimeMillis() - start, e)
+                }
+            }
+        val totalMs = System.currentTimeMillis() - startAll
+        val nameWidth = results.maxOfOrNull { it.name.length }?.coerceAtLeast(12) ?: 12
+
+        for (r in results) {
+            when (val error = r.error) {
+                null -> reporter.onInitModuleSuccess(r.name, nameWidth, r.ms)
+                else -> reporter.onInitModuleFailure(r.name, nameWidth, r.ms, error)
             }
         }
+
+        val failed = results.count { it.error != null }
+        reporter.onInitComplete(results.size - failed, failed, totalMs)
         initialized = true
     }
 
     fun reloadAll() {
-        modules.filter { it.enabled }.sortedBy { it.priority }.forEach { module ->
+        val sorted = modules.filter { it.enabled }.sortedBy { it.priority }
+        val reporter = lifecycleReporter
+        reporter.onReloadStart(sorted.size)
+        for (module in sorted) {
             try {
                 module.reload()
+                reporter.onReloadSuccess(module.name)
             } catch (e: Exception) {
+                reporter.onReloadFailure(module.name, e)
                 moduleLog.error("Module '${module.name}' reload failed", e)
             }
         }
+        reporter.onReloadComplete()
     }
 
     fun shutdownAll() {
-        modules.filter { it.enabled }.sortedByDescending { it.priority }.forEach { module ->
+        val sorted = modules.filter { it.enabled }.sortedByDescending { it.priority }
+        val reporter = lifecycleReporter
+        reporter.onShutdownStart(sorted.size)
+        for (module in sorted) {
             try {
                 module.shutdown()
+                reporter.onShutdownSuccess(module.name)
             } catch (e: Exception) {
+                reporter.onShutdownFailure(module.name, e)
                 moduleLog.error("Module '${module.name}' shutdown failed", e)
             }
         }
         modules.clear()
         initialized = false
+        reporter.onShutdownComplete()
     }
 
     fun getModules(): List<PluginModule> = modules.toList()
 
     /** Test-only reset. */
-    internal fun resetForTests() {
+    fun resetForTests() {
         modules.clear()
         initialized = false
+        lifecycleReporter = NoOpModuleLifecycleReporter
     }
 }
