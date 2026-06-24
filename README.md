@@ -1,16 +1,16 @@
 # arc-core
 
-Platform-agnostic library for **ARC** (Paper) and **ProxyARC** (Velocity): YAML config, task scheduling, events, Adventure text utils.
+Platform-agnostic **Kotlin-only** library for **ARC** (Paper) and **ProxyARC** (Velocity).
 
 **Repository:** [github.com/alexey-va/arc-core](https://github.com/alexey-va/arc-core)
 
-Related projects:
+> Старый [ARCCore](https://github.com/alexey-va/ARCCore) не используем — развиваем только этот проект.
 
-| Project | Role |
-|---------|------|
-| [ARC](https://github.com/alexey-va/ARC) | Paper plugin |
-| [ProxyARC](https://github.com/alexey-va/ProxyARC) | Velocity proxy plugin |
-| [ARCCore](https://github.com/alexey-va/ARCCore) | Larger shared framework (redis, metrics, AI) — long-term merge target |
+## Requirements
+
+- **Java 25** (Temurin)
+- **Kotlin 2.3**
+- Исходники только `.kt` — Gradle task `assertKotlinOnly` падает на `.java`
 
 ## Packages
 
@@ -24,7 +24,7 @@ Related projects:
 ## Build
 
 ```bash
-export JAVA_HOME=/Library/Java/JavaVirtualMachines/yandex-jdk-21  # or Java 21+
+export JAVA_HOME=/Library/Java/JavaVirtualMachines/temurin-25.jdk/Contents/Home
 ./gradlew test publishToMavenLocal
 ```
 
@@ -32,7 +32,7 @@ export JAVA_HOME=/Library/Java/JavaVirtualMachines/yandex-jdk-21  # or Java 21+
 
 ```kotlin
 // settings.gradle.kts
-includeBuild("../arc-core")  // or path to clone
+includeBuild("../arc-core")
 
 // build.gradle.kts
 dependencies {
@@ -52,7 +52,3 @@ Tasks.withScheduler(TestTaskScheduler()) {
     delayed(20) { /* ... */ }
 }
 ```
-
-## License
-
-Private / same as ARC monorepo.

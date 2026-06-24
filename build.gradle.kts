@@ -5,17 +5,24 @@ plugins {
 
 group = "ru.arc"
 version = "1.0-SNAPSHOT"
-description = "ARC Core — platform-agnostic config, scheduling, events"
+description = "ARC Core — platform-agnostic config, scheduling, events (Kotlin only)"
 
 java {
     toolchain {
-        languageVersion.set(JavaLanguageVersion.of(21))
+        languageVersion.set(JavaLanguageVersion.of(25))
     }
     withSourcesJar()
 }
 
 kotlin {
-    jvmToolchain(21)
+    jvmToolchain(25)
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_25)
+        freeCompilerArgs.addAll(
+            "-jvm-default=all",
+            "-opt-in=kotlin.RequiresOptIn",
+        )
+    }
 }
 
 repositories {
@@ -39,6 +46,18 @@ dependencies {
 tasks.test {
     useJUnitPlatform()
 }
+
+/** Fail build if any .java sources appear — Kotlin only. */
+tasks.register("assertKotlinOnly") {
+    doLast {
+        val javaSources = fileTree("src") { include("**/*.java") }.files
+        check(javaSources.isEmpty()) {
+            "arc-core is Kotlin-only; remove Java sources: ${javaSources.joinToString()}"
+        }
+    }
+}
+
+tasks.named("check") { dependsOn("assertKotlinOnly") }
 
 publishing {
     publications {
