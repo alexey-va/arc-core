@@ -1,70 +1,71 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension
+
 plugins {
-    kotlin("jvm") version "2.3.0"
-    `maven-publish`
+    kotlin("jvm") version "2.3.0" apply false
 }
 
 group = "ru.arc"
 version = "1.0-SNAPSHOT"
-description = "ARC Core — platform-agnostic config, scheduling, events (Kotlin only)"
 
-java {
-    toolchain {
-        languageVersion.set(JavaLanguageVersion.of(25))
+subprojects {
+    apply(plugin = "org.jetbrains.kotlin.jvm")
+    apply(plugin = "java-library")
+
+    group = rootProject.group
+    version = rootProject.version
+
+    repositories {
+        mavenCentral()
+        maven("https://repo.papermc.io/repository/maven-public/")
+        maven("https://s01.oss.sonatype.org/content/repositories/snapshots/")
     }
-    withSourcesJar()
-}
 
-kotlin {
-    jvmToolchain(25)
-    compilerOptions {
-        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_25)
-        freeCompilerArgs.addAll(
-            "-jvm-default=all",
-            "-opt-in=kotlin.RequiresOptIn",
-        )
+    dependencies {
+        val implementation by configurations
+        val testImplementation by configurations
+        val testRuntimeOnly by configurations
+
+        implementation(kotlin("stdlib"))
+
+        testImplementation("io.kotest:kotest-runner-junit5:6.0.7")
+        testImplementation("io.kotest:kotest-assertions-core:6.0.7")
+        testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     }
-}
 
-repositories {
-    mavenCentral()
-}
-
-dependencies {
-    implementation(kotlin("stdlib"))
-    implementation("org.yaml:snakeyaml:2.2")
-    implementation("net.kyori:adventure-api:4.17.0")
-    implementation("net.kyori:adventure-text-minimessage:4.17.0")
-    implementation("net.kyori:adventure-text-serializer-plain:4.17.0")
-    implementation("net.kyori:adventure-text-serializer-legacy:4.17.0")
-    implementation("org.slf4j:slf4j-api:2.0.13")
-
-    testImplementation("io.kotest:kotest-runner-junit5:6.0.7")
-    testImplementation("io.kotest:kotest-assertions-core:6.0.7")
-    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
-}
-
-tasks.test {
-    useJUnitPlatform()
-}
-
-/** Fail build if any .java sources appear — Kotlin only. */
-tasks.register("assertKotlinOnly") {
-    doLast {
-        val javaSources = fileTree("src") { include("**/*.java") }.files
-        check(javaSources.isEmpty()) {
-            "arc-core is Kotlin-only; remove Java sources: ${javaSources.joinToString()}"
+    extensions.configure<JavaPluginExtension> {
+        toolchain {
+            languageVersion.set(JavaLanguageVersion.of(25))
         }
     }
-}
 
-tasks.named("check") { dependsOn("assertKotlinOnly") }
-
-publishing {
-    publications {
-        create<MavenPublication>("maven") {
-            from(components["java"])
-            groupId = "ru.arc"
-            artifactId = "arc-core"
+    extensions.configure<KotlinJvmProjectExtension> {
+        jvmToolchain(25)
+        compilerOptions {
+            jvmTarget.set(JvmTarget.JVM_25)
+            freeCompilerArgs.addAll(
+                "-jvm-default=enable",
+                "-opt-in=kotlin.RequiresOptIn",
+            )
         }
     }
+
+    tasks.withType<Test> {
+        useJUnitPlatform()
+    }
+
+    tasks.register("assertKotlinOnly") {
+        doLast {
+            val javaSources = fileTree("src") { include("**/*.java") }.files
+            check(javaSources.isEmpty()) {
+                "${project.name} is Kotlin-only; remove Java sources: ${javaSources.joinToString()}"
+            }
+        }
+    }
+
+    tasks.named("check") { dependsOn("assertKotlinOnly") }
+}
+
+tasks.register("testAll") {
+    dependsOn(subprojects.map { it.tasks.named("test") })
 }
