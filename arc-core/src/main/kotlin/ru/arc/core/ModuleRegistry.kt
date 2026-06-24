@@ -1,6 +1,8 @@
 package ru.arc.core
 
-import ru.arc.util.Logging
+import org.slf4j.LoggerFactory
+
+private val moduleLog = LoggerFactory.getLogger(ModuleRegistry::class.java)
 
 /**
  * Central registry for plugin modules — init/reload/shutdown in priority order.
@@ -11,7 +13,7 @@ object ModuleRegistry {
 
     fun register(module: PluginModule) {
         if (initialized) {
-            Logging.error("Cannot register module '{}' after initialization", module.name)
+            moduleLog.error("Cannot register module '{}' after initialization", module.name)
             return
         }
         modules.add(module)
@@ -23,18 +25,18 @@ object ModuleRegistry {
 
     fun initAll() {
         if (initialized) {
-            Logging.error("ModuleRegistry already initialized")
+            moduleLog.error("ModuleRegistry already initialized")
             return
         }
         val sorted = modules.filter { it.enabled }.sortedBy { it.priority }
-        Logging.debug("Initializing {} modules", sorted.size)
+        moduleLog.debug("Initializing {} modules", sorted.size)
         for (module in sorted) {
             val start = System.currentTimeMillis()
             try {
                 module.init()
-                Logging.debug("Module '{}' ready ({}ms)", module.name, System.currentTimeMillis() - start)
+                moduleLog.debug("Module '{}' ready ({}ms)", module.name, System.currentTimeMillis() - start)
             } catch (e: Exception) {
-                Logging.error("Module '${module.name}' failed to initialize", e)
+                moduleLog.error("Module '${module.name}' failed to initialize", e)
             }
         }
         initialized = true
@@ -45,7 +47,7 @@ object ModuleRegistry {
             try {
                 module.reload()
             } catch (e: Exception) {
-                Logging.error("Module '${module.name}' reload failed", e)
+                moduleLog.error("Module '${module.name}' reload failed", e)
             }
         }
     }
@@ -55,7 +57,7 @@ object ModuleRegistry {
             try {
                 module.shutdown()
             } catch (e: Exception) {
-                Logging.error("Module '${module.name}' shutdown failed", e)
+                moduleLog.error("Module '${module.name}' shutdown failed", e)
             }
         }
         modules.clear()

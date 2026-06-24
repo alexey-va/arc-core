@@ -5,7 +5,9 @@ import org.bukkit.NamespacedKey
 import org.bukkit.Particle
 import org.bukkit.Registry
 import org.bukkit.Sound
-import ru.arc.util.Logging.warn
+import org.slf4j.LoggerFactory
+
+private val paperConfigLog = LoggerFactory.getLogger("ru.arc.config.paper")
 
 fun Config.materialOrNull(path: String): Material? {
     val name = stringOrNull(path) ?: return null
@@ -36,7 +38,7 @@ fun Config.materialSet(path: String, default: Set<Material> = emptySet()): Set<M
     return list
         .mapNotNull { name ->
             runCatching { Material.valueOf(name.uppercase()) }
-                .onFailure { warn("Could not parse material: {}", name) }
+                .onFailure { paperConfigLog.warn("Could not parse material: {}", name) }
                 .getOrNull()
         }.toSet()
         .ifEmpty { default }

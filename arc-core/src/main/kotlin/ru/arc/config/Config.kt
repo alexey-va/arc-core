@@ -21,9 +21,7 @@ import org.snakeyaml.engine.v2.nodes.NodeTuple
 import org.snakeyaml.engine.v2.nodes.ScalarNode
 import org.snakeyaml.engine.v2.nodes.SequenceNode
 import org.snakeyaml.engine.v2.nodes.Tag
-import ru.arc.util.Logging.debug
-import ru.arc.util.Logging.error
-import ru.arc.util.Logging.warn
+import org.slf4j.LoggerFactory
 import ru.arc.util.TextUtils
 import java.io.File
 import java.io.StringWriter
@@ -36,6 +34,8 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
 import kotlin.concurrent.write
+
+private val configLog = LoggerFactory.getLogger(Config::class.java)
 
 /**
  * Configuration system using SnakeYAML Engine v2 with full comment preservation.
@@ -176,7 +176,7 @@ open class Config(
 
             is String -> {
                 value.toIntOrNull() ?: run {
-                    warn("Could not parse int from '{}' ({}), using default", path, value)
+                    configLog.warn("Could not parse int from '{}' ({}), using default", path, value)
                     default
                 }
             }
@@ -206,7 +206,7 @@ open class Config(
 
             is String -> {
                 value.toLongOrNull() ?: run {
-                    warn("Could not parse long from '{}' ({}), using default", path, value)
+                    configLog.warn("Could not parse long from '{}' ({}), using default", path, value)
                     default
                 }
             }
@@ -236,7 +236,7 @@ open class Config(
 
             is String -> {
                 value.toDoubleOrNull() ?: run {
-                    warn("Could not parse double from '{}' ({}), using default", path, value)
+                    configLog.warn("Could not parse double from '{}' ({}), using default", path, value)
                     default
                 }
             }
@@ -728,7 +728,7 @@ open class Config(
         path: String,
         value: Any,
     ) {
-        debug("Injecting key: {} with value: {}", path, value)
+        configLog.debug("Injecting key: {} with value: {}", path, value)
         setValue(path, value)
         save()
     }
@@ -774,14 +774,14 @@ open class Config(
                     for (event in serialize.serializeOne(rootNode)) emitter.emit(event)
                     writer.toString()
                 } catch (e: Exception) {
-                    error("Could not serialize config: {}", filePath, e)
+                    configLog.error("Could not serialize config: {}", filePath, e)
                     return@save
                 }
             }
         try {
             folder.resolve(filePath).toFile().writeText(yaml)
         } catch (e: Exception) {
-            error("Could not write config file: {}", filePath, e)
+            configLog.error("Could not write config file: {}", filePath, e)
         }
     }
 
@@ -798,12 +798,12 @@ open class Config(
             if (content.isBlank()) return createMappingNode(mutableListOf())
             val parseContent = prepareYamlContentForParsing(content)
             if (parseContent != content) {
-                debug("Sanitized YAML before parse: {} ({} -> {} chars)", filePath, content.length, parseContent.length)
+                configLog.debug("Sanitized YAML before parse: {} ({} -> {} chars)", filePath, content.length, parseContent.length)
             }
             val node = Compose(loadSettings).composeString(parseContent).orElse(null)
             if (node is MappingNode) node else createMappingNode(mutableListOf())
         } catch (e: Exception) {
-            error("Could not load config: {}", filePath, e)
+            configLog.error("Could not load config: {}", filePath, e)
             createMappingNode(mutableListOf())
         }
     }
@@ -1046,7 +1046,7 @@ open class Config(
                     }
                 }
             } catch (e: Exception) {
-                error("Could not copy default config: {}", resource)
+                configLog.error("Could not copy default config: {}", resource)
             }
         }
     }
@@ -1071,8 +1071,8 @@ internal fun prepareYamlContentForParsing(content: String): String {
     return normalized
 }
 
-/** Drops lone UTF-16 surrogates so SnakeYAML Engine does not crash on truncated emoji. */
-internal fun sanitizeUnpairedSurrogates(content: String): String {
+/** Strips lone UTF-16 surrogates that break SnakeYAML Engine on some large files. */
+fun sanitizeUnpairedSurrogates(content: String): String {
     if (content.isEmpty()) return content
     val out = StringBuilder(content.length)
     var i = 0
