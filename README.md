@@ -4,6 +4,8 @@ Platform-agnostic **Kotlin-only** framework for **ARC** (Paper) and **ProxyARC**
 
 **Repository:** [github.com/alexey-va/arc-core](https://github.com/alexey-va/arc-core)
 
+**Architecture for agents:** [`AGENTS.md`](AGENTS.md) — canon for layers, boundaries, migration.
+
 > Старый [ARCCore](https://github.com/alexey-va/ARCCore) не используем — развиваем только этот проект.
 
 ## Requirements
@@ -18,20 +20,22 @@ Gradle root project: **`ArcCore`** (имя важно для composite build —
 
 | Module | Artifact | Purpose |
 |--------|----------|---------|
-| `arc-core/` | `ru.arc:arc-core` | Config, PluginModule, TaskScheduler, EventBus |
+| `arc-core/` | `ru.arc:arc-core` | Config, PluginModule, TaskScheduler, Tasks, EventBus |
 | `arc-core-logging/` | `ru.arc:arc-core-logging` | Loki appender (Tjahzi), ArcJsonLayout, MDC LogContext |
-| `arc-core-paper/` | `ru.arc:arc-core-paper` | BukkitTaskScheduler, Config Paper extensions |
-| `arc-core-velocity/` | `ru.arc:arc-core-velocity` | VelocityTaskScheduler |
+| `arc-core-redis/` | `ru.arc:arc-core-redis` | RedisManager, pub/sub, storage |
+| `arc-core-paper/` | `ru.arc:arc-core-paper` | BukkitTaskScheduler, PaperSubtickScheduler, Paper extensions |
+| `arc-core-velocity/` | `ru.arc:arc-core-velocity` | VelocityTaskScheduler, VelocitySubtickScheduler |
 
 ### Packages (arc-core)
 
 | Package | Contents |
 |---------|----------|
 | `ru.arc.config` | `Config`, `ConfigManager`, `ConfigHelpers`, `EmptyConfig` |
-| `ru.arc.logging` | `LokiLogging`, `ArcJsonLayout`, `LogContext`, `QuietDebugFilter` |
-| `ru.arc.util` | `TextUtils` |
-| `ru.arc.core` | `TaskScheduler`, `EventBus`, `Tasks`, `PluginModule`, `ModuleRegistry` |
+| `ru.arc.core` | `TaskScheduler`, `Tasks`, `TaskDsl`, `PluginModule`, `ModuleRegistry` |
 | `ru.arc.core.platform` | `ArcPlatform` |
+| `ru.arc.util` | `TextUtils` |
+
+Logging packages live in `arc-core-logging`; Redis in `arc-core-redis`.
 
 ## Build
 
@@ -50,6 +54,7 @@ includeBuild("../arc-core")  // or ~/IdeaProjects/arc-core
 dependencies {
     implementation("ru.arc:arc-core:1.0-SNAPSHOT")
     implementation("ru.arc:arc-core-logging:1.0-SNAPSHOT")
+    implementation("ru.arc:arc-core-redis:1.0-SNAPSHOT")
     implementation("ru.arc:arc-core-velocity:1.0-SNAPSHOT")
 }
 
@@ -57,27 +62,35 @@ dependencies {
 dependencies {
     implementation("ru.arc:arc-core:1.0-SNAPSHOT")
     implementation("ru.arc:arc-core-logging:1.0-SNAPSHOT")
+    implementation("ru.arc:arc-core-redis:1.0-SNAPSHOT")
     implementation("ru.arc:arc-core-paper:1.0-SNAPSHOT")
 }
 ```
 
 ## Platform binding
 
-- **ProxyARC:** `VelocityTaskScheduler` from `arc-core-velocity` + `Velocity : ArcPlatform`
-- **ARC Paper:** `BukkitTaskScheduler` from `arc-core-paper` (planned full migration)
+Call **before** `ModuleRegistry.initAll()`:
 
 ```kotlin
-Tasks.scheduler = VelocityTaskScheduler(server, plugin)
+// Paper
+PaperArcRuntime.installScheduling(plugin)
 
-Tasks.withScheduler(TestTaskScheduler()) {
-    delayed(20) { /* ... */ }
-}
+// Velocity
+VelocityArcRuntime.installScheduling(server, plugin)
 ```
 
-## Phase A status
+Feature code uses `Tasks.delayed`, `Tasks.repeating`, etc. — never platform schedulers directly.
 
-- [x] Multi-module skeleton
+Tests: `Tasks.withScheduler(TestTaskScheduler()) { ... }`
+
+## Status
+
+- [x] Multi-module skeleton (core, logging, redis, paper, velocity)
 - [x] Config ported from ARC (SnakeYAML Engine)
 - [x] PluginModule + ModuleRegistry
-- [x] ProxyARC wired via composite build
-- [x] ARC pilot: `ScheduledCommands` uses `ru.arc.config.*` from arc-core
+- [x] TaskScheduler + TaskDsl + subtick
+- [x] ProxyARC + ARC wired via composite build
+- [ ] Phase B: CachedRepository / xserver extraction
+- [ ] Phase C: PlayerProvider, domain events
+
+See [`docs/INDEX.md`](docs/INDEX.md) for migration specs.
