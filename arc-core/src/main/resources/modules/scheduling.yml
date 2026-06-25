@@ -1,0 +1,11 @@
+# =============================================================================
+# ARC scheduling — tick length and subtick scheduling
+# =============================================================================
+
+# Universal Minecraft tick length (ms). Default 50 ms = 20 TPS.
+tick-ms: 50
+
+subtick:
+  # Allow delays shorter than one tick (Paper: executor + main-thread hop).
+  enabled: true
+  min-delay-ms: 1

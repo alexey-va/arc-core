@@ -1,0 +1,36 @@
+# =============================================================================
+# logging.yml — единый конфиг логирования arc-core-logging (Paper ARC + ProxyARC).
+# Бандлится из arc-core-logging; в репозитории плагинов дубликат не нужен.
+#
+# На каждом инстансе переопределите:
+#   labels.service_name — spawn | survival | velocity | parkour (Grafana)
+#   enabled, host, port   — ваш Loki
+# После смены enabled/host — рестарт (reload не переподключает appender).
+# level / debug-quiet-sources — hot-reload через /arc reload (Paper) или Proxy reload.
+# =============================================================================
+
+# Метки Loki (service_name — основной фильтр в Grafana)
+labels:
+  service_name: arc
+
+host: localhost
+port: 3100
+rate: 20
+maxBurst: 100
+
+# Loki appender (Log4j2 + Tjahzi)
+enabled: false
+
+# Порог консольных логов ArcLogging (DEBUG|INFO|WARN|ERROR)
+level: INFO
+
+# Не выводить DEBUG, если вызов из класса с префиксом пакета
+debug-quiet-sources:
+  - ru.arc.sync
+  - ru.arc.repository
+
+# Минимальный уровень в Loki
+loki-level: INFO
+
+# json = ArcJsonLayout (Gson + MDC) | pattern = JSON-like PatternLayout
+loki-format: json

@@ -1,7 +1,9 @@
 package ru.arc.core
 
+import com.velocitypowered.api.proxy.ProxyServer
+
 /**
- * Velocity-side wiring for arc-core (console reporters, future domain event hooks).
+ * Velocity-side wiring for arc-core (console reporters, scheduling).
  */
 object VelocityArcRuntime {
     /**
@@ -15,5 +17,11 @@ object VelocityArcRuntime {
     ) {
         ModuleRegistry.lifecycleReporter =
             PrettyModuleLifecycleReporter(consoleLog = consoleLog, logError = logError)
+    }
+
+    /** Installs [VelocitySubtickScheduler] as [Tasks.scheduler]. Call before [ModuleRegistry.initAll]. */
+    @JvmStatic
+    fun installScheduling(server: ProxyServer, plugin: Any) {
+        Tasks.install(ru.arc.velocity.core.VelocitySubtickScheduler(server, plugin))
     }
 }

@@ -5,6 +5,7 @@ import com.velocitypowered.api.scheduler.ScheduledTask as VelocityScheduledTaskH
 import com.velocitypowered.api.scheduler.TaskStatus
 import ru.arc.core.ScheduledTask
 import ru.arc.core.TaskScheduler
+import ru.arc.core.TickConstants
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -28,7 +29,7 @@ class VelocityTaskScheduler(
         track(
             server.scheduler
                 .buildTask(plugin, task)
-                .delay(delayTicks * 50, TimeUnit.MILLISECONDS)
+                .delay(delayTicks * TickConstants.TICK_MS, TimeUnit.MILLISECONDS)
                 .schedule(),
         )
 
@@ -39,8 +40,8 @@ class VelocityTaskScheduler(
         track(
             server.scheduler
                 .buildTask(plugin, task)
-                .delay(delayTicks * 50, TimeUnit.MILLISECONDS)
-                .repeat(periodTicks * 50, TimeUnit.MILLISECONDS)
+                .delay(delayTicks * TickConstants.TICK_MS, TimeUnit.MILLISECONDS)
+                .repeat(periodTicks * TickConstants.TICK_MS, TimeUnit.MILLISECONDS)
                 .schedule(),
         )
 

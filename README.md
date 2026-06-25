@@ -18,7 +18,8 @@ Gradle root project: **`ArcCore`** (имя важно для composite build —
 
 | Module | Artifact | Purpose |
 |--------|----------|---------|
-| `arc-core/` | `ru.arc:arc-core` | Config, Logging, PluginModule, TaskScheduler, EventBus |
+| `arc-core/` | `ru.arc:arc-core` | Config, PluginModule, TaskScheduler, EventBus |
+| `arc-core-logging/` | `ru.arc:arc-core-logging` | Loki appender (Tjahzi), ArcJsonLayout, MDC LogContext |
 | `arc-core-paper/` | `ru.arc:arc-core-paper` | BukkitTaskScheduler, Config Paper extensions |
 | `arc-core-velocity/` | `ru.arc:arc-core-velocity` | VelocityTaskScheduler |
 
@@ -27,7 +28,8 @@ Gradle root project: **`ArcCore`** (имя важно для composite build —
 | Package | Contents |
 |---------|----------|
 | `ru.arc.config` | `Config`, `ConfigManager`, `ConfigHelpers`, `EmptyConfig` |
-| `ru.arc.util` | `TextUtils`, `Logging` |
+| `ru.arc.logging` | `LokiLogging`, `ArcJsonLayout`, `LogContext`, `QuietDebugFilter` |
+| `ru.arc.util` | `TextUtils` |
 | `ru.arc.core` | `TaskScheduler`, `EventBus`, `Tasks`, `PluginModule`, `ModuleRegistry` |
 | `ru.arc.core.platform` | `ArcPlatform` |
 
@@ -47,13 +49,15 @@ includeBuild("../arc-core")  // or ~/IdeaProjects/arc-core
 // build.gradle.kts — ProxyARC
 dependencies {
     implementation("ru.arc:arc-core:1.0-SNAPSHOT")
+    implementation("ru.arc:arc-core-logging:1.0-SNAPSHOT")
     implementation("ru.arc:arc-core-velocity:1.0-SNAPSHOT")
 }
 
-// build.gradle.kts — ARC Paper (pilot: config only)
+// build.gradle.kts — ARC Paper
 dependencies {
     implementation("ru.arc:arc-core:1.0-SNAPSHOT")
-    // arc-core-paper — when BukkitTaskScheduler migrates from ARC
+    implementation("ru.arc:arc-core-logging:1.0-SNAPSHOT")
+    implementation("ru.arc:arc-core-paper:1.0-SNAPSHOT")
 }
 ```
 

@@ -1040,7 +1040,7 @@ open class Config(
             try {
                 val path = folder.resolve(resource)
                 if (Files.exists(path) && !replace) return
-                Config::class.java.classLoader.getResourceAsStream(resource).use { stream ->
+                openBundledResource(resource).use { stream ->
                     Files.createDirectories(path.parent)
                     if (stream == null) {
                         if (!Files.exists(path)) Files.createFile(path)
@@ -1051,6 +1051,21 @@ open class Config(
             } catch (e: Exception) {
                 configLog.error("Could not copy default config: {}", resource)
             }
+        }
+
+        /** Classpath lookup: arc-core, arc-core-logging, arc-core-redis (canonical module YAML). */
+        private fun openBundledResource(resource: String): java.io.InputStream? {
+            val loaders =
+                sequenceOf(
+                    Config::class.java.classLoader,
+                    Thread.currentThread().contextClassLoader,
+                    runCatching { Class.forName("ru.arc.logging.LokiLogging").classLoader }.getOrNull(),
+                    runCatching { Class.forName("ru.arc.redis.RedisModuleConfig").classLoader }.getOrNull(),
+                ).filterNotNull().distinct()
+            for (loader in loaders) {
+                loader.getResourceAsStream(resource)?.let { return it }
+            }
+            return null
         }
     }
 }

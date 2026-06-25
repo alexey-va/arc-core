@@ -71,15 +71,15 @@ class ExecutorTaskScheduler(
     ): ScheduledTask {
         val handle = ExecutorScheduledTask(idGen.incrementAndGet())
         tasks.add(handle)
-        val delayMs = ticksToMillis(delayTicks)
-        val periodMs = ticksToMillis(periodTicks)
+        val delayMs = TickConstants.ticksToMillis(delayTicks)
+        val periodMs = TickConstants.ticksToMillis(periodTicks).coerceAtLeast(1)
         handle.future = if (repeating) {
             executor.scheduleAtFixedRate(
                 {
                     if (!handle.isCancelled) task.run()
                 },
                 delayMs,
-                periodMs.coerceAtLeast(1),
+                periodMs,
                 TimeUnit.MILLISECONDS,
             )
         } else {
@@ -113,7 +113,5 @@ class ExecutorTaskScheduler(
     companion object {
         private val SHARED_SYNC = Executors.newSingleThreadScheduledExecutor()
         private val SHARED_ASYNC = Executors.newScheduledThreadPool(4)
-
-        fun ticksToMillis(ticks: Long): Long = ticks * 50L
     }
 }

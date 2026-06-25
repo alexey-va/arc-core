@@ -1,39 +1,44 @@
 package ru.arc.core
 
-/** Global task scheduler — swap in tests via [withScheduler]. */
+/** Global task scheduler — install once at plugin bootstrap via [install]. */
 object Tasks {
+    @PublishedApi
     @Volatile
-    var scheduler: TaskScheduler = ExecutorTaskScheduler()
+    internal var installed: TaskScheduler? = null
+
+    fun install(
+        scheduler: TaskScheduler,
+        cancelPrevious: Boolean = true,
+    ) {
+        if (cancelPrevious) {
+            installed?.cancelAll()
+        }
+        installed = scheduler
+    }
+
+    val scheduler: TaskScheduler
+        get() =
+            installed
+                ?: error(
+                    "Tasks.install() not called — use PaperArcRuntime.installScheduling() " +
+                        "or VelocityArcRuntime.installScheduling() before ModuleRegistry.initAll()",
+                )
 
     fun reset() {
-        scheduler.cancelAll()
-        scheduler = ExecutorTaskScheduler()
+        installed = null
     }
 
     inline fun <T> withScheduler(testScheduler: TaskScheduler, block: () -> T): T {
-        val previous = scheduler
-        scheduler = testScheduler
+        val previous = installed
+        install(testScheduler)
         return try {
             block()
         } finally {
-            scheduler.cancelAll()
-            scheduler = previous
+            if (previous != null) {
+                install(previous, cancelPrevious = false)
+            } else {
+                installed = null
+            }
         }
     }
 }
-
-fun sync(task: Runnable): ScheduledTask = Tasks.scheduler.runSync(task)
-
-fun async(task: Runnable): ScheduledTask = Tasks.scheduler.runAsync(task)
-
-fun delayed(delayTicks: Long, task: Runnable): ScheduledTask =
-    Tasks.scheduler.runLater(delayTicks, task)
-
-inline fun delayed(delayTicks: Long, crossinline block: () -> Unit): ScheduledTask =
-    delayed(delayTicks, Runnable { block() })
-
-fun repeating(delayTicks: Long, periodTicks: Long, task: Runnable): ScheduledTask =
-    Tasks.scheduler.runTimer(delayTicks, periodTicks, task)
-
-inline fun repeating(delayTicks: Long, periodTicks: Long, crossinline block: () -> Unit): ScheduledTask =
-    repeating(delayTicks, periodTicks, Runnable { block() })

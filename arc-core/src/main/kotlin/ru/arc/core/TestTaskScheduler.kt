@@ -4,29 +4,45 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicInteger
 
+import kotlin.time.Duration
+
 /** In-memory scheduler for unit tests. */
 class TestTaskScheduler(
     private val executor: Executor = Executor { it.run() },
-) : TaskScheduler {
+) : SubtickScheduler {
 
     private val idCounter = AtomicInteger(0)
     private val pendingTasks = CopyOnWriteArrayList<TestScheduledTask>()
     private val timerTasks = CopyOnWriteArrayList<TimerTask>()
-    private var currentTick = 0L
+    private var currentTimeMs = 0L
 
     override fun runAsync(task: Runnable): ScheduledTask = scheduleImmediate(task)
 
     override fun runSync(task: Runnable): ScheduledTask = scheduleImmediate(task)
 
-    override fun runLater(delay: Long, task: Runnable): ScheduledTask = scheduleDelayed(delay, task)
+    override fun runLater(delay: Long, task: Runnable): ScheduledTask =
+        scheduleDelayed(TickConstants.ticksToMillis(delay), task)
 
-    override fun runLaterAsync(delay: Long, task: Runnable): ScheduledTask = scheduleDelayed(delay, task)
+    override fun runLaterAsync(delay: Long, task: Runnable): ScheduledTask =
+        scheduleDelayed(TickConstants.ticksToMillis(delay), task)
 
     override fun runTimer(delay: Long, period: Long, task: Runnable): ScheduledTask =
-        scheduleTimer(delay, period, task)
+        scheduleTimer(TickConstants.ticksToMillis(delay), TickConstants.ticksToMillis(period), task)
 
     override fun runTimerAsync(delay: Long, period: Long, task: Runnable): ScheduledTask =
-        scheduleTimer(delay, period, task)
+        scheduleTimer(TickConstants.ticksToMillis(delay), TickConstants.ticksToMillis(period), task)
+
+    override fun runLater(duration: Duration, task: Runnable): ScheduledTask =
+        scheduleDelayed(durationToMillis(duration), task)
+
+    override fun runLaterAsync(duration: Duration, task: Runnable): ScheduledTask =
+        scheduleDelayed(durationToMillis(duration), task)
+
+    override fun runTimer(delay: Duration, period: Duration, task: Runnable): ScheduledTask =
+        scheduleTimer(durationToMillis(delay), durationToMillis(period).coerceAtLeast(1), task)
+
+    override fun runTimerAsync(delay: Duration, period: Duration, task: Runnable): ScheduledTask =
+        runTimer(delay, period, task)
 
     override fun cancelAll() {
         pendingTasks.forEach { it.cancel() }
@@ -36,7 +52,7 @@ class TestTaskScheduler(
     }
 
     fun executeAll() {
-        val toExecute = pendingTasks.filter { !it.isCancelled && it.executeAt <= currentTick }
+        val toExecute = pendingTasks.filter { !it.isCancelled && it.executeAtMs <= currentTimeMs }
         toExecute.forEach { task ->
             executor.execute(task.runnable)
             pendingTasks.remove(task)
@@ -44,7 +60,7 @@ class TestTaskScheduler(
     }
 
     fun executeImmediate() {
-        val toExecute = pendingTasks.filter { !it.isCancelled && it.executeAt == 0L }
+        val toExecute = pendingTasks.filter { !it.isCancelled && it.executeAtMs == 0L }
         toExecute.forEach { task ->
             executor.execute(task.runnable)
             pendingTasks.remove(task)
@@ -53,10 +69,20 @@ class TestTaskScheduler(
 
     fun tick(ticks: Long = 1) {
         repeat(ticks.toInt()) {
-            currentTick++
+            currentTimeMs += TickConstants.TICK_MS
             executeAll()
-            executeTimers()
+            executeTimersStep()
         }
+    }
+
+    fun advanceMs(millis: Long) {
+        if (millis <= 0) {
+            executeImmediate()
+            return
+        }
+        currentTimeMs += millis
+        executeAll()
+        executeTimersCatchUp()
     }
 
     fun pendingCount(): Int = pendingTasks.count { !it.isCancelled }
@@ -69,37 +95,48 @@ class TestTaskScheduler(
         return scheduled
     }
 
-    private fun scheduleDelayed(delay: Long, task: Runnable): ScheduledTask {
-        val scheduled = TestScheduledTask(idCounter.incrementAndGet(), task, currentTick + delay)
+    private fun scheduleDelayed(delayMs: Long, task: Runnable): ScheduledTask {
+        val scheduled = TestScheduledTask(idCounter.incrementAndGet(), task, currentTimeMs + delayMs)
         pendingTasks.add(scheduled)
         return scheduled
     }
 
-    private fun scheduleTimer(delay: Long, period: Long, task: Runnable): ScheduledTask {
-        val scheduled = TestScheduledTask(idCounter.incrementAndGet(), task, currentTick + delay)
-        val timer = TimerTask(scheduled, period, currentTick + delay)
+    private fun scheduleTimer(delayMs: Long, periodMs: Long, task: Runnable): ScheduledTask {
+        val scheduled = TestScheduledTask(idCounter.incrementAndGet(), task, currentTimeMs + delayMs)
+        val timer = TimerTask(scheduled, periodMs.coerceAtLeast(1), currentTimeMs + delayMs)
         timerTasks.add(timer)
         return scheduled
     }
 
-    private fun executeTimers() {
-        timerTasks.filter { !it.scheduledTask.isCancelled && it.nextExecution <= currentTick }
+    private fun executeTimersStep() {
+        timerTasks.filter { !it.scheduledTask.isCancelled && it.nextExecutionMs <= currentTimeMs }
             .forEach { timer ->
                 executor.execute(timer.scheduledTask.runnable)
-                timer.nextExecution = currentTick + timer.period
+                timer.nextExecutionMs = currentTimeMs + timer.periodMs
             }
+    }
+
+    private fun executeTimersCatchUp() {
+        while (true) {
+            val due = timerTasks.filter { !it.scheduledTask.isCancelled && it.nextExecutionMs <= currentTimeMs }
+            if (due.isEmpty()) return
+            due.forEach { timer ->
+                executor.execute(timer.scheduledTask.runnable)
+                timer.nextExecutionMs += timer.periodMs
+            }
+        }
     }
 
     private data class TimerTask(
         val scheduledTask: TestScheduledTask,
-        val period: Long,
-        var nextExecution: Long,
+        val periodMs: Long,
+        var nextExecutionMs: Long,
     )
 
     private class TestScheduledTask(
         override val id: Int,
         val runnable: Runnable,
-        val executeAt: Long,
+        val executeAtMs: Long,
     ) : ScheduledTask {
         private var cancelled = false
         override val isCancelled: Boolean get() = cancelled

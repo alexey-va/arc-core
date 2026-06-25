@@ -1,0 +1,22 @@
+# =============================================================================
+# redis.yml — единый конфиг Redis arc-core-redis (Paper ARC + ProxyARC).
+# Бандлится из arc-core-redis; в репозиториях плагинов дубликат не нужен.
+#
+# На каждом инстансе переопределите:
+#   server-name — spawn | survival | velocity | parkour (wire-протокол pub/sub)
+#   host, port, username, password — ваш Redis
+# Paper-only: main-server — главный инстанс (announce rotation, backpacks и т.п.)
+# =============================================================================
+
+enabled: true
+
+host: localhost
+port: 6379
+username: default
+password: ""
+
+# Логическое имя инстанса в кластере (должно быть уникальным)
+server-name: arc
+
+# Paper: true на spawn/hub; false на survival и прочих нодах
+main-server: false
