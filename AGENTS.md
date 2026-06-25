@@ -29,6 +29,7 @@ arc-core ─────┬───── ARC (Paper: Event DSL, GUI, gameplay)
 | `arc-core-redis/` | `ru.arc:arc-core-redis` | RedisManager, pub/sub, storage |
 | `arc-core-paper/` | `ru.arc:arc-core-paper` | BukkitTaskScheduler, PaperSubtickScheduler, Paper extensions |
 | `arc-core-velocity/` | `ru.arc:arc-core-velocity` | VelocityTaskScheduler, VelocitySubtickScheduler |
+| `arc-core-ai/` | `ru.arc:arc-core-ai` | OpenRouter LLM, moderation, tool RPC |
 
 Composite build: `includeBuild("../arc-core")` in ARC/ProxyARC `settings.gradle.kts`.
 
@@ -91,6 +92,7 @@ VelocityArcRuntime.installScheduling(server, this)
 | TaskScheduler + TaskDsl | done | scheduling-design |
 | Logging | done | — |
 | Redis | done | redis-design |
+| arc-core-ai (LLM + tools) | done | arc-core-ai-design |
 | Paper / Velocity runtime | done | scheduling-design, proxyarc-modules |
 | Event DSL | stays in ARC | framework-design |
 | CachedRepository / xserver | Phase B | framework-design |

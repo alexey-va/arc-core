@@ -1,0 +1,25 @@
+# OpenRouter (OpenAI-compatible). Set api-key and proxy host at deploy.
+
+openrouter:
+  api-base-url: https://openrouter.ai/api/v1
+  api-key: "none"
+  timeout-seconds: 30
+
+http-proxy:
+  enabled: true
+  host: "10.255.0.1"
+  port: 8888
+
+moderation:
+  model: openai/gpt-4o-mini
+  max-tokens: 250
+  temperature: 0.2
+  ok-marker: "OK"
+  bad-marker: "BAD"
+  comment-marker: "COMMENT:"
+  system-messages: []
+
+tools:
+  invoke-channel: arc.ai.tools.invoke
+  result-channel: arc.ai.tools.result
+  default-timeout-ms: 30000
