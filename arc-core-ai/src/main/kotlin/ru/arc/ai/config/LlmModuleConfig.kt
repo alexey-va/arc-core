@@ -66,8 +66,11 @@ open class LlmModuleConfig(private val config: Config) {
     }
 
     companion object {
+        const val RESOURCE = "llm.yml"
+
         fun load(dataPath: Path): LlmModuleConfig {
-            val cfg = LlmModuleConfig(ConfigManager.of(dataPath, "modules/llm.yml"))
+            Config.copyDefaultConfig(ConfigManager.bundledModuleResource(RESOURCE), dataPath, replace = false)
+            val cfg = LlmModuleConfig(ConfigManager.ofModule(dataPath, RESOURCE))
             cfg.validateProxy()
             return cfg
         }

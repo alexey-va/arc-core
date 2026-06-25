@@ -1060,7 +1060,8 @@ open class Config(
                     Config::class.java.classLoader,
                     Thread.currentThread().contextClassLoader,
                     runCatching { Class.forName("ru.arc.logging.LokiLogging").classLoader }.getOrNull(),
-                    runCatching { Class.forName("ru.arc.redis.RedisModuleConfig").classLoader }.getOrNull(),
+                    runCatching { Class.forName("ru.arc.ai.config.LlmModuleConfig").classLoader }.getOrNull(),
+                    runCatching { Class.forName("ru.arc.ARC").classLoader }.getOrNull(),
                 ).filterNotNull().distinct()
             for (loader in loaders) {
                 loader.getResourceAsStream(resource)?.let { return it }
