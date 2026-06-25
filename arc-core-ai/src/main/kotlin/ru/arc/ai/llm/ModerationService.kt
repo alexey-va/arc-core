@@ -24,10 +24,11 @@ class ModerationService(
 
         return CompletableFuture.supplyAsync {
             try {
-                val system = buildString {
-                    config.moderationSystemMessages.forEach { appendLine(it) }
-                    extraSystemMessages.forEach { appendLine(it) }
-                }.trim()
+                val system =
+                    buildString {
+                        append(config.moderationSystemPrompt)
+                        extraSystemMessages.forEach { appendLine(it) }
+                    }.trim()
 
                 val params =
                     ChatCompletionCreateParams.builder()

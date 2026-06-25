@@ -5,7 +5,10 @@ import ru.arc.config.ConfigManager
 import ru.arc.config.EmptyConfig
 import java.nio.file.Path
 
-open class LlmModuleConfig(private val config: Config) {
+open class LlmModuleConfig(
+    private val config: Config,
+    private val dataPath: Path = Path.of("."),
+) {
 
     open val llmEnabled: Boolean
         get() = apiKey != "none"
@@ -49,6 +52,12 @@ open class LlmModuleConfig(private val config: Config) {
     open val moderationSystemMessages: List<String>
         get() = config.stringList("moderation.system-messages", emptyList())
 
+    /** Board / text moderation prompt — prefer `prompts/moderation.txt` over YAML list. */
+    open val moderationSystemPrompt: String
+        get() =
+            PromptFiles.readText(dataPath, "prompts/moderation.txt")
+                ?: moderationSystemMessages.joinToString("\n").trim()
+
     open val toolInvokeChannel: String
         get() = config.string("tools.invoke-channel", "arc.ai.tools.invoke")
 
@@ -70,7 +79,7 @@ open class LlmModuleConfig(private val config: Config) {
 
         fun load(dataPath: Path): LlmModuleConfig {
             Config.copyDefaultConfig(ConfigManager.bundledModuleResource(RESOURCE), dataPath, replace = false)
-            val cfg = LlmModuleConfig(ConfigManager.ofModule(dataPath, RESOURCE))
+            val cfg = LlmModuleConfig(ConfigManager.ofModule(dataPath, RESOURCE), dataPath)
             cfg.validateProxy()
             return cfg
         }
@@ -91,6 +100,7 @@ class TestLlmModuleConfig(
     override val moderationBadMarker: String = "BAD",
     override val moderationCommentMarker: String = "COMMENT:",
     override val moderationSystemMessages: List<String> = emptyList(),
+    override val moderationSystemPrompt: String = "test moderation prompt",
     override val toolInvokeChannel: String = "arc.ai.tools.invoke",
     override val toolResultChannel: String = "arc.ai.tools.result",
     override val toolDefaultTimeoutMs: Long = 30_000,
