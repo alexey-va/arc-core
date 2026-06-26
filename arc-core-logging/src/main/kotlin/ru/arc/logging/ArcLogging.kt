@@ -62,6 +62,7 @@ object ArcLogging {
     @JvmStatic
     fun installLokiFromConfig() {
         val spec = lokiSpec ?: return
+        if (LokiLogging.reinstallFromState()) return
         installLoki(spec)
     }
 

@@ -10,8 +10,10 @@
 # =============================================================================
 
 # Метки Loki (service_name — основной фильтр в Grafana)
+# Опционально job: paper | velocity_proxy — отделить JSON appender от syslog (promtail)
 labels:
   service_name: arc
+  job: paper
 
 host: localhost
 port: 3100

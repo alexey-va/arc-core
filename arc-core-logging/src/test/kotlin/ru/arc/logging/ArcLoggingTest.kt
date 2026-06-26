@@ -25,4 +25,10 @@ class ArcLoggingTest : FreeSpec({
             ArcLogging.plainForBuffer("<red>warn</red> text") shouldBe "warn text"
         }
     }
+
+    "reinstallFromState" - {
+        "should return false when never installed" {
+            LokiLogging.reinstallFromState() shouldBe false
+        }
+    }
 })

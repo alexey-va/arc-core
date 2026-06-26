@@ -1,0 +1,4 @@
+name: TestPaperPlugin
+version: 1.0
+main: ru.arc.paper.player.TestPaperPlugin
+api-version: '1.21'
