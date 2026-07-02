@@ -58,9 +58,11 @@ class ExecutorTaskScheduler(
         schedule(asyncExecutor, delayTicks, periodTicks, task, repeating = true)
 
     override fun cancelAll() {
-        tasks.forEach { it.cancel() }
+        tasks.forEach { it.cancelTaskOnly() }
         tasks.clear()
     }
+
+    internal fun trackedCount(): Int = tasks.size
 
     private fun schedule(
         executor: ScheduledExecutorService,
@@ -69,42 +71,60 @@ class ExecutorTaskScheduler(
         task: Runnable,
         repeating: Boolean,
     ): ScheduledTask {
-        val handle = ExecutorScheduledTask(idGen.incrementAndGet())
+        val handle = ExecutorScheduledTask(idGen.incrementAndGet(), ::untrack)
         tasks.add(handle)
         val delayMs = TickConstants.ticksToMillis(delayTicks)
         val periodMs = TickConstants.ticksToMillis(periodTicks).coerceAtLeast(1)
-        handle.future = if (repeating) {
-            executor.scheduleAtFixedRate(
-                {
+        val runner =
+            Runnable {
+                try {
                     if (!handle.isCancelled) task.run()
-                },
-                delayMs,
-                periodMs,
-                TimeUnit.MILLISECONDS,
-            )
-        } else {
-            executor.schedule(
-                {
-                    if (!handle.isCancelled) task.run()
-                },
-                delayMs,
-                TimeUnit.MILLISECONDS,
-            )
-        }
+                } finally {
+                    if (!repeating) handle.detach()
+                }
+            }
+        handle.future =
+            if (repeating) {
+                executor.scheduleAtFixedRate(runner, delayMs, periodMs, TimeUnit.MILLISECONDS)
+            } else {
+                executor.schedule(runner, delayMs, TimeUnit.MILLISECONDS)
+            }
         return handle
     }
 
-    private class ExecutorScheduledTask(override val id: Int) : ScheduledTask {
+    private fun untrack(handle: ExecutorScheduledTask) {
+        tasks.remove(handle)
+    }
+
+    private class ExecutorScheduledTask(
+        override val id: Int,
+        private val removeFromRegistry: (ExecutorScheduledTask) -> Unit,
+    ) : ScheduledTask {
         @Volatile
         var future: java.util.concurrent.ScheduledFuture<*>? = null
 
         @Volatile
         private var cancelled = false
 
+        @Volatile
+        private var detached = false
+
         override val isCancelled: Boolean
             get() = cancelled
 
+        fun detach() {
+            if (detached) return
+            detached = true
+            removeFromRegistry(this)
+        }
+
         override fun cancel() {
+            cancelled = true
+            future?.cancel(false)
+            detach()
+        }
+
+        fun cancelTaskOnly() {
             cancelled = true
             future?.cancel(false)
         }

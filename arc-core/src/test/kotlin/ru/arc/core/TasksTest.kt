@@ -29,5 +29,18 @@ class TasksTest : FreeSpec({
             Tasks.scheduler shouldBe outer
             Tasks.reset()
         }
+
+        "install should cancel previous scheduler by default" {
+            Tasks.reset()
+            val first = ExecutorTaskScheduler()
+            val second = ExecutorTaskScheduler()
+            Tasks.install(first)
+            first.runTimer(0, 20) {}
+            first.trackedCount() shouldBe 1
+            Tasks.install(second)
+            first.trackedCount() shouldBe 0
+            Tasks.scheduler shouldBe second
+            Tasks.reset()
+        }
     }
 })

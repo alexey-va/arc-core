@@ -71,10 +71,12 @@ class PaperSubtickScheduler(
     }
 
     override fun cancelAll() {
-        subtickTasks.forEach { it.cancel() }
+        subtickTasks.forEach { it.cancelTaskOnly() }
         subtickTasks.clear()
         delegate.cancelAll()
     }
+
+    internal fun subtickTrackedCount(): Int = subtickTasks.size
 
     private fun scheduleSubtick(
         delayMs: Long,
@@ -83,15 +85,19 @@ class PaperSubtickScheduler(
         repeating: Boolean,
         task: Runnable,
     ): ScheduledTask {
-        val handle = SubtickHandle(idGen.incrementAndGet())
+        val handle = SubtickHandle(idGen.incrementAndGet(), ::untrackSubtick)
         subtickTasks.add(handle)
         val runnable =
             Runnable {
                 if (handle.isCancelled) return@Runnable
-                if (sync) {
-                    delegate.runSync(task)
-                } else {
-                    task.run()
+                try {
+                    if (sync) {
+                        delegate.runSync(task)
+                    } else {
+                        task.run()
+                    }
+                } finally {
+                    if (!repeating) handle.detach()
                 }
             }
         handle.future =
@@ -103,16 +109,38 @@ class PaperSubtickScheduler(
         return handle
     }
 
-    private class SubtickHandle(override val id: Int) : ScheduledTask {
+    private fun untrackSubtick(handle: SubtickHandle) {
+        subtickTasks.remove(handle)
+    }
+
+    private class SubtickHandle(
+        override val id: Int,
+        private val removeFromRegistry: (SubtickHandle) -> Unit,
+    ) : ScheduledTask {
         @Volatile
         var future: java.util.concurrent.ScheduledFuture<*>? = null
 
         @Volatile
         private var cancelled = false
 
+        @Volatile
+        private var detached = false
+
         override val isCancelled: Boolean get() = cancelled
 
+        fun detach() {
+            if (detached) return
+            detached = true
+            removeFromRegistry(this)
+        }
+
         override fun cancel() {
+            cancelled = true
+            future?.cancel(false)
+            detach()
+        }
+
+        fun cancelTaskOnly() {
             cancelled = true
             future?.cancel(false)
         }

@@ -50,7 +50,7 @@ class VelocitySubtickScheduler(
         if (isWholeTicks(delay) && isWholeTicks(period)) {
             return runTimer(delayMs / TickConstants.TICK_MS, periodMs / TickConstants.TICK_MS, task)
         }
-        return track(
+        return trackRepeating(
             server.scheduler
                 .buildTask(plugin, task)
                 .delay(delayMs, TimeUnit.MILLISECONDS)
@@ -63,38 +63,101 @@ class VelocitySubtickScheduler(
         runTimer(delay, period, task)
 
     override fun cancelAll() {
-        tasks.forEach { it.cancel() }
+        tasks.forEach { it.cancelTaskOnly() }
         tasks.clear()
         ticks.cancelAll()
     }
+
+    internal fun subtickTrackedCount(): Int = tasks.size
+
+    internal fun tickTrackedCount(): Int = ticks.trackedCount()
 
     private fun scheduleMillis(delayMs: Long, task: Runnable): ScheduledTask {
         if (delayMs == 0L) return runSync(task)
         if (delayMs % TickConstants.TICK_MS == 0L) {
             return runLater(delayMs / TickConstants.TICK_MS, task)
         }
-        return track(
-            server.scheduler
-                .buildTask(plugin, task)
-                .delay(delayMs, TimeUnit.MILLISECONDS)
-                .schedule(),
+        return trackOneShot(
+            { wrapped ->
+                server.scheduler
+                    .buildTask(plugin, wrapped)
+                    .delay(delayMs, TimeUnit.MILLISECONDS)
+                    .schedule()
+            },
+            task,
         )
     }
 
-    private fun track(handle: VelocityScheduledTaskHandle): ScheduledTask {
-        val adapter = Adapter(idGen.incrementAndGet(), handle)
+    private fun trackOneShot(
+        schedule: (Runnable) -> VelocityScheduledTaskHandle,
+        task: Runnable,
+    ): ScheduledTask {
+        val registration = OneShotRegistration()
+        val wrapped =
+            Runnable {
+                try {
+                    task.run()
+                } finally {
+                    registration.onComplete()
+                }
+            }
+        val handle = schedule(wrapped)
+        val adapter = Adapter(idGen.incrementAndGet(), handle, ::untrack)
+        tasks.add(adapter)
+        registration.register(adapter)
+        return adapter
+    }
+
+    private fun trackRepeating(handle: VelocityScheduledTaskHandle): ScheduledTask {
+        val adapter = Adapter(idGen.incrementAndGet(), handle, ::untrack)
         tasks.add(adapter)
         return adapter
+    }
+
+    private fun untrack(adapter: Adapter) {
+        tasks.remove(adapter)
+    }
+
+    private class OneShotRegistration {
+        private var adapter: Adapter? = null
+        private var completed = false
+
+        fun register(value: Adapter) {
+            adapter = value
+            if (completed) {
+                value.detach()
+            }
+        }
+
+        fun onComplete() {
+            completed = true
+            adapter?.detach()
+        }
     }
 
     private class Adapter(
         override val id: Int,
         private val delegate: VelocityScheduledTaskHandle,
+        private val removeFromRegistry: (Adapter) -> Unit,
     ) : ScheduledTask {
+        @Volatile
+        private var detached = false
+
+        fun detach() {
+            if (detached) return
+            detached = true
+            removeFromRegistry(this)
+        }
+
         override val isCancelled: Boolean
             get() = delegate.status() == TaskStatus.CANCELLED
 
         override fun cancel() {
+            delegate.cancel()
+            detach()
+        }
+
+        fun cancelTaskOnly() {
             delegate.cancel()
         }
     }
