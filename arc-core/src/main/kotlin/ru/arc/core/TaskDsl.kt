@@ -123,19 +123,51 @@ private class CancellableTaskImpl(
     override fun cancel() = task.cancel()
 }
 
+/**
+ * Some scheduler implementations may execute zero-delay work before their
+ * scheduling method returns. This proxy lets TaskContext exist during that
+ * eager execution and forwards cancellation once the real handle is known.
+ */
+private class DeferredScheduledTask : ScheduledTask {
+    @Volatile
+    private var delegate: ScheduledTask? = null
+
+    @Volatile
+    private var cancellationRequested = false
+
+    override val id: Int
+        get() = delegate?.id ?: -1
+
+    override val isCancelled: Boolean
+        get() = cancellationRequested || delegate?.isCancelled == true
+
+    @Synchronized
+    fun attach(task: ScheduledTask) {
+        check(delegate == null) { "Scheduled task already attached" }
+        delegate = task
+        if (cancellationRequested) task.cancel()
+    }
+
+    override fun cancel() {
+        cancellationRequested = true
+        delegate?.cancel()
+    }
+}
+
 // ==================== Task DSL Functions ====================
 
 /**
  * Run a task synchronously on the main thread.
  */
 fun TaskScheduler.sync(block: TaskContext.() -> Unit): ScheduledTask {
-    lateinit var scheduledTask: ScheduledTask
-    scheduledTask =
+    val scheduledTask = DeferredScheduledTask()
+    val delegate =
         runSync(
             Runnable {
                 TaskContext(scheduledTask, this).block()
             },
         )
+    scheduledTask.attach(delegate)
     return scheduledTask
 }
 
@@ -143,13 +175,14 @@ fun TaskScheduler.sync(block: TaskContext.() -> Unit): ScheduledTask {
  * Run a task asynchronously.
  */
 fun TaskScheduler.async(block: TaskContext.() -> Unit): ScheduledTask {
-    lateinit var scheduledTask: ScheduledTask
-    scheduledTask =
+    val scheduledTask = DeferredScheduledTask()
+    val delegate =
         runAsync(
             Runnable {
                 TaskContext(scheduledTask, this).block()
             },
         )
+    scheduledTask.attach(delegate)
     return scheduledTask
 }
 
@@ -160,8 +193,8 @@ fun TaskScheduler.delayed(
     delay: Duration,
     block: TaskContext.() -> Unit,
 ): ScheduledTask {
-    lateinit var scheduledTask: ScheduledTask
-    scheduledTask =
+    val scheduledTask = DeferredScheduledTask()
+    val delegate =
         scheduleDelayed(
             this,
             delay,
@@ -171,6 +204,7 @@ fun TaskScheduler.delayed(
                     TaskContext(scheduledTask, this).block()
                 },
         )
+    scheduledTask.attach(delegate)
     return scheduledTask
 }
 
@@ -181,8 +215,8 @@ fun TaskScheduler.delayedAsync(
     delay: Duration,
     block: TaskContext.() -> Unit,
 ): ScheduledTask {
-    lateinit var scheduledTask: ScheduledTask
-    scheduledTask =
+    val scheduledTask = DeferredScheduledTask()
+    val delegate =
         scheduleDelayed(
             this,
             delay,
@@ -192,6 +226,7 @@ fun TaskScheduler.delayedAsync(
                     TaskContext(scheduledTask, this).block()
                 },
         )
+    scheduledTask.attach(delegate)
     return scheduledTask
 }
 
@@ -205,8 +240,8 @@ fun TaskScheduler.repeating(
     delay: Duration = period,
     block: TaskContext.() -> Unit,
 ): ScheduledTask {
-    lateinit var scheduledTask: ScheduledTask
-    scheduledTask =
+    val scheduledTask = DeferredScheduledTask()
+    val delegate =
         runTimer(
             delay.inWholeTicks,
             period.inWholeTicks,
@@ -214,6 +249,7 @@ fun TaskScheduler.repeating(
                 TaskContext(scheduledTask, this).block()
             },
         )
+    scheduledTask.attach(delegate)
     return scheduledTask
 }
 
@@ -225,8 +261,8 @@ fun TaskScheduler.repeatingAsync(
     delay: Duration = period,
     block: TaskContext.() -> Unit,
 ): ScheduledTask {
-    lateinit var scheduledTask: ScheduledTask
-    scheduledTask =
+    val scheduledTask = DeferredScheduledTask()
+    val delegate =
         runTimerAsync(
             delay.inWholeTicks,
             period.inWholeTicks,
@@ -234,6 +270,7 @@ fun TaskScheduler.repeatingAsync(
                 TaskContext(scheduledTask, this).block()
             },
         )
+    scheduledTask.attach(delegate)
     return scheduledTask
 }
 
@@ -1098,4 +1135,3 @@ fun repeating(delayTicks: Long, periodTicks: Long, task: Runnable): ScheduledTas
 
 inline fun repeating(delayTicks: Long, periodTicks: Long, crossinline block: () -> Unit): ScheduledTask =
     repeating(delayTicks, periodTicks, Runnable { block() })
-

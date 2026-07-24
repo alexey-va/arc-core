@@ -31,5 +31,68 @@ class TaskDslTest : FreeSpec({
                 counter.get() shouldBe 1
             }
         }
+
+        "supports schedulers that execute zero-delay tasks before returning" {
+            val scheduler = EagerTaskScheduler()
+            var ran = false
+
+            val task =
+                scheduler.async {
+                    ran = true
+                    cancel()
+                }
+
+            ran shouldBe true
+            task.isCancelled shouldBe true
+        }
     }
 })
+
+private class EagerTaskScheduler : TaskScheduler {
+    private var nextId = 0
+
+    override fun runAsync(task: Runnable): ScheduledTask = runEager(task)
+
+    override fun runSync(task: Runnable): ScheduledTask = runEager(task)
+
+    override fun runLater(
+        delayTicks: Long,
+        task: Runnable,
+    ): ScheduledTask = runEager(task)
+
+    override fun runLaterAsync(
+        delayTicks: Long,
+        task: Runnable,
+    ): ScheduledTask = runEager(task)
+
+    override fun runTimer(
+        delayTicks: Long,
+        periodTicks: Long,
+        task: Runnable,
+    ): ScheduledTask = runEager(task)
+
+    override fun runTimerAsync(
+        delayTicks: Long,
+        periodTicks: Long,
+        task: Runnable,
+    ): ScheduledTask = runEager(task)
+
+    override fun cancelAll() = Unit
+
+    private fun runEager(task: Runnable): ScheduledTask {
+        val handle = EagerScheduledTask(++nextId)
+        task.run()
+        return handle
+    }
+}
+
+private class EagerScheduledTask(
+    override val id: Int,
+) : ScheduledTask {
+    override var isCancelled = false
+        private set
+
+    override fun cancel() {
+        isCancelled = true
+    }
+}
