@@ -30,6 +30,8 @@ class RedisManager(
     connection: RedisConnection,
     private val serverIdentity: ServerIdentity,
     private val logger: Logger = LoggerFactory.getLogger(RedisManager::class.java),
+    private val poolFactory: (RedisConnection) -> JedisPooled = ::createDefaultPool,
+    private val clockMs: () -> Long = System::currentTimeMillis,
 ) : JedisPubSub(), RedisOperations {
 
     /** Legacy constructor for tests and gradual migration. */
@@ -46,6 +48,15 @@ class RedisManager(
     companion object {
         private const val INIT_DELAY_MS = 1000L
         private const val RECONNECT_DELAY_MS = 100L
+        private const val PUBLISH_RECONNECT_MIN_INTERVAL_MS = 5_000L
+        private const val PUBLISH_NOT_CONNECTED_LOG_INTERVAL_MS = 30_000L
+
+        private fun createDefaultPool(connection: RedisConnection): JedisPooled =
+            if (connection.username != null && connection.password != null) {
+                JedisPooled(connection.host, connection.port, connection.username, connection.password)
+            } else {
+                JedisPooled(connection.host, connection.port)
+            }
     }
 
     @Volatile
@@ -53,6 +64,17 @@ class RedisManager(
 
     @Volatile
     private var pub: JedisPooled? = null
+
+    @Volatile
+    private var lastConnection: RedisConnection? = null
+
+    @Volatile
+    private var lastPublishNotConnectedLogMs = 0L
+
+    private var lastPublishReconnectAttemptMs = 0L
+    private var lastPublishReconnectFailureLogMs = 0L
+
+    private val publishReconnectMutex = Mutex()
 
     private var scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -105,6 +127,7 @@ class RedisManager(
         userName: String?,
         password: String?,
     ) {
+        lastConnection = RedisConnection(ip, port, userName, password)
         val oldExecutor = subscriptionExecutor
         try {
             subscriptionExecutor =
@@ -118,18 +141,9 @@ class RedisManager(
             isShuttingDown = false
             scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-            sub =
-                if (userName != null && password != null) {
-                    JedisPooled(ip, port, userName, password)
-                } else {
-                    JedisPooled(ip, port)
-                }
-            pub =
-                if (userName != null && password != null) {
-                    JedisPooled(ip, port, userName, password)
-                } else {
-                    JedisPooled(ip, port)
-                }
+            val connection = lastConnection!!
+            sub = createPool(connection)
+            pub = createPool(connection)
 
             connected = true
             logger.debug("Connected to Redis at {}:{}", ip, port)
@@ -142,6 +156,8 @@ class RedisManager(
             throw e
         }
     }
+
+    private fun createPool(connection: RedisConnection): JedisPooled = poolFactory(connection)
 
     override fun onPong(message: String) = Unit
 
@@ -197,21 +213,83 @@ class RedisManager(
     }
 
     private fun publishInternal(channel: String, message: String) {
-        val pubConnection = pub
-        if (!connected || isShuttingDown || pubConnection == null) {
-            logger.error("Cannot publish: Redis not connected (channel: {})", channel)
-            return
-        }
+        if (isShuttingDown) return
 
         scope.launch(Dispatchers.IO) {
+            if (!ensurePublishReady()) {
+                logPublishNotConnected(channel)
+                return@launch
+            }
+
+            val fullMessage = RedisWire.encode(serverIdentity.name(), message)
             try {
-                val fullMessage = RedisWire.encode(serverIdentity.name(), message)
-                pubConnection.publish(channel, fullMessage)
+                pub!!.publish(channel, fullMessage)
             } catch (e: Exception) {
-                if (e is JedisConnectionException) connected = false
+                if (e is JedisConnectionException) {
+                    connected = false
+                    if (ensurePublishReady()) {
+                        try {
+                            pub!!.publish(channel, fullMessage)
+                            return@launch
+                        } catch (retry: Exception) {
+                            if (retry is JedisConnectionException) connected = false
+                            logger.error("Error publishing to channel {} after reconnect", channel, retry)
+                            return@launch
+                        }
+                    }
+                }
                 logger.error("Error publishing to channel {}", channel, e)
             }
         }
+    }
+
+    private suspend fun ensurePublishReady(): Boolean {
+        if (connected && pub != null) return true
+
+        return publishReconnectMutex.withLock {
+            if (connected && pub != null) return true
+            val connection = lastConnection ?: return false
+            val now = clockMs()
+            if (
+                lastPublishReconnectAttemptMs > 0L &&
+                now - lastPublishReconnectAttemptMs < PUBLISH_RECONNECT_MIN_INTERVAL_MS
+            ) {
+                return false
+            }
+            lastPublishReconnectAttemptMs = now
+            try {
+                pub?.close()
+                pub = createPool(connection)
+                if (pub?.ping() == "PONG") {
+                    connected = true
+                    lastPublishReconnectAttemptMs = 0L
+                    lastPublishReconnectFailureLogMs = 0L
+                    lastPublishNotConnectedLogMs = 0L
+                    logger.info("Redis publish connection restored")
+                    return true
+                }
+            } catch (e: Exception) {
+                if (
+                    lastPublishReconnectFailureLogMs == 0L ||
+                    now - lastPublishReconnectFailureLogMs >= PUBLISH_NOT_CONNECTED_LOG_INTERVAL_MS
+                ) {
+                    lastPublishReconnectFailureLogMs = now
+                    logger.warn("Redis publish reconnect failed", e)
+                } else {
+                    logger.debug("Redis publish reconnect still unavailable: {}", e.message)
+                }
+            }
+            connected = false
+            false
+        }
+    }
+
+    @Synchronized
+    private fun logPublishNotConnected(channel: String) {
+        val now = clockMs()
+        if (now - lastPublishNotConnectedLogMs < PUBLISH_NOT_CONNECTED_LOG_INTERVAL_MS) return
+        lastPublishNotConnectedLogMs = now
+        logger.warn("Cannot publish: Redis not connected (channel: {})", channel)
     }
 
     override fun saveMap(key: String, map: Map<String, String>) {

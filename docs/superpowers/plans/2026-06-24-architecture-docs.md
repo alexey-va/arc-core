@@ -196,51 +196,19 @@ git commit -m "docs: update README for Gradle 25 and arc-core"
 
 ## Chunk 3: Skills & routing
 
-### Task 9: Create custom skills
+### Task 9: Consolidate agent workflow
 
-**Files:**
-- Create: `mcserver/.cursor/skills/arc-deploy/SKILL.md`
-- Create: `mcserver/.cursor/skills/arc-new-module/SKILL.md`
-- Create: `mcserver/.cursor/skills/arc-migrate-to-core/SKILL.md`
-- Create: `arc-core/.cursor/skills/arc-kotest-mockk/SKILL.md`
-
-- [ ] **Step 1: arc-deploy** — golden rules:
-  - MCP `user-mcserver` first (arc_ops_*, mc_deploy)
-  - `./scripts/mc arc` for JAR, `./scripts/mc deploy` for YAML
-  - Logs via Grafana Loki MCP, not SSH grep
-  - Link: mcserver/AGENTS.md, mcserver/scripts/mcp-server/README.md
-
-- [ ] **Step 2: arc-new-module** — checklist:
-  - Package under `ru/arc/{feature}/`
-  - `*ModuleConfig` + `modules/{feature}.yml`
-  - `PluginModule` + register in ModuleRegistry
-  - Kotest test with `Test*Config`
-  - Link: arc-core/AGENTS.md §Module pattern
-
-- [ ] **Step 3: arc-migrate-to-core** — decision tree from AGENTS (copy as checklist, not prose)
-
-- [ ] **Step 4: arc-kotest-mockk** — FreeSpec, MockK, TestTaskScheduler; forbid JUnit `@Test`, Mockito
-
-- [ ] **Step 5: Update** arc-core/AGENTS.md Skills index with all four + mcfine-cmi-kits
-
-- [ ] **Step 6: Commit** (mcserver + arc-core)
+Superseded in 2026-07. Operations, module scaffolding, arc-core migration,
+Kotest/MockK conventions, and CMI routing now use the single Codex project
+skill `mcserver/.agents/skills/ruscrafting-server-ops/`, its selective references,
+and canonical component `AGENTS.md` files.
 
 ---
 
 ### Task 10: Vendored skill (optional)
 
-**Files:**
-- Create: `arc-core/.cursor/skills/skill-creator/SKILL.md` (copy from anthropics/skills)
-
-- [ ] **Step 1: Fetch** from `https://raw.githubusercontent.com/anthropics/skills/main/skills/skill-creator/SKILL.md`
-
-- [ ] **Step 2: Add** header comment: «Upstream: anthropics/skills — do not edit; update by re-fetch»
-
-- [ ] **Step 3: Create wrapper** `arc-core/.cursor/skills/kotlin-coroutines-arc/SKILL.md`:
-  - `description`: Kotlin coroutines for ARC; use with arc-core scheduling rules
-  - Body: link kotlin-coroutines-expert concepts + **hard rule**: never call Bukkit API from Dispatchers.IO/Default; use Tasks.scheduler for main thread
-
-- [ ] **Step 4: Commit** (optional chunk — skip if user prefers Remote Rule in Cursor UI instead)
+Superseded. Do not vendor generic skills into this repository. Use installed
+Codex skills and keep ARC-specific scheduling constraints in `arc-core/AGENTS.md`.
 
 ---
 

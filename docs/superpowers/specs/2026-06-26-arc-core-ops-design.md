@@ -164,7 +164,7 @@ servers:
     ops_url: http://127.0.0.1:25824
     token_env: ARC_OPS_TOKEN_SURVIVAL
   velocity:
-    ssh_host: YandexCloud
+    ssh_host: velocity
     ops_url: http://127.0.0.1:25825
     token_env: ARC_OPS_TOKEN_VELOCITY
 ```

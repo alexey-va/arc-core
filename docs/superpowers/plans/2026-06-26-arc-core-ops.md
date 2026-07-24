@@ -151,7 +151,7 @@
 - [ ] **Step 1:** Wire OpsHttpModule on init (port 25825 default)
 - [ ] **Step 2:** Register console, reload-paths, online; item routes → 501
 - [ ] **Step 3:** Add `velocity/plugins/proxyarc/modules/ops-http.yml` to mcserver mirror
-- [ ] **Step 4:** Deploy + verify GET /ops/health on YandexCloud
+- [ ] **Step 4:** Deploy + verify GET /ops/health on `velocity`
 
 ### Task 11: MCP velocity tools
 
@@ -175,7 +175,7 @@
 - Delete/Migrate: `ARC/src/main/kotlin/ru/arc/ops/*` (after parity)
 - Modify: `mcserver/scripts/ops/reload-configs.sh` — call OpsClient HTTP first
 
-- [ ] **Step 1:** Verify all MCP tools use HTTP on Gercena + YandexCloud
+- [ ] **Step 1:** Verify all MCP tools use HTTP on Gercena + `velocity`
 - [ ] **Step 2:** reload-configs.sh → curl localhost reload-paths
 - [ ] **Step 3:** Update AGENTS.md in ARC, ProxyARC, mcserver MCP README
 - [ ] **Step 4:** Remove tmux console paths from MCP (keep emergency fallback flag)

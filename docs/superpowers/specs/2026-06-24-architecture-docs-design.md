@@ -74,7 +74,7 @@ Establish a **single canonical architecture vision** for the McFine plugin stack
 - `ARC/src/main/kotlin/ru/arc/commands/arc/COMMANDS.md`
 - `ARC/src/main/kotlin/ru/arc/ops/AGENTS.md`
 - `mcserver/classic/plugins/ARC/AGENTS.md` (runtime)
-- `mcserver/.cursor/skills/mcfine-cmi-kits/SKILL.md`
+- `mcserver/.agents/skills/ruscrafting-server-ops/SKILL.md`
 - `arc-core/docs/superpowers/specs/*.md`
 
 ## `arc-core/AGENTS.md` Outline
@@ -96,7 +96,7 @@ Establish a **single canonical architecture vision** for the McFine plugin stack
    - Runtime YAML → `mcserver/*/plugins/ARC/modules/`
 6. **Module pattern** — `PluginModule`, `*ModuleConfig`, bundled `modules/*.yml`, bootstrap
 7. **Migration status** — Phase A/B/C checklist table (see below)
-8. **Skills index** — where skills live, when to invoke
+8. **Agent workflow** — current Codex skill and canonical references
 9. **Related docs** — mcserver TASKS, runtime AGENTS, GUI.md, ops AGENTS
 
 ## Migration Status Table (in AGENTS.md)
@@ -120,63 +120,18 @@ Establish a **single canonical architecture vision** for the McFine plugin stack
 |-------|--------|---------|---------|
 | `.cursor/rules/*.mdc` | Always | 1–2 screens, non-negotiable | Kotlin-first, MCP-first |
 | `AGENTS.md` | Repo context | Architecture + repo delta | arc-core canon |
-| `.cursor/skills/*/SKILL.md` | On trigger | Multi-step workflow + link to AGENTS | arc-deploy |
+| `.agents/skills/*/SKILL.md` | On trigger | Multi-step workflow + link to AGENTS | ruscrafting-server-ops |
 | `docs/superpowers/specs/` | On demand | Migration design history | redis-design |
 
 **Anti-pattern:** Copying boundary rules into skills or CLAUDE.md — always link to `arc-core/AGENTS.md §Boundary rules`.
 
-## Skills Strategy
+## Skills strategy (superseded)
 
-### Already installed (do not duplicate)
-
-| Source | Skills | Location |
-|--------|--------|----------|
-| obra/superpowers | brainstorming, TDD, verification-before-completion, writing-plans | Claude plugin |
-| mcserver | mcfine-cmi-kits | `.cursor/skills/mcfine-cmi-kits/` |
-| ~/.claude/skills | kotlin-dev, kotlin-dev-rules | Global |
-
-### Vendored from upstream (thin install)
-
-| Source | Skill | Why | Install |
-|--------|-------|-----|---------|
-| anthropics/skills ⭐155k | `skill-creator` | Official skill authoring | Remote rule or copy to `arc-core/.cursor/skills/` |
-| sickn33/antigravity ⭐40k | `kotlin-coroutines-expert` | Coroutines patterns | Wrapper skill + «never Bukkit from async» |
-| anthropics/skills | `mcp-builder` | Extend mcserver MCP | Optional, on demand |
-
-### Rejected as-is
-
-| Skill | Reason |
-|-------|--------|
-| `minecraft-bukkit-pro` (antigravity) | Java/Google Style, MockBukkit — conflicts with Kotlin/Kotest/arc-core boundaries |
-| antigravity full bundle (~1600) | Context noise, poor routing |
-| cursor-handbook (208 components) | Overkill; borrow setup-agent idea only |
-
-### Custom skills to write (McFine domain)
-
-Pattern: follow `mcfine-cmi-kits` — golden rules, links to AGENTS/TASKS, no prose duplication.
-
-```
-mcserver/.cursor/skills/
-├── mcfine-cmi-kits/       ← exists
-├── arc-deploy/            MCP mc_deploy, arc_ops_*, Loki; never SSH for ops
-├── arc-new-module/        Scaffold PluginModule + *ModuleConfig + Kotest test
-└── arc-migrate-to-core/   Decision tree from arc-core/AGENTS.md
-
-arc-core/.cursor/skills/
-└── arc-kotest-mockk/      Kotest + MockK + TestTaskScheduler; no JUnit/Mockito
-```
-
-Each custom skill frontmatter:
-
-```yaml
----
-name: arc-deploy
-description: Deploy ARC/ProxyARC or configs to McFine via MCP and ./scripts/mc.
-  Use when user asks deploy, push to prod, mc arc, mc deploy, or verify on server.
----
-```
-
-Body: ≤60 lines, links to `mcserver/AGENTS.md` and `arc-core/AGENTS.md`.
+The original design proposed several Cursor-specific skills. The implementation
+was consolidated in 2026-07 into one Codex project skill:
+`mcserver/.agents/skills/ruscrafting-server-ops/`. Variant details live in
+progressively disclosed references or canonical component `AGENTS.md` files.
+This removes duplicate skill metadata and keeps boundary rules in this file.
 
 ## Cursor Workspace Routing
 

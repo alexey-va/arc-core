@@ -98,17 +98,14 @@ VelocityArcRuntime.installScheduling(server, this)
 | CachedRepository / xserver | Phase B | framework-design |
 | PlayerProvider / domain events | Phase C | framework-design |
 
-## Skills index
+## Agent workflow
 
-| Skill | Location | When |
-|-------|----------|------|
-| arc-kotest-mockk | `.cursor/skills/arc-kotest-mockk/` | Writing Kotlin tests |
-| arc-new-module | `mcserver/.cursor/skills/arc-new-module/` | New PluginModule feature |
-| arc-migrate-to-core | `mcserver/.cursor/skills/arc-migrate-to-core/` | Move code to arc-core |
-| arc-deploy | `mcserver/.cursor/skills/arc-deploy/` | Deploy JAR/configs to prod |
-| mcfine-cmi-kits | `mcserver/.cursor/skills/mcfine-cmi-kits/` | CMI lootbox kits |
-
-Skills link here — they do **not** duplicate boundary rules.
+The mcserver checkout exposes one Codex project skill:
+`mcserver/.agents/skills/ruscrafting-server-ops/`. Its development reference routes
+new modules, migrations, and Kotlin tests back to this canonical file without
+duplicating these boundary rules. Production deployment remains in the
+mcserver operations reference; CMI kit details remain in the plugin-local
+`classic/plugins/CMI/AGENTS.md`.
 
 ## Related docs
 
