@@ -92,8 +92,11 @@ object TextUtils {
 
     @JvmStatic
     fun centerInLore(s: String, length: Int): String {
-        val spaces = (length - s.length) / 2
-        return " ".repeat(spaces) + s + " ".repeat(spaces)
+        if (length <= s.length) return s
+        val padding = length - s.length
+        val leftPadding = padding / 2
+        val rightPadding = padding - leftPadding
+        return " ".repeat(leftPadding) + s + " ".repeat(rightPadding)
     }
 
     @JvmStatic
@@ -188,6 +191,8 @@ object TextUtils {
     @JvmStatic
     fun splitLoreString(input: String?, maxLength: Int, nSpaces: Int): List<String> {
         if (input == null) return emptyList()
+        require(maxLength > 0) { "maxLength must be positive" }
+        require(nSpaces >= 0) { "nSpaces cannot be negative" }
         val result = mutableListOf<String>()
         var currentLine = StringBuilder()
         var currentFormat = ""
@@ -196,7 +201,8 @@ object TextUtils {
         val words = input.split(" ")
 
         for (word in words) {
-            if (currentLine.length + word.length > maxLength) {
+            val separatorLength = if (isNonEmptyWithoutTags(currentLine)) 1 else 0
+            if (currentLine.isNotEmpty() && currentLine.length + separatorLength + word.length > maxLength) {
                 result.add(currentLine.toString())
                 currentLine = StringBuilder(currentFormat + indent)
             }

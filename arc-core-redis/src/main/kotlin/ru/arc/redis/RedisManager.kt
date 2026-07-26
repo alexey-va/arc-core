@@ -73,6 +73,7 @@ class RedisManager(
 
     private var lastPublishReconnectAttemptMs = 0L
     private var lastPublishReconnectFailureLogMs = 0L
+    private var lastSubscriptionReconnectFailureLogMs = 0L
 
     private val publishReconnectMutex = Mutex()
 
@@ -117,47 +118,116 @@ class RedisManager(
         }
     }
 
+    @Synchronized
     fun connect(connection: RedisConnection) {
         connect(connection.host, connection.port, connection.username, connection.password)
     }
 
+    @Synchronized
     fun connect(
         ip: String,
         port: Int,
         userName: String?,
         password: String?,
     ) {
-        lastConnection = RedisConnection(ip, port, userName, password)
-        val oldExecutor = subscriptionExecutor
+        val connection = RedisConnection(ip, port, userName, password)
+        resetTransport()
+        lastConnection = connection
+        isShuttingDown = false
+        scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+        subscriptionExecutor = newSubscriptionExecutor()
         try {
-            subscriptionExecutor =
-                Executors.newSingleThreadExecutor { r ->
-                    Thread(r, "Redis-Subscription-${System.currentTimeMillis()}").apply {
-                        isDaemon = true
-                    }
-                }
-
-            close()
-            isShuttingDown = false
-            scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-
-            val connection = lastConnection!!
             sub = createPool(connection)
             pub = createPool(connection)
 
             connected = true
+            lastPublishReconnectAttemptMs = 0L
+            lastPublishReconnectFailureLogMs = 0L
+            lastSubscriptionReconnectFailureLogMs = 0L
+            lastPublishNotConnectedLogMs = 0L
             logger.debug("Connected to Redis at {}:{}", ip, port)
-            oldExecutor.shutdownNow()
         } catch (e: Exception) {
             logger.error("Failed to connect to Redis at {}:{}", ip, port, e)
+            runCatching { sub?.close() }
+            runCatching { pub?.close() }
+            sub = null
+            pub = null
             connected = false
-            subscriptionExecutor.shutdownNow()
-            subscriptionExecutor = oldExecutor
             throw e
         }
     }
 
+    private fun newSubscriptionExecutor() =
+        Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "Redis-Subscription-${System.currentTimeMillis()}").apply {
+                isDaemon = true
+            }
+        }
+
+    private fun resetTransport() {
+        connected = false
+        subscriptionActive = false
+        isSubscribing = false
+        scope.cancel()
+        subscriptionJob?.cancel()
+        subscriptionJob = null
+        subscriptionThread?.cancel(true)
+        subscriptionThread = null
+        subscriptionExecutor.shutdownNow()
+        runCatching { sub?.close() }
+            .onFailure { logger.warn("Failed to close Redis subscription connection", it) }
+        runCatching { pub?.close() }
+            .onFailure { logger.warn("Failed to close Redis publish connection", it) }
+        sub = null
+        pub = null
+    }
+
     private fun createPool(connection: RedisConnection): JedisPooled = poolFactory(connection)
+
+    private fun subscriptionConnection(): JedisPooled? {
+        val current = sub
+        if (current != null) {
+            try {
+                if (current.ping() == "PONG") return current
+            } catch (e: Exception) {
+                logger.warn("Redis subscription connection is unavailable; reconnecting", e)
+            }
+            runCatching { current.close() }
+            sub = null
+        }
+
+        val connection = lastConnection ?: return null
+        var replacement: JedisPooled? = null
+        return try {
+            replacement = createPool(connection)
+            check(replacement.ping() == "PONG") { "Redis subscription PING failed" }
+                sub = replacement
+                lastSubscriptionReconnectFailureLogMs = 0L
+                logger.info("Redis subscription connection restored")
+                replacement
+            } catch (e: Exception) {
+                runCatching { replacement?.close() }
+                val now = clockMs()
+                if (
+                    lastSubscriptionReconnectFailureLogMs == 0L ||
+                    now - lastSubscriptionReconnectFailureLogMs >= PUBLISH_NOT_CONNECTED_LOG_INTERVAL_MS
+                ) {
+                    lastSubscriptionReconnectFailureLogMs = now
+                    logger.warn("Redis subscription reconnect failed", e)
+                } else {
+                    logger.debug("Redis subscription reconnect still unavailable: {}", e.message)
+                }
+                null
+        }
+    }
+
+    private fun retrySubscriptionLater() {
+        if (isShuttingDown) return
+        scope.launch {
+            delay(RECONNECT_DELAY_MS)
+            if (!isShuttingDown && connected) init()
+        }
+    }
 
     override fun onPong(message: String) = Unit
 
@@ -257,15 +327,29 @@ class RedisManager(
                 return false
             }
             lastPublishReconnectAttemptMs = now
+            var replacementSub: JedisPooled? = null
+            var replacementPub: JedisPooled? = null
             try {
-                pub?.close()
-                pub = createPool(connection)
-                if (pub?.ping() == "PONG") {
+                if (sub == null) {
+                    replacementSub = createPool(connection)
+                }
+                replacementPub = createPool(connection)
+                if (replacementPub.ping() == "PONG") {
+                    pub?.close()
+                    pub = replacementPub
+                    replacementPub = null
+                    if (replacementSub != null) {
+                        sub = replacementSub
+                        replacementSub = null
+                    }
                     connected = true
                     lastPublishReconnectAttemptMs = 0L
                     lastPublishReconnectFailureLogMs = 0L
                     lastPublishNotConnectedLogMs = 0L
                     logger.info("Redis publish connection restored")
+                    if (channelList.isNotEmpty() && !subscriptionActive && !isSubscribing) {
+                        scope.launch { init() }
+                    }
                     return true
                 }
             } catch (e: Exception) {
@@ -278,6 +362,9 @@ class RedisManager(
                 } else {
                     logger.debug("Redis publish reconnect still unavailable: {}", e.message)
                 }
+            } finally {
+                runCatching { replacementSub?.close() }
+                runCatching { replacementPub?.close() }
             }
             connected = false
             false
@@ -308,15 +395,25 @@ class RedisManager(
 
     override fun saveMapEntries(key: String, vararg keyValuePairs: String?): CompletableFuture<*> {
         if (keyValuePairs.isEmpty()) return CompletableFuture.completedFuture(null)
+        if (keyValuePairs.size % 2 != 0) {
+            return CompletableFuture.failedFuture<Unit>(
+                IllegalArgumentException("Redis hash entries must contain key/value pairs"),
+            )
+        }
 
-        val pubConnection = pub
-        if (!connected || isShuttingDown || pubConnection == null) {
-            return CompletableFuture.completedFuture(null)
+        if (isShuttingDown) {
+            return CompletableFuture.failedFuture<Unit>(
+                IllegalStateException("Cannot save Redis hash '$key': Redis is not connected"),
+            )
         }
 
         return scope
             .async(Dispatchers.IO) {
                 try {
+                    if (!ensurePublishReady()) {
+                        error("Cannot save Redis hash '$key': Redis is not connected")
+                    }
+                    val pubConnection = checkNotNull(pub)
                     val pairs =
                         buildList {
                             for (i in keyValuePairs.indices step 2) {
@@ -333,24 +430,30 @@ class RedisManager(
                 } catch (e: Exception) {
                     if (e is JedisConnectionException) connected = false
                     logger.error("Error saving map entries for key: {}", key, e)
+                    throw e
                 }
             }.asCompletableFuture()
     }
 
     override fun loadMap(key: String): CompletableFuture<Map<String, String>> {
-        val pubConnection = pub
-        if (!connected || isShuttingDown || pubConnection == null) {
-            return CompletableFuture.completedFuture(emptyMap())
+        if (isShuttingDown) {
+            return CompletableFuture.failedFuture(
+                IllegalStateException("Cannot load Redis hash '$key': Redis is not connected"),
+            )
         }
 
         return scope
             .async(Dispatchers.IO) {
                 try {
+                    if (!ensurePublishReady()) {
+                        error("Cannot load Redis hash '$key': Redis is not connected")
+                    }
+                    val pubConnection = checkNotNull(pub)
                     pubConnection.hgetAll(key)
                 } catch (e: Exception) {
                     if (e is JedisConnectionException) connected = false
                     logger.error("Error loading map from key: {}", key, e)
-                    emptyMap()
+                    throw e
                 }
             }.asCompletableFuture()
     }
@@ -358,19 +461,24 @@ class RedisManager(
     override fun loadMapEntries(key: String, vararg mapKeys: String): CompletableFuture<List<String?>> {
         if (mapKeys.isEmpty()) return CompletableFuture.completedFuture(emptyList())
 
-        val pubConnection = pub
-        if (!connected || isShuttingDown || pubConnection == null) {
-            return CompletableFuture.completedFuture(List(mapKeys.size) { null })
+        if (isShuttingDown) {
+            return CompletableFuture.failedFuture(
+                IllegalStateException("Cannot load Redis hash '$key': Redis is not connected"),
+            )
         }
 
         return scope
             .async(Dispatchers.IO) {
                 try {
+                    if (!ensurePublishReady()) {
+                        error("Cannot load Redis hash '$key': Redis is not connected")
+                    }
+                    val pubConnection = checkNotNull(pub)
                     pubConnection.hmget(key, *mapKeys)
                 } catch (e: Exception) {
                     if (e is JedisConnectionException) connected = false
                     logger.error("Error loading map entries from key: {}", key, e)
-                    List(mapKeys.size) { null }
+                    throw e
                 }
             }.asCompletableFuture()
     }
@@ -430,22 +538,11 @@ class RedisManager(
                         return@withLock
                     }
 
-                    val subConnection = sub
+                    val subConnection = subscriptionConnection()
                     if (subConnection == null) {
-                        logger.error("Redis init(): sub connection is null, aborting")
+                        logger.debug("Redis init(): subscription connection unavailable, retrying")
                         isSubscribing = false
-                        return@withLock
-                    }
-
-                    try {
-                        if (subConnection.ping() != "PONG") {
-                            logger.error("Redis init(): PING failed, aborting")
-                            isSubscribing = false
-                            return@withLock
-                        }
-                    } catch (e: Exception) {
-                        logger.error("Redis init(): connection test failed", e)
-                        isSubscribing = false
+                        retrySubscriptionLater()
                         return@withLock
                     }
 
@@ -478,10 +575,7 @@ class RedisManager(
                                 }
 
                                 logger.error("Redis subscription thread exception", e)
-                                Thread.sleep(RECONNECT_DELAY_MS)
-                                if (!isShuttingDown && connected) {
-                                    scope.launch { init() }
-                                }
+                                retrySubscriptionLater()
                             }
                         }
                 }
@@ -490,24 +584,14 @@ class RedisManager(
 
     fun isSubscriptionActive(): Boolean = subscriptionActive
 
+    @Synchronized
     override fun close() {
         if (isShuttingDown) return
 
         isShuttingDown = true
-        connected = false
-        subscriptionActive = false
 
         try {
-            scope.cancel()
-            subscriptionJob?.cancel()
-            subscriptionJob = null
-            subscriptionThread?.cancel(true)
-            subscriptionThread = null
-            subscriptionExecutor.shutdownNow()
-            sub?.close()
-            pub?.close()
-            sub = null
-            pub = null
+            resetTransport()
             channelListeners.clear()
             channelList.clear()
             logger.info("RedisManager closed")

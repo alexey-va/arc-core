@@ -16,17 +16,17 @@ class BukkitTaskScheduler(private val plugin: Plugin) : TaskScheduler {
     override fun runSync(task: Runnable): ScheduledTask =
         trackOneShot({ wrapped -> Bukkit.getScheduler().runTask(plugin, wrapped) }, task)
 
-    override fun runLater(delay: Long, task: Runnable): ScheduledTask =
-        trackOneShot({ wrapped -> Bukkit.getScheduler().runTaskLater(plugin, wrapped, delay) }, task)
+    override fun runLater(delayTicks: Long, task: Runnable): ScheduledTask =
+        trackOneShot({ wrapped -> Bukkit.getScheduler().runTaskLater(plugin, wrapped, delayTicks) }, task)
 
-    override fun runLaterAsync(delay: Long, task: Runnable): ScheduledTask =
-        trackOneShot({ wrapped -> Bukkit.getScheduler().runTaskLaterAsynchronously(plugin, wrapped, delay) }, task)
+    override fun runLaterAsync(delayTicks: Long, task: Runnable): ScheduledTask =
+        trackOneShot({ wrapped -> Bukkit.getScheduler().runTaskLaterAsynchronously(plugin, wrapped, delayTicks) }, task)
 
-    override fun runTimer(delay: Long, period: Long, task: Runnable): ScheduledTask =
-        trackRepeating(Bukkit.getScheduler().runTaskTimer(plugin, task, delay, period))
+    override fun runTimer(delayTicks: Long, periodTicks: Long, task: Runnable): ScheduledTask =
+        trackRepeating(Bukkit.getScheduler().runTaskTimer(plugin, task, delayTicks, periodTicks))
 
-    override fun runTimerAsync(delay: Long, period: Long, task: Runnable): ScheduledTask =
-        trackRepeating(Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, task, delay, period))
+    override fun runTimerAsync(delayTicks: Long, periodTicks: Long, task: Runnable): ScheduledTask =
+        trackRepeating(Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, task, delayTicks, periodTicks))
 
     override fun cancelAll() {
         tasks.forEach { it.cancelTaskOnly() }

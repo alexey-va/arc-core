@@ -6,15 +6,14 @@ import com.openai.models.chat.completions.ChatCompletionMessageParam
 import com.openai.models.chat.completions.ChatCompletionSystemMessageParam
 import com.openai.models.chat.completions.ChatCompletionUserMessageParam
 import org.slf4j.LoggerFactory
-import ru.arc.ai.config.LlmModuleConfig
-import java.util.Optional
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.Executor
 
 data class ChatTurn(val role: String, val content: String)
 
 class SimpleChatService(
     private val llm: OpenRouterLlmClient,
-    private val config: LlmModuleConfig,
+    private val executor: Executor,
 ) {
     private val log = LoggerFactory.getLogger(SimpleChatService::class.java)
 
@@ -24,57 +23,75 @@ class SimpleChatService(
         history: List<ChatTurn>,
         maxTokens: Int,
         temperature: Double,
-    ): CompletableFuture<Optional<String>> {
+    ): CompletableFuture<String?> {
         if (!llm.enabled) {
-            return CompletableFuture.completedFuture(Optional.empty())
+            return CompletableFuture.completedFuture(null)
         }
 
-        return CompletableFuture.supplyAsync {
-            try {
-                val builder =
-                    ChatCompletionCreateParams.builder()
-                        .model(model)
-                        .maxTokens(maxTokens.toLong())
-                        .temperature(temperature)
+        return try {
+            CompletableFuture.supplyAsync(
+                {
+                try {
+                    val builder =
+                        ChatCompletionCreateParams.builder()
+                            .model(model)
+                            .maxCompletionTokens(maxTokens.toLong())
+                            .temperature(temperature)
 
-                if (systemPrompt.isNotBlank()) {
-                    builder.addMessage(
-                        ChatCompletionMessageParam.ofSystem(
-                            ChatCompletionSystemMessageParam.builder()
-                                .content(systemPrompt)
-                                .build(),
-                        ),
-                    )
-                }
-
-                for (turn in history) {
-                    when (turn.role) {
-                        "user" ->
-                            builder.addMessage(
-                                ChatCompletionMessageParam.ofUser(
-                                    ChatCompletionUserMessageParam.builder()
-                                        .content(turn.content)
-                                        .build(),
-                                ),
-                            )
-                        "assistant" ->
-                            builder.addMessage(
-                                ChatCompletionMessageParam.ofAssistant(
-                                    ChatCompletionAssistantMessageParam.builder()
-                                        .content(turn.content)
-                                        .build(),
-                                ),
-                            )
-                        else -> builder.addSystemMessage(turn.content)
+                    if (systemPrompt.isNotBlank()) {
+                        builder.addMessage(
+                            ChatCompletionMessageParam.ofSystem(
+                                ChatCompletionSystemMessageParam.builder()
+                                    .content(systemPrompt)
+                                    .build(),
+                            ),
+                        )
                     }
-                }
 
-                val response = llm.client!!.chat().completions().create(builder.build())
-                Optional.of(response.choices().first().message().content().orElse(""))
-            } catch (e: Exception) {
-                log.error("Chat completion failed", e)
-                Optional.empty()
-            }
+                    for (turn in history) {
+                        when (turn.role) {
+                            "user" ->
+                                builder.addMessage(
+                                    ChatCompletionMessageParam.ofUser(
+                                        ChatCompletionUserMessageParam.builder()
+                                            .content(turn.content)
+                                            .build(),
+                                    ),
+                                )
+                            "assistant" ->
+                                builder.addMessage(
+                                    ChatCompletionMessageParam.ofAssistant(
+                                        ChatCompletionAssistantMessageParam.builder()
+                                            .content(turn.content)
+                                            .build(),
+                                    ),
+                                )
+                            else -> builder.addSystemMessage(turn.content)
+                        }
+                    }
+
+                    val client = checkNotNull(llm.client) { "LLM client is enabled but unavailable" }
+                    client
+                        .chat()
+                        .completions()
+                        .create(builder.build())
+                        .choices()
+                        .firstOrNull()
+                        ?.message()
+                        ?.content()
+                        ?.orElse(null)
+                        ?.trim()
+                        ?.takeIf { it.isNotEmpty() }
+                } catch (e: Exception) {
+                    log.error("Chat completion failed", e)
+                    null
+                }
+                },
+                executor,
+            )
+        } catch (e: RuntimeException) {
+            log.error("Failed to schedule chat completion", e)
+            CompletableFuture.completedFuture(null)
         }
     }
 }

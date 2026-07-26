@@ -1,11 +1,14 @@
 package ru.arc.core
 
 import io.kotest.core.spec.style.FreeSpec
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.shouldBe
 import org.mockbukkit.mockbukkit.MockBukkit
 import org.mockbukkit.mockbukkit.ServerMock
 import ru.arc.paper.player.TestPaperPlugin
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.RejectedExecutionException
+import kotlin.time.Duration.Companion.milliseconds
 
 class BukkitTaskSchedulerTest : FreeSpec({
 
@@ -55,5 +58,24 @@ class BukkitTaskSchedulerTest : FreeSpec({
         scheduler.trackedCount() shouldBe 0
         server.scheduler.performTicks(5)
         counter.get() shouldBe 0
+    }
+
+    "Paper subtick scheduler closes its owned executor" {
+        val subtick = PaperSubtickScheduler(BukkitTaskScheduler(plugin), plugin)
+
+        subtick.close()
+
+        subtick.isSubtickExecutorShutdown() shouldBe true
+    }
+
+    "rejected subtick task is not retained after close" {
+        val subtick = PaperSubtickScheduler(BukkitTaskScheduler(plugin), plugin)
+        subtick.close()
+
+        shouldThrow<RejectedExecutionException> {
+            subtick.runLater(25.milliseconds) {}
+        }
+
+        subtick.subtickTrackedCount() shouldBe 0
     }
 })

@@ -4,6 +4,8 @@ import com.google.gson.Gson
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
@@ -22,9 +24,12 @@ class RedisSyncService<T : Entity>(
     private val channel: String,
     private val entityType: Type,
     private val gson: Gson = Gson(),
+    private val scopeFactory: () -> CoroutineScope = {
+        CoroutineScope(Dispatchers.Default + SupervisorJob())
+    },
 ) : SyncService<T> {
     private val log = LoggerFactory.getLogger(RedisSyncService::class.java)
-    private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private var scope = scopeFactory()
 
     private var updateHandler: (suspend (T) -> Unit)? = null
     private var deleteHandler: (suspend (String) -> Unit)? = null
@@ -66,12 +71,16 @@ class RedisSyncService<T : Entity>(
     }
 
     override fun start() {
+        if (!scope.isActive) {
+            scope = scopeFactory()
+        }
         redis.registerChannelUnique(channel, listener)
         log.debug("Subscribed to sync channel: $channel")
     }
 
     override fun stop() {
         redis.unregisterChannel(channel, listener)
+        scope.cancel()
         log.debug("Unsubscribed from sync channel: $channel")
     }
 

@@ -9,6 +9,7 @@ private val moduleLog = LoggerFactory.getLogger(ModuleRegistry::class.java)
  */
 object ModuleRegistry {
     private val modules = mutableListOf<PluginModule>()
+    private val initializedModules = mutableListOf<PluginModule>()
     private var initialized = false
 
     /** Set before [initAll] for platform-specific console output. */
@@ -17,6 +18,10 @@ object ModuleRegistry {
     fun register(module: PluginModule) {
         if (initialized) {
             moduleLog.error("Cannot register module '{}' after initialization", module.name)
+            return
+        }
+        if (modules.any { it.name == module.name }) {
+            moduleLog.error("Module '{}' is already registered", module.name)
             return
         }
         modules.add(module)
@@ -43,8 +48,15 @@ object ModuleRegistry {
                 val start = System.currentTimeMillis()
                 try {
                     module.init()
+                    initializedModules.add(module)
                     Result(module.name, System.currentTimeMillis() - start, null)
                 } catch (e: Exception) {
+                    try {
+                        module.shutdown()
+                    } catch (cleanupError: Exception) {
+                        e.addSuppressed(cleanupError)
+                        moduleLog.error("Module '${module.name}' cleanup after failed init also failed", cleanupError)
+                    }
                     Result(module.name, System.currentTimeMillis() - start, e)
                 }
             }
@@ -64,7 +76,11 @@ object ModuleRegistry {
     }
 
     fun reloadAll() {
-        val sorted = modules.filter { it.enabled }.sortedBy { it.priority }
+        if (!initialized) {
+            moduleLog.error("Cannot reload ModuleRegistry before initialization")
+            return
+        }
+        val sorted = initializedModules.toList()
         val reporter = lifecycleReporter
         reporter.onReloadStart(sorted.size)
         for (module in sorted) {
@@ -80,7 +96,7 @@ object ModuleRegistry {
     }
 
     fun shutdownAll() {
-        val sorted = modules.filter { it.enabled }.sortedByDescending { it.priority }
+        val sorted = initializedModules.asReversed()
         val reporter = lifecycleReporter
         reporter.onShutdownStart(sorted.size)
         for (module in sorted) {
@@ -92,6 +108,7 @@ object ModuleRegistry {
                 moduleLog.error("Module '${module.name}' shutdown failed", e)
             }
         }
+        initializedModules.clear()
         modules.clear()
         initialized = false
         reporter.onShutdownComplete()
@@ -101,6 +118,7 @@ object ModuleRegistry {
 
     /** Test-only reset. */
     fun resetForTests() {
+        initializedModules.clear()
         modules.clear()
         initialized = false
         lifecycleReporter = NoOpModuleLifecycleReporter

@@ -5,6 +5,7 @@ import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
+import java.util.concurrent.Executors
 
 class OpsLogBufferTest : FreeSpec({
     "OpsLogBuffer" - {
@@ -156,6 +157,21 @@ class OpsHttpServerTest : FreeSpec({
             } finally {
                 server.stop()
             }
+        }
+
+        "should shut down its worker executor on stop" {
+            val executor = Executors.newSingleThreadExecutor()
+            val server =
+                OpsHttpServer.create(
+                    configProvider = { testConfig },
+                    platformInfo = platformInfo,
+                    executorFactory = { executor },
+                )
+            server.start()
+
+            server.stop()
+
+            executor.isShutdown shouldBe true
         }
     }
 })

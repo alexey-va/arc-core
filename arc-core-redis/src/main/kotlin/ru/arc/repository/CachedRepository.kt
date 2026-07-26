@@ -74,6 +74,10 @@ class CachedRepository<T : Entity>(
             registry.removeIf { it.config.id == repo.config.id }
             registry.add(repo)
         }
+
+        internal fun unregister(repo: CachedRepository<*>) {
+            registry.remove(repo)
+        }
     }
 
     /**
@@ -83,21 +87,45 @@ class CachedRepository<T : Entity>(
         log.info("Initializing repository: ${config.id}")
         register(this)
 
-        if (config.loadAllOnStart) {
-            val result = loadAll()
-            if (result.isError) return result.map { }
-        }
-        startBackgroundSync()
+        val result =
+            try {
+                if (config.loadAllOnStart) {
+                    val loadResult = loadAll()
+                    if (loadResult.isError) {
+                        loadResult.map { }
+                    } else {
+                        startServices()
+                        RepoResult.success(Unit)
+                    }
+                } else {
+                    startServices()
+                    RepoResult.success(Unit)
+                }
+            } catch (e: Exception) {
+                RepoResult.error("Failed to initialize repository '${config.id}': ${e.message}", e)
+            }
 
-        // Start cleanup job if enabled
+        if (result.isError) {
+            cleanupAfterFailedInit()
+        }
+
+        return result
+    }
+
+    private fun startServices() {
+        startBackgroundSync()
         if (config.enableCleanup) {
             startCleanupJob()
         }
-
-        // Subscribe to remote updates
         setupSyncListeners()
+    }
 
-        return RepoResult.success(Unit)
+    private fun cleanupAfterFailedInit() {
+        saveJob?.cancel()
+        cleanupJob?.cancel()
+        runCatching { syncService?.stop() }
+        unregister(this)
+        scope.cancel()
     }
 
     /**
@@ -106,16 +134,15 @@ class CachedRepository<T : Entity>(
     suspend fun shutdown() {
         log.info("Shutting down repository: ${config.id}")
 
-        // Cancel jobs
         saveJob?.cancel()
         cleanupJob?.cancel()
-        syncService?.stop()
-
-        // Final save
-        saveDirty()
-
-        // Cancel scope
-        scope.cancel()
+        try {
+            syncService?.stop()
+            saveDirty()
+        } finally {
+            unregister(this)
+            scope.cancel()
+        }
     }
 
     // =========================================================================
@@ -155,21 +182,33 @@ class CachedRepository<T : Entity>(
             return RepoResult.success(it)
         }
 
-        // Create new
-        log.debug("[{}] getOrCreate: no entity found for {}, creating new", config.id, id)
-        val entity = factory()
-        val saveResult = save(entity)
-        return saveResult.map { entity }
+        // Concurrent callers share the storage load above. The cache performs
+        // the final creation atomically, so the factory runs at most once.
+        var created = false
+        val entity =
+            try {
+                cache.getOrPut(id) {
+                    factory().also {
+                        require(it.id() == id) {
+                            "Created entity id '${it.id()}' does not match requested id '$id'"
+                        }
+                        created = true
+                    }
+                }
+            } catch (e: Exception) {
+                return RepoResult.error("Failed to create entity '$id': ${e.message}", e)
+            }
+        updateAccessTime(id)
+        if (created) {
+            log.debug("[{}] getOrCreate: created new entity {}", config.id, id)
+            entityUpdates.tryEmit(id to entity)
+            updateAllFlow()
+        }
+        return RepoResult.success(entity)
     }
 
     override suspend fun save(entity: T): RepoResult<Unit> {
-        cache.put(entity)
-        updateAccessTime(entity.id())
-
-        // Notify observers
-        entityUpdates.tryEmit(entity.id() to entity)
-        updateAllFlow()
-
+        markDirty(entity)
         return RepoResult.success(Unit)
     }
 
@@ -247,19 +286,22 @@ class CachedRepository<T : Entity>(
         if (dirty.isEmpty()) return RepoResult.success(Unit)
 
         log.debug("Saving ${dirty.size} dirty entities for ${config.id}")
+        // Clear the snapshot before the asynchronous write. If code mutates an
+        // entity while the write is in flight, markDirty() will add it back and
+        // the newer state will be persisted by the next pass.
+        dirty.forEach { cache.markClean(it.id()) }
 
         val result = withRetry {
             storage.saveMany(dirty)
         }
 
         if (result.isSuccess) {
-            dirty.forEach { cache.markClean(it.id()) }
-
             // Broadcast updates
             dirty.forEach { entity ->
                 syncService?.broadcastUpdate(entity)
             }
         } else {
+            dirty.forEach { cache.markDirty(it.id()) }
             log.warn("Failed to save dirty entities: ${(result as RepoResult.Error).message}")
         }
 
@@ -269,13 +311,25 @@ class CachedRepository<T : Entity>(
     /**
      * Load all entities from storage.
      */
-    suspend fun loadAll(): RepoResult<Unit> {
+    suspend fun loadAll(): RepoResult<Unit> = mutex.withLock {
         log.debug("Loading all entities for ${config.id}")
 
         val result = storage.loadAll()
 
-        return result.map { entities ->
+        result.map { entities ->
+            val loadedIds = entities.keys
+            val staleIds =
+                cache.keys().filter { id ->
+                    id !in loadedIds && !cache.isDirty(id)
+                }
+            staleIds.forEach { id ->
+                cache.remove(id)
+                lastAccess.remove(id)
+                entityUpdates.tryEmit(id to null)
+            }
+
             entities.forEach { (_, entity) ->
+                if (cache.isDirty(entity.id())) return@forEach
                 cache.put(entity)
                 cache.markClean(entity.id())
                 updateAccessTime(entity.id())
@@ -302,6 +356,8 @@ class CachedRepository<T : Entity>(
     fun markDirty(entity: T) {
         cache.put(entity)
         updateAccessTime(entity.id())
+        entityUpdates.tryEmit(entity.id() to entity)
+        updateAllFlow()
     }
 
     /**
@@ -533,4 +589,3 @@ data class CacheStats(
     val dirtyCount: Int,
     val contextCount: Int
 )
-

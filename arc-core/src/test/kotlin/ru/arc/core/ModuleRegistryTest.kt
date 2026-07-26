@@ -71,5 +71,86 @@ class ModuleRegistryTest : FreeSpec({
             completedOk shouldBe 1
             ModuleRegistry.shutdownAll()
         }
+
+        "should clean up a failed module once and exclude it from later lifecycle calls" {
+            var failedShutdowns = 0
+            var failedReloads = 0
+            var healthyShutdowns = 0
+            var healthyReloads = 0
+            val failed =
+                object : PluginModule {
+                    override val name = "failed"
+                    override fun init() {
+                        error("boom")
+                    }
+
+                    override fun reload() {
+                        failedReloads++
+                    }
+
+                    override fun shutdown() {
+                        failedShutdowns++
+                    }
+                }
+            val healthy =
+                object : PluginModule {
+                    override val name = "healthy"
+                    override fun init() {}
+
+                    override fun reload() {
+                        healthyReloads++
+                    }
+
+                    override fun shutdown() {
+                        healthyShutdowns++
+                    }
+                }
+
+            ModuleRegistry.registerAll(failed, healthy)
+            ModuleRegistry.initAll()
+            ModuleRegistry.reloadAll()
+            ModuleRegistry.shutdownAll()
+
+            failedShutdowns shouldBe 1
+            failedReloads shouldBe 0
+            healthyReloads shouldBe 1
+            healthyShutdowns shouldBe 1
+        }
+
+        "should ignore duplicate module names" {
+            var initializedCount = 0
+            fun module() =
+                object : PluginModule {
+                    override val name = "same-name"
+                    override fun init() {
+                        initializedCount++
+                    }
+
+                    override fun shutdown() {}
+                }
+
+            ModuleRegistry.registerAll(module(), module())
+            ModuleRegistry.getModules() shouldHaveSize 1
+            ModuleRegistry.initAll()
+            initializedCount shouldBe 1
+            ModuleRegistry.shutdownAll()
+        }
+
+        "should not shut down modules before initialization" {
+            var shutdowns = 0
+            ModuleRegistry.register(
+                object : PluginModule {
+                    override val name = "not-started"
+                    override fun init() {}
+                    override fun shutdown() {
+                        shutdowns++
+                    }
+                },
+            )
+
+            ModuleRegistry.shutdownAll()
+
+            shutdowns shouldBe 0
+        }
     }
 })

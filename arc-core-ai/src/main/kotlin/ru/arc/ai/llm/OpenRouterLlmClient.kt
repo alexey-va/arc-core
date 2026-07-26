@@ -8,7 +8,7 @@ import java.net.InetSocketAddress
 import java.net.Proxy
 import java.time.Duration
 
-class OpenRouterLlmClient private constructor(
+class OpenRouterLlmClient internal constructor(
     val config: LlmModuleConfig,
     val client: OpenAIClient?,
 ) {

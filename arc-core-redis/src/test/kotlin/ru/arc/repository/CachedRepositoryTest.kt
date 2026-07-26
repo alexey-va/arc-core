@@ -73,6 +73,20 @@ class CachedRepositoryTest {
             }
 
         @Test
+        fun `markDirty records a mutated cached entity synchronously`() =
+            runTest {
+                val entity = TestEntity("id1", "initial")
+                repo.save(entity)
+                repo.saveDirty()
+                entity.value = "updated"
+
+                repo.markDirty(entity)
+
+                assertEquals("updated", repo.getNow("id1")?.value)
+                assertTrue(repo.getStats().dirtyCount > 0)
+            }
+
+        @Test
         fun `get returns null for missing entity`() =
             runTest {
                 val result = repo.get("non_existent")
@@ -230,6 +244,22 @@ class CachedRepositoryTest {
                 storage.failOnSave = true
 
                 repo.saveDirty()
+
+                assertEquals(1, repo.getStats().dirtyCount)
+            }
+
+        @Test
+        fun `changes made during save remain dirty for the next pass`() =
+            runTest {
+                val entity = TestEntity("id1", "initial")
+                repo.save(entity)
+                storage.saveDelay = 100
+
+                val firstSave = launch { repo.saveDirty() }
+                delay(20)
+                entity.value = "changed-during-save"
+                repo.markDirty(entity)
+                firstSave.join()
 
                 assertEquals(1, repo.getStats().dirtyCount)
             }
@@ -606,6 +636,29 @@ class CachedRepositoryTest {
                 repo.loadAll()
 
                 assertEquals(0, repo.getStats().dirtyCount)
+            }
+
+        @Test
+        fun `loadAll removes clean cached entities missing from storage`() =
+            runTest {
+                storage.put(TestEntity("stale", "old"))
+                repo.loadAll()
+                storage.clear()
+
+                repo.loadAll()
+
+                assertNull(repo.getNow("stale"))
+            }
+
+        @Test
+        fun `loadAll preserves dirty local entities missing from storage`() =
+            runTest {
+                repo.save(TestEntity("local", "unsaved"))
+
+                repo.loadAll()
+
+                assertEquals("unsaved", repo.getNow("local")?.value)
+                assertEquals(1, repo.getStats().dirtyCount)
             }
 
         @Test

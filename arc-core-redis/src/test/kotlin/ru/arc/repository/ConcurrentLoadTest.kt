@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.time.Duration.Companion.milliseconds
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -123,5 +124,30 @@ class ConcurrentLoadTest {
                 val repoResult = result.await()
                 assertTrue(repoResult.isError)
             }
+        }
+
+    @Test
+    fun `concurrent getOrCreate calls invoke factory once`() =
+        runTest {
+            repo.init()
+            storage.loadDelay = 50.milliseconds.inWholeMilliseconds
+            val creations = AtomicInteger()
+
+            val results =
+                (1..10).map {
+                    async {
+                        repo.getOrCreate("new-id") {
+                            creations.incrementAndGet()
+                            TestEntity("new-id", "created")
+                        }
+                    }
+                }.awaitAll()
+
+            results.forEach {
+                assertTrue(it.isSuccess)
+                assertEquals("created", it.getOrNull()?.value)
+            }
+            assertEquals(1, creations.get())
+            assertEquals(1, storage.loadCount)
         }
 }

@@ -11,7 +11,7 @@ object Tasks {
         cancelPrevious: Boolean = true,
     ) {
         if (cancelPrevious) {
-            installed?.cancelAll()
+            installed?.close()
         }
         installed = scheduler
     }
@@ -25,15 +25,17 @@ object Tasks {
                 )
 
     fun reset() {
+        installed?.close()
         installed = null
     }
 
     inline fun <T> withScheduler(testScheduler: TaskScheduler, block: () -> T): T {
         val previous = installed
-        install(testScheduler)
+        install(testScheduler, cancelPrevious = false)
         return try {
             block()
         } finally {
+            testScheduler.close()
             if (previous != null) {
                 install(previous, cancelPrevious = false)
             } else {

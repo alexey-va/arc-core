@@ -150,7 +150,7 @@ class ConcurrentDirtyTrackingCache<T : Entity> : DirtyTrackingCache<T> {
     }
 
     override fun getOrPut(id: String, factory: () -> T): T {
-        return map.getOrPut(id) {
+        return map.computeIfAbsent(id) {
             factory().also { dirtySet.add(it.id()) }
         }
     }
@@ -173,4 +173,3 @@ class ConcurrentDirtyTrackingCache<T : Entity> : DirtyTrackingCache<T> {
 
     override fun clearDirtyFlags() = dirtySet.clear()
 }
-

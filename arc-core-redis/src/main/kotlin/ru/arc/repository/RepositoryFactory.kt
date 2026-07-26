@@ -49,6 +49,6 @@ inline fun <reified T : Entity> redisRepo(
         scope = scope,
     )
 
-    runBlocking { repo.init() }
+    runBlocking { repo.init().getOrThrow() }
     return repo
 }

@@ -8,22 +8,39 @@ import org.slf4j.LoggerFactory
 import ru.arc.ai.config.LlmModuleConfig
 import ru.arc.redis.ChannelListener
 import ru.arc.redis.RedisOperations
+import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
 
 class ToolRpcServer(
     private val localServerName: String,
     private val redis: RedisOperations,
     private val config: LlmModuleConfig,
     private val executors: Map<String, ToolExecutor>,
-) : ChannelListener {
+) : ChannelListener,
+    AutoCloseable {
 
     private val gson = Gson()
     private val log = LoggerFactory.getLogger(ToolRpcServer::class.java)
+    private val started = AtomicBoolean()
 
     fun start() {
-        redis.registerChannelUnique(config.toolInvokeChannel, this)
+        if (!started.compareAndSet(false, true)) return
+        try {
+            redis.registerChannelUnique(config.toolInvokeChannel, this)
+        } catch (error: Exception) {
+            started.set(false)
+            throw error
+        }
+    }
+
+    override fun close() {
+        if (started.compareAndSet(true, false)) {
+            redis.unregisterChannel(config.toolInvokeChannel, this)
+        }
     }
 
     override fun consume(channel: String, message: String, originServer: String) {
+        if (!started.get()) return
         val request =
             runCatching { gson.fromJson(message, ToolInvokeRequest::class.java) }.getOrNull() ?: return
         if (!shouldHandle(request)) return
@@ -58,10 +75,13 @@ class ToolRpcServer(
     }
 
     private fun shouldHandle(request: ToolInvokeRequest): Boolean {
-        val targets = request.targetServers?.toSet()
-        if (targets == null) return true
-        if (targets.contains("__none__")) return false
-        return targets.contains(localServerName)
+        val targets =
+            request.targetServers
+                ?.map { it.trim().lowercase(Locale.ROOT) }
+                ?.toSet()
+                ?: return true
+        if ("__none__" in targets) return false
+        return localServerName.trim().lowercase(Locale.ROOT) in targets
     }
 
     private fun publishError(request: ToolInvokeRequest, error: String) {

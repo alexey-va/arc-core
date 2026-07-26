@@ -24,6 +24,7 @@ import org.snakeyaml.engine.v2.nodes.Tag
 import org.slf4j.LoggerFactory
 import ru.arc.util.TextUtils
 import java.io.File
+import java.io.StringReader
 import java.io.StringWriter
 import java.nio.file.Files
 import java.nio.file.Path
@@ -152,6 +153,23 @@ open class Config(
         comment: String? = null,
     ) {
         comment?.let { setComment(path, it) }
+        setValue(path, value)
+    }
+
+    /**
+     * Replaces one config subtree with a YAML-safe scalar, map, or list.
+     *
+     * Use this for already validated structured content. Unsupported object
+     * types are rejected instead of being silently stringified.
+     */
+    fun setStructured(
+        path: String,
+        value: Any,
+    ) {
+        require(path.isNotBlank() && path.split('.').none { it.isBlank() }) {
+            "Config path must contain non-empty dot-separated keys"
+        }
+        validateStructuredValue(value, path)
         setValue(path, value)
     }
 
@@ -749,39 +767,35 @@ open class Config(
     }
 
     open fun save() {
-        // applyComments mutates node metadata, so it needs the write lock.
-        // Serialization is read-only and also runs under the write lock here
-        // (downgrading would require a lock exchange which ReentrantReadWriteLock doesn't support).
-        val yaml =
-            nodeLock.write {
-                try {
-                    applyComments(rootNode, "")
-                    val writer = StringWriter()
-                    val streamWriter =
-                        object : StreamDataWriter {
-                            override fun write(str: String) = writer.write(str)
-
-                            override fun write(
-                                str: String,
-                                off: Int,
-                                len: Int,
-                            ) = writer.write(str, off, len)
-
-                            override fun flush() = writer.flush()
-                        }
-                    val emitter = Emitter(dumpSettings, streamWriter)
-                    val serialize = Serialize(dumpSettings)
-                    for (event in serialize.serializeOne(rootNode)) emitter.emit(event)
-                    writer.toString()
-                } catch (e: Exception) {
-                    configLog.error("Could not serialize config: {}", filePath, e)
-                    return@save
-                }
-            }
         try {
-            folder.resolve(filePath).toFile().writeText(yaml)
+            saveStrict()
         } catch (e: Exception) {
-            configLog.error("Could not write config file: {}", filePath, e)
+            configLog.error("Could not save config file: {}", filePath, e)
+        }
+    }
+
+    /**
+     * Atomically persists the current tree and propagates failures to callers.
+     */
+    fun saveStrict() {
+        val yaml = serializeYaml()
+        Files.createDirectories(folder)
+        val target = folder.resolve(filePath)
+        val temp = Files.createTempFile(folder, ".${target.fileName}-", ".tmp")
+        try {
+            Files.writeString(temp, yaml)
+            try {
+                Files.move(
+                    temp,
+                    target,
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING,
+                )
+            } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING)
+            }
+        } finally {
+            Files.deleteIfExists(temp)
         }
     }
 
@@ -800,7 +814,10 @@ open class Config(
             if (parseContent != content) {
                 configLog.debug("Sanitized YAML before parse: {} ({} -> {} chars)", filePath, content.length, parseContent.length)
             }
-            val node = Compose(loadSettings).composeString(parseContent).orElse(null)
+            val node =
+                Compose(loadSettings)
+                    .composeReader(SnakeYamlEngineStringReader(parseContent))
+                    .orElse(null)
             if (node is MappingNode) node else createMappingNode(mutableListOf())
         } catch (e: Exception) {
             configLog.error("Could not load config: {}", filePath, e)
@@ -854,6 +871,53 @@ open class Config(
         newTuples.add(NodeTuple(createScalarNode(finalKey), createNodeForValue(value)))
         current.value.clear()
         current.value.addAll(newTuples)
+    }
+
+    private fun serializeYaml(): String =
+        nodeLock.write {
+            applyComments(rootNode, "")
+            val writer = StringWriter()
+            val streamWriter =
+                object : StreamDataWriter {
+                    override fun write(str: String) = writer.write(str)
+
+                    override fun write(
+                        str: String,
+                        off: Int,
+                        len: Int,
+                    ) = writer.write(str, off, len)
+
+                    override fun flush() = writer.flush()
+                }
+            val emitter = Emitter(dumpSettings, streamWriter)
+            val serialize = Serialize(dumpSettings)
+            for (event in serialize.serializeOne(rootNode)) emitter.emit(event)
+            writer.toString()
+        }
+
+    private fun validateStructuredValue(
+        value: Any,
+        path: String,
+    ) {
+        when (value) {
+            is String, is Int, is Long, is Double, is Float, is Boolean -> Unit
+            is Map<*, *> ->
+                value.forEach { (key, nested) ->
+                    require(key is String && key.isNotBlank()) {
+                        "Config map at $path must use non-empty string keys"
+                    }
+                    require(nested != null) { "Config value at $path.$key must not be null" }
+                    validateStructuredValue(nested, "$path.$key")
+                }
+            is List<*> ->
+                value.forEachIndexed { index, nested ->
+                    require(nested != null) { "Config value at $path[$index] must not be null" }
+                    validateStructuredValue(nested, "$path[$index]")
+                }
+            else -> throw IllegalArgumentException(
+                "Unsupported config value at $path: ${value::class.qualifiedName}",
+            )
+        }
     }
 
     private fun removeKeyFromNode(
@@ -965,13 +1029,8 @@ open class Config(
                 strict ?: (node.value.lowercase() == "yes")
             }
 
-            else -> {
-                stripYamlEnginePadding(node.value)
-            }
+            else -> node.value
         }
-
-    /** Removes parse-time padding inserted by [padSupplementaryCodePointsForYamlEngine]. */
-    private fun stripYamlEnginePadding(value: String): String = value.replace(YAML_ENGINE_PADDING, "")
 
     private fun convertNodeToMap(node: MappingNode): Map<String, Any?> =
         buildMap {
@@ -1075,7 +1134,7 @@ open class Config(
  * Prepares YAML text for SnakeYAML Engine parsing.
  *
  * - Normalizes MiniMessage hex shorthand `<#RRGGBB>` → `<color:#RRGGBB>` (parser bug after UTF-8 text).
- * - Appends a space when content ends with an unpaired UTF-16 high surrogate (truncated emoji).
+ * - Replaces unpaired UTF-16 surrogates from truncated input with spaces.
  */
 internal fun prepareYamlContentForParsing(content: String): String {
     if (content.isEmpty()) return content
@@ -1084,7 +1143,6 @@ internal fun prepareYamlContentForParsing(content: String): String {
             "<color:#${match.groupValues[1]}>"
         }
     normalized = sanitizeUnpairedSurrogates(normalized)
-    normalized = padSupplementaryCodePointsForYamlEngine(normalized)
     if (Character.isHighSurrogate(normalized.last())) {
         normalized += ' '
     }
@@ -1092,23 +1150,19 @@ internal fun prepareYamlContentForParsing(content: String): String {
 }
 
 /**
- * SnakeYAML Engine [StreamReader] uses a fixed char window (~1024). When it ends on a UTF-16
- * high surrogate mid-file, [StringReader.read] throws [IndexOutOfBoundsException] (emoji in flow scalars).
- * A zero-width space after each supplementary character avoids the edge without visible lore changes.
+ * SnakeYAML Engine 3.0.1 allocates a buffer one character larger than its configured window, then
+ * calls `Reader.read(char[])`. If that fills the extra slot with a high surrogate, the engine tries
+ * to append its low surrogate past the end of the array. Limit bulk reads by one character so the
+ * engine's reserved slot remains available; one-character continuation reads are left untouched.
  */
-internal fun padSupplementaryCodePointsForYamlEngine(content: String): String {
-    if (content.isEmpty()) return content
-    val out = StringBuilder(content.length + 32)
-    var i = 0
-    while (i < content.length) {
-        val cp = content.codePointAt(i)
-        out.appendCodePoint(cp)
-        if (cp > 0xFFFF) {
-            out.append(YAML_ENGINE_PADDING)
-        }
-        i += Character.charCount(cp)
-    }
-    return out.toString()
+private class SnakeYamlEngineStringReader(
+    content: String,
+) : StringReader(content) {
+    override fun read(
+        buffer: CharArray,
+        offset: Int,
+        length: Int,
+    ): Int = super.read(buffer, offset, if (length > 1) length - 1 else length)
 }
 
 /** Strips lone UTF-16 surrogates that break SnakeYAML Engine on some large files. */
@@ -1144,7 +1198,6 @@ fun sanitizeUnpairedSurrogates(content: String): String {
 }
 
 private val MINIMESSAGE_HEX_SHORTHAND = Regex("""<#([0-9A-Fa-f]{6})>""")
-private const val YAML_ENGINE_PADDING = "\u200B"
 
 // ── CachedConfigValue ──────────────────────────────────────────────────────────
 

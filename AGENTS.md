@@ -117,7 +117,7 @@ mcserver operations reference; CMI kit details remain in the plugin-local
 | `ProxyARC/AGENTS.md` | Velocity-specific delta |
 | `mcserver/AGENTS.md` | Deploy, MCP, server roles |
 | `ARC/src/main/kotlin/ru/arc/gui/GUI.md` | GuiDsl patterns |
-| `ARC/src/main/kotlin/ru/arc/ops/AGENTS.md` | Ops HTTP, CmiItemCodec |
+| `ARC/src/main/kotlin/ru/arc/ops/AGENTS.md` | Ops HTTP, CMI kits API |
 
 ## Build
 

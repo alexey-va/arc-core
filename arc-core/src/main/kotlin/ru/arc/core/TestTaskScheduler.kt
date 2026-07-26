@@ -20,17 +20,17 @@ class TestTaskScheduler(
 
     override fun runSync(task: Runnable): ScheduledTask = scheduleImmediate(task)
 
-    override fun runLater(delay: Long, task: Runnable): ScheduledTask =
-        scheduleDelayed(TickConstants.ticksToMillis(delay), task)
+    override fun runLater(delayTicks: Long, task: Runnable): ScheduledTask =
+        scheduleDelayed(TickConstants.ticksToMillis(delayTicks), task)
 
-    override fun runLaterAsync(delay: Long, task: Runnable): ScheduledTask =
-        scheduleDelayed(TickConstants.ticksToMillis(delay), task)
+    override fun runLaterAsync(delayTicks: Long, task: Runnable): ScheduledTask =
+        scheduleDelayed(TickConstants.ticksToMillis(delayTicks), task)
 
-    override fun runTimer(delay: Long, period: Long, task: Runnable): ScheduledTask =
-        scheduleTimer(TickConstants.ticksToMillis(delay), TickConstants.ticksToMillis(period), task)
+    override fun runTimer(delayTicks: Long, periodTicks: Long, task: Runnable): ScheduledTask =
+        scheduleTimer(TickConstants.ticksToMillis(delayTicks), TickConstants.ticksToMillis(periodTicks), task)
 
-    override fun runTimerAsync(delay: Long, period: Long, task: Runnable): ScheduledTask =
-        scheduleTimer(TickConstants.ticksToMillis(delay), TickConstants.ticksToMillis(period), task)
+    override fun runTimerAsync(delayTicks: Long, periodTicks: Long, task: Runnable): ScheduledTask =
+        scheduleTimer(TickConstants.ticksToMillis(delayTicks), TickConstants.ticksToMillis(periodTicks), task)
 
     override fun runLater(duration: Duration, task: Runnable): ScheduledTask =
         scheduleDelayed(durationToMillis(duration), task)

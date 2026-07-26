@@ -102,9 +102,9 @@
 - Modify: `ARC/build.gradle.kts` — depend on arc-core-ops-paper
 - Modify: `ARC/src/main/kotlin/ru/arc/ops/OpsHttpModule.kt` — delegate to PaperOpsModule
 
-- [ ] **Step 1:** Copy/adapt `OpsItemHandlers`, `CmiItemCodec`, `ItemPresets` into paper module
+- [ ] **Step 1:** Copy/adapt `OpsItemHandlers`, `OpsCmiKitHandlers`, `ItemPresets` into paper module
 - [ ] **Step 2:** Port existing `OpsHttpTest` to run against PaperOpsModule
-- [ ] **Step 3:** Keep `ru.arc.ops` as deprecated forwarding layer (one release)
+- [ ] **Step 3:** Switch ARC to the new module and delete the superseded implementation
 - [ ] **Step 4:** `./gradlew test` in ARC — PASS
 
 ---

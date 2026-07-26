@@ -65,15 +65,18 @@ class InMemoryRedis(
     }
 
     override fun saveMapEntries(key: String, vararg keyValuePairs: String?): CompletableFuture<*> {
+        if (keyValuePairs.size % 2 != 0) {
+            return CompletableFuture.failedFuture<Unit>(
+                IllegalArgumentException("Redis hash entries must contain key/value pairs"),
+            )
+        }
         val entries = mutableMapOf<String, String?>()
-        var i = 0
-        while (i < keyValuePairs.size - 1) {
+        for (i in keyValuePairs.indices step 2) {
             val mapKey = keyValuePairs[i]
-            val value = keyValuePairs[i + 1]
+            val value = keyValuePairs.getOrNull(i + 1)
             if (mapKey != null) {
                 entries[mapKey] = value
             }
-            i += 2
         }
         saveOperations.add(SaveOperation(key, entries))
 
@@ -139,4 +142,6 @@ class InMemoryRedis(
     }
 
     fun getPublishedMessages(): List<PublishedMessage> = publishedMessages.toList()
+
+    fun listenerCount(channel: String): Int = channelListeners[channel]?.size ?: 0
 }

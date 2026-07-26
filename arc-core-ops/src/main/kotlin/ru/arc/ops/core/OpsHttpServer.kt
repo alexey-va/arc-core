@@ -6,6 +6,7 @@ import ru.arc.util.Logging
 import java.net.InetSocketAddress
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 /**
@@ -14,8 +15,14 @@ import java.util.concurrent.Executors
 class OpsHttpServer(
     private val configProvider: () -> OpsHttpConfig,
     private val router: OpsRouter,
+    private val executorFactory: (Int) -> ExecutorService = { threadPoolSize ->
+        Executors.newFixedThreadPool(threadPoolSize) { runnable ->
+            Thread(runnable, "arc-ops-http").apply { isDaemon = true }
+        }
+    },
 ) {
     private var httpServer: HttpServer? = null
+    private var executor: ExecutorService? = null
 
     val actualPort: Int
         get() = httpServer?.address?.port ?: configProvider().bindPort
@@ -30,11 +37,16 @@ class OpsHttpServer(
         val address = InetSocketAddress(cfg.bindHost, cfg.bindPort)
         val server = HttpServer.create(address, 0)
         server.createContext("/ops") { exchange -> handle(exchange) }
-        server.executor =
-            Executors.newFixedThreadPool(cfg.threadPoolSize) { runnable ->
-                Thread(runnable, "arc-ops-http").apply { isDaemon = true }
-            }
-        server.start()
+        val newExecutor = executorFactory(cfg.threadPoolSize)
+        server.executor = newExecutor
+        try {
+            server.start()
+        } catch (e: Exception) {
+            newExecutor.shutdownNow()
+            server.stop(0)
+            throw e
+        }
+        executor = newExecutor
         httpServer = server
         Logging.info(
             "Ops HTTP listening on {}:{} (capabilities={})",
@@ -50,6 +62,8 @@ class OpsHttpServer(
     fun stop() {
         httpServer?.stop(0)
         httpServer = null
+        executor?.shutdownNow()
+        executor = null
     }
 
     internal fun handle(exchange: HttpExchange) {
@@ -91,10 +105,16 @@ class OpsHttpServer(
             configProvider: () -> OpsHttpConfig,
             platformInfo: OpsPlatformInfoProvider,
             consolePort: OpsConsolePort? = null,
+            executorFactory: (Int) -> ExecutorService = { threadPoolSize ->
+                Executors.newFixedThreadPool(threadPoolSize) { runnable ->
+                    Thread(runnable, "arc-ops-http").apply { isDaemon = true }
+                }
+            },
         ): OpsHttpServer =
             OpsHttpServer(
                 configProvider = configProvider,
                 router = OpsRouter.createStandard(platformInfo, consolePort),
+                executorFactory = executorFactory,
             )
     }
 

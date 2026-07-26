@@ -7,7 +7,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 /** Platform-neutral task scheduling (delays/periods in Minecraft ticks, 50 ms each). */
-interface TaskScheduler {
+interface TaskScheduler : AutoCloseable {
     fun runAsync(task: Runnable): ScheduledTask
 
     fun runSync(task: Runnable): ScheduledTask
@@ -21,6 +21,10 @@ interface TaskScheduler {
     fun runTimerAsync(delayTicks: Long, periodTicks: Long, task: Runnable): ScheduledTask
 
     fun cancelAll()
+
+    override fun close() {
+        cancelAll()
+    }
 }
 
 interface ScheduledTask {
@@ -82,13 +86,19 @@ class ExecutorTaskScheduler(
                 } finally {
                     if (!repeating) handle.detach()
                 }
-            }
-        handle.future =
-            if (repeating) {
-                executor.scheduleAtFixedRate(runner, delayMs, periodMs, TimeUnit.MILLISECONDS)
-            } else {
-                executor.schedule(runner, delayMs, TimeUnit.MILLISECONDS)
-            }
+        }
+        try {
+            val future =
+                if (repeating) {
+                    executor.scheduleAtFixedRate(runner, delayMs, periodMs, TimeUnit.MILLISECONDS)
+                } else {
+                    executor.schedule(runner, delayMs, TimeUnit.MILLISECONDS)
+                }
+            handle.attachFuture(future)
+        } catch (e: RuntimeException) {
+            handle.detach()
+            throw e
+        }
         return handle
     }
 
@@ -101,7 +111,7 @@ class ExecutorTaskScheduler(
         private val removeFromRegistry: (ExecutorScheduledTask) -> Unit,
     ) : ScheduledTask {
         @Volatile
-        var future: java.util.concurrent.ScheduledFuture<*>? = null
+        private var future: java.util.concurrent.ScheduledFuture<*>? = null
 
         @Volatile
         private var cancelled = false
@@ -112,18 +122,29 @@ class ExecutorTaskScheduler(
         override val isCancelled: Boolean
             get() = cancelled
 
+        @Synchronized
+        fun attachFuture(scheduledFuture: java.util.concurrent.ScheduledFuture<*>) {
+            future = scheduledFuture
+            if (cancelled) {
+                scheduledFuture.cancel(false)
+            }
+        }
+
+        @Synchronized
         fun detach() {
             if (detached) return
             detached = true
             removeFromRegistry(this)
         }
 
+        @Synchronized
         override fun cancel() {
             cancelled = true
             future?.cancel(false)
             detach()
         }
 
+        @Synchronized
         fun cancelTaskOnly() {
             cancelled = true
             future?.cancel(false)
@@ -131,7 +152,18 @@ class ExecutorTaskScheduler(
     }
 
     companion object {
-        private val SHARED_SYNC = Executors.newSingleThreadScheduledExecutor()
-        private val SHARED_ASYNC = Executors.newScheduledThreadPool(4)
+        private val threadId = AtomicInteger()
+        private val SHARED_SYNC =
+            Executors.newSingleThreadScheduledExecutor { runnable ->
+                Thread(runnable, "arc-task-sync-${threadId.incrementAndGet()}").apply {
+                    isDaemon = true
+                }
+            }
+        private val SHARED_ASYNC =
+            Executors.newScheduledThreadPool(4) { runnable ->
+                Thread(runnable, "arc-task-async-${threadId.incrementAndGet()}").apply {
+                    isDaemon = true
+                }
+            }
     }
 }

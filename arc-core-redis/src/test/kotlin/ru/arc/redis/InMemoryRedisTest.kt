@@ -1,9 +1,11 @@
 package ru.arc.redis
 
 import io.kotest.core.spec.style.FreeSpec
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.ExecutionException
 
 class InMemoryRedisTest : FreeSpec({
 
@@ -19,6 +21,15 @@ class InMemoryRedisTest : FreeSpec({
             redis.setHash("test:hash", mapOf("a" to "1", "b" to "2"))
             redis.saveMapEntries("test:hash", "a", null).get()
             redis.getHash("test:hash") shouldBe mapOf("b" to "2")
+        }
+
+        "should reject a dangling key without deleting data" {
+            val redis = InMemoryRedis()
+            redis.setHash("test:hash", mapOf("a" to "1"))
+            shouldThrow<ExecutionException> {
+                redis.saveMapEntries("test:hash", "a").get()
+            }
+            redis.getHash("test:hash") shouldBe mapOf("a" to "1")
         }
     }
 
