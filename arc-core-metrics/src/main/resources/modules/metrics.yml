@@ -1,0 +1,15 @@
+# Shared ARC/ProxyARC Prometheus defaults. Runtime mirrors set a unique bind port.
+enabled: true
+bind-host: "127.0.0.1"
+bind-port: 9950
+
+# Scrapes only read cached gauges. JVM/OS and cheap platform values refresh here.
+sample-interval-seconds: 5
+
+# Disk and world/backend detail refresh separately to keep hot paths cheap.
+heavy-sample-interval-seconds: 60
+
+include-jvm: true
+include-system: true
+include-disk: true
+include-platform-heavy: true

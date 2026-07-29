@@ -22,6 +22,7 @@ class RedisManagerReconnectTest : FreeSpec({
         val brokenPublisher = mockk<JedisPooled>(relaxed = true)
         val restoredPublisher = mockk<JedisPooled>(relaxed = true)
         val logger = mockk<Logger>(relaxed = true)
+        val telemetry = mockk<RedisTelemetrySink>(relaxed = true)
         val delivered = CountDownLatch(1)
         val pools = ArrayDeque(listOf(subscription, brokenPublisher, restoredPublisher))
 
@@ -42,6 +43,7 @@ class RedisManagerReconnectTest : FreeSpec({
                 poolFactory = { pools.removeFirst() },
             )
         try {
+            manager.installTelemetry(telemetry)
             manager.publish("channel", "payload")
 
             delivered.await(2, TimeUnit.SECONDS) shouldBe true
@@ -50,6 +52,19 @@ class RedisManagerReconnectTest : FreeSpec({
                 restoredPublisher.publish("channel", RedisWire.encode("velocity", "payload"))
             }
             verify(exactly = 1) { logger.info("Redis publish connection restored") }
+            verify(exactly = 1) {
+                telemetry.onReconnect(RedisReconnectPath.PUBLISH, RedisReconnectResult.ATTEMPT)
+            }
+            verify(exactly = 1) {
+                telemetry.onReconnect(RedisReconnectPath.PUBLISH, RedisReconnectResult.SUCCESS)
+            }
+            verify(exactly = 1) {
+                telemetry.onOperation(
+                    RedisOperation.PUBLISH,
+                    RedisOperationResult.SUCCESS,
+                    any<Long>(),
+                )
+            }
         } finally {
             manager.close()
         }

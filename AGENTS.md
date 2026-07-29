@@ -26,9 +26,10 @@ arc-core ─────┬───── ARC (Paper: Event DSL, GUI, gameplay)
 |--------|----------|---------|
 | `arc-core/` | `ru.arc:arc-core` | Config, PluginModule, TaskScheduler, Tasks, EventBus |
 | `arc-core-logging/` | `ru.arc:arc-core-logging` | Loki, ArcJsonLayout, LogContext |
+| `arc-core-metrics/` | `ru.arc:arc-core-metrics` | Prometheus registry, cached JVM/OS/disk metrics, scrape HTTP |
 | `arc-core-redis/` | `ru.arc:arc-core-redis` | RedisManager, pub/sub, storage |
-| `arc-core-paper/` | `ru.arc:arc-core-paper` | BukkitTaskScheduler, PaperSubtickScheduler, Paper extensions |
-| `arc-core-velocity/` | `ru.arc:arc-core-velocity` | VelocityTaskScheduler, VelocitySubtickScheduler |
+| `arc-core-paper/` | `ru.arc:arc-core-paper` | Bukkit scheduling and cached Paper metric snapshots |
+| `arc-core-velocity/` | `ru.arc:arc-core-velocity` | Velocity scheduling, snapshots, and connection counters |
 | `arc-core-ai/` | `ru.arc:arc-core-ai` | OpenRouter LLM, moderation, tool RPC |
 
 Composite build: `includeBuild("../arc-core")` in ARC/ProxyARC `settings.gradle.kts`.

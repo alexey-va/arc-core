@@ -22,9 +22,10 @@ Gradle root project: **`ArcCore`** (имя важно для composite build —
 |--------|----------|---------|
 | `arc-core/` | `ru.arc:arc-core` | Config, PluginModule, TaskScheduler, Tasks, EventBus |
 | `arc-core-logging/` | `ru.arc:arc-core-logging` | Loki appender (Tjahzi), ArcJsonLayout, MDC LogContext |
+| `arc-core-metrics/` | `ru.arc:arc-core-metrics` | Cached Prometheus endpoint, JVM/OS/process/disk metrics |
 | `arc-core-redis/` | `ru.arc:arc-core-redis` | RedisManager, pub/sub, storage |
-| `arc-core-paper/` | `ru.arc:arc-core-paper` | BukkitTaskScheduler, PaperSubtickScheduler, Paper extensions |
-| `arc-core-velocity/` | `ru.arc:arc-core-velocity` | VelocityTaskScheduler, VelocitySubtickScheduler |
+| `arc-core-paper/` | `ru.arc:arc-core-paper` | Scheduling plus Paper world/tick/entity snapshots |
+| `arc-core-velocity/` | `ru.arc:arc-core-velocity` | Scheduling plus proxy/backend/event metrics |
 
 ### Packages (arc-core)
 
@@ -54,6 +55,7 @@ includeBuild("../arc-core")  // or ~/IdeaProjects/arc-core
 dependencies {
     implementation("ru.arc:arc-core:1.0-SNAPSHOT")
     implementation("ru.arc:arc-core-logging:1.0-SNAPSHOT")
+    implementation("ru.arc:arc-core-metrics:1.0-SNAPSHOT")
     implementation("ru.arc:arc-core-redis:1.0-SNAPSHOT")
     implementation("ru.arc:arc-core-velocity:1.0-SNAPSHOT")
 }
@@ -62,10 +64,13 @@ dependencies {
 dependencies {
     implementation("ru.arc:arc-core:1.0-SNAPSHOT")
     implementation("ru.arc:arc-core-logging:1.0-SNAPSHOT")
+    implementation("ru.arc:arc-core-metrics:1.0-SNAPSHOT")
     implementation("ru.arc:arc-core-redis:1.0-SNAPSHOT")
     implementation("ru.arc:arc-core-paper:1.0-SNAPSHOT")
 }
 ```
+
+Metrics architecture and catalog: [`arc-core-metrics/README.md`](arc-core-metrics/README.md).
 
 ## Platform binding
 

@@ -3,6 +3,7 @@ package ru.arc.core
 import io.kotest.core.spec.style.FreeSpec
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 
 class ModuleRegistryTest : FreeSpec({
     beforeTest { ModuleRegistry.resetForTests() }
@@ -43,6 +44,7 @@ class ModuleRegistryTest : FreeSpec({
             )
             ModuleRegistry.initAll()
             called shouldBe false
+            ModuleRegistry.getRuntimeStatuses() shouldBe emptyList()
             ModuleRegistry.shutdownAll()
         }
 
@@ -151,6 +153,39 @@ class ModuleRegistryTest : FreeSpec({
             ModuleRegistry.shutdownAll()
 
             shutdowns shouldBe 0
+        }
+
+        "should expose bounded lifecycle status for metrics" {
+            val module =
+                object : PluginModule {
+                    override val name = "observable"
+                    override fun init() {}
+
+                    override fun reload() {
+                        error("reload failed")
+                    }
+
+                    override fun shutdown() {}
+                }
+
+            ModuleRegistry.register(module)
+            ModuleRegistry.initAll()
+
+            ModuleRegistry.getRuntimeStatuses().single().apply {
+                name shouldBe "observable"
+                ready shouldBe true
+                initDurationMs shouldNotBe null
+                failures shouldBe 0
+            }
+
+            ModuleRegistry.reloadAll()
+
+            ModuleRegistry.getRuntimeStatuses().single().apply {
+                ready shouldBe false
+                reloadDurationMs shouldNotBe null
+                failures shouldBe 1
+            }
+            ModuleRegistry.shutdownAll()
         }
     }
 })

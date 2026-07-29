@@ -77,6 +77,9 @@ class RedisManager(
 
     private val publishReconnectMutex = Mutex()
 
+    @Volatile
+    private var telemetrySink: RedisTelemetrySink = NoOpRedisTelemetrySink
+
     private var scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     private val channelListeners = ConcurrentHashMap<String, MutableList<ChannelListener>>()
@@ -198,14 +201,17 @@ class RedisManager(
 
         val connection = lastConnection ?: return null
         var replacement: JedisPooled? = null
+        reportReconnect(RedisReconnectPath.SUBSCRIPTION, RedisReconnectResult.ATTEMPT)
         return try {
             replacement = createPool(connection)
             check(replacement.ping() == "PONG") { "Redis subscription PING failed" }
                 sub = replacement
                 lastSubscriptionReconnectFailureLogMs = 0L
                 logger.info("Redis subscription connection restored")
+                reportReconnect(RedisReconnectPath.SUBSCRIPTION, RedisReconnectResult.SUCCESS)
                 replacement
             } catch (e: Exception) {
+                reportReconnect(RedisReconnectPath.SUBSCRIPTION, RedisReconnectResult.FAILURE)
                 runCatching { replacement?.close() }
                 val now = clockMs()
                 if (
@@ -286,20 +292,26 @@ class RedisManager(
         if (isShuttingDown) return
 
         scope.launch(Dispatchers.IO) {
+            val started = System.nanoTime()
+            var result = RedisOperationResult.FAILURE
             if (!ensurePublishReady()) {
+                result = RedisOperationResult.UNAVAILABLE
                 logPublishNotConnected(channel)
+                reportOperation(RedisOperation.PUBLISH, result, started)
                 return@launch
             }
 
             val fullMessage = RedisWire.encode(serverIdentity.name(), message)
             try {
                 pub!!.publish(channel, fullMessage)
+                result = RedisOperationResult.SUCCESS
             } catch (e: Exception) {
                 if (e is JedisConnectionException) {
                     connected = false
                     if (ensurePublishReady()) {
                         try {
                             pub!!.publish(channel, fullMessage)
+                            result = RedisOperationResult.SUCCESS
                             return@launch
                         } catch (retry: Exception) {
                             if (retry is JedisConnectionException) connected = false
@@ -309,6 +321,8 @@ class RedisManager(
                     }
                 }
                 logger.error("Error publishing to channel {}", channel, e)
+            } finally {
+                reportOperation(RedisOperation.PUBLISH, result, started)
             }
         }
     }
@@ -329,6 +343,7 @@ class RedisManager(
             lastPublishReconnectAttemptMs = now
             var replacementSub: JedisPooled? = null
             var replacementPub: JedisPooled? = null
+            reportReconnect(RedisReconnectPath.PUBLISH, RedisReconnectResult.ATTEMPT)
             try {
                 if (sub == null) {
                     replacementSub = createPool(connection)
@@ -350,6 +365,7 @@ class RedisManager(
                     if (channelList.isNotEmpty() && !subscriptionActive && !isSubscribing) {
                         scope.launch { init() }
                     }
+                    reportReconnect(RedisReconnectPath.PUBLISH, RedisReconnectResult.SUCCESS)
                     return true
                 }
             } catch (e: Exception) {
@@ -367,6 +383,7 @@ class RedisManager(
                 runCatching { replacementPub?.close() }
             }
             connected = false
+            reportReconnect(RedisReconnectPath.PUBLISH, RedisReconnectResult.FAILURE)
             false
         }
     }
@@ -381,14 +398,22 @@ class RedisManager(
 
     override fun saveMap(key: String, map: Map<String, String>) {
         val pubConnection = pub
-        if (!connected || isShuttingDown || pubConnection == null) return
+        if (!connected || isShuttingDown || pubConnection == null) {
+            reportOperation(RedisOperation.SAVE_MAP, RedisOperationResult.UNAVAILABLE, System.nanoTime())
+            return
+        }
 
         scope.launch(Dispatchers.IO) {
+            val started = System.nanoTime()
+            var result = RedisOperationResult.FAILURE
             try {
                 pubConnection.hmset(key, map)
+                result = RedisOperationResult.SUCCESS
             } catch (e: Exception) {
                 if (e is JedisConnectionException) connected = false
                 logger.error("Error saving map to key: {}", key, e)
+            } finally {
+                reportOperation(RedisOperation.SAVE_MAP, result, started)
             }
         }
     }
@@ -409,6 +434,8 @@ class RedisManager(
 
         return scope
             .async(Dispatchers.IO) {
+                val started = System.nanoTime()
+                var result = RedisOperationResult.FAILURE
                 try {
                     if (!ensurePublishReady()) {
                         error("Cannot save Redis hash '$key': Redis is not connected")
@@ -427,10 +454,13 @@ class RedisManager(
 
                     if (toDelete.isNotEmpty()) pubConnection.hdel(key, *toDelete)
                     if (toUpdate.isNotEmpty()) pubConnection.hmset(key, toUpdate)
+                    result = RedisOperationResult.SUCCESS
                 } catch (e: Exception) {
                     if (e is JedisConnectionException) connected = false
                     logger.error("Error saving map entries for key: {}", key, e)
                     throw e
+                } finally {
+                    reportOperation(RedisOperation.SAVE_MAP_ENTRIES, result, started)
                 }
             }.asCompletableFuture()
     }
@@ -444,16 +474,22 @@ class RedisManager(
 
         return scope
             .async(Dispatchers.IO) {
+                val started = System.nanoTime()
+                var result = RedisOperationResult.FAILURE
                 try {
                     if (!ensurePublishReady()) {
                         error("Cannot load Redis hash '$key': Redis is not connected")
                     }
                     val pubConnection = checkNotNull(pub)
-                    pubConnection.hgetAll(key)
+                    pubConnection.hgetAll(key).also {
+                        result = RedisOperationResult.SUCCESS
+                    }
                 } catch (e: Exception) {
                     if (e is JedisConnectionException) connected = false
                     logger.error("Error loading map from key: {}", key, e)
                     throw e
+                } finally {
+                    reportOperation(RedisOperation.LOAD_MAP, result, started)
                 }
             }.asCompletableFuture()
     }
@@ -469,16 +505,22 @@ class RedisManager(
 
         return scope
             .async(Dispatchers.IO) {
+                val started = System.nanoTime()
+                var result = RedisOperationResult.FAILURE
                 try {
                     if (!ensurePublishReady()) {
                         error("Cannot load Redis hash '$key': Redis is not connected")
                     }
                     val pubConnection = checkNotNull(pub)
-                    pubConnection.hmget(key, *mapKeys)
+                    pubConnection.hmget(key, *mapKeys).also {
+                        result = RedisOperationResult.SUCCESS
+                    }
                 } catch (e: Exception) {
                     if (e is JedisConnectionException) connected = false
                     logger.error("Error loading map entries from key: {}", key, e)
                     throw e
+                } finally {
+                    reportOperation(RedisOperation.LOAD_MAP_ENTRIES, result, started)
                 }
             }.asCompletableFuture()
     }
@@ -608,11 +650,49 @@ class RedisManager(
 
     suspend fun healthCheck(): Boolean =
         withContext(Dispatchers.IO) {
+            val started = System.nanoTime()
+            var result = RedisOperationResult.FAILURE
             try {
-                pub?.ping() == "PONG"
+                (pub?.ping() == "PONG").also { healthy ->
+                    result =
+                        if (healthy) {
+                            RedisOperationResult.SUCCESS
+                        } else {
+                            RedisOperationResult.UNAVAILABLE
+                        }
+                }
             } catch (e: Exception) {
                 logger.error("Redis health check failed", e)
                 false
+            } finally {
+                reportOperation(RedisOperation.HEALTH_CHECK, result, started)
             }
         }
+
+    fun installTelemetry(sink: RedisTelemetrySink) {
+        telemetrySink = sink
+    }
+
+    private fun reportOperation(
+        operation: RedisOperation,
+        result: RedisOperationResult,
+        startedNanos: Long,
+    ) {
+        runCatching {
+            telemetrySink.onOperation(
+                operation,
+                result,
+                (System.nanoTime() - startedNanos).coerceAtLeast(0L),
+            )
+        }
+    }
+
+    private fun reportReconnect(
+        path: RedisReconnectPath,
+        result: RedisReconnectResult,
+    ) {
+        runCatching {
+            telemetrySink.onReconnect(path, result)
+        }
+    }
 }

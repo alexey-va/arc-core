@@ -7,6 +7,7 @@ description = "ARC Core Velocity — Velocity task scheduler"
 
 dependencies {
     api(project(":arc-core"))
+    api(project(":arc-core-metrics"))
     compileOnly("com.velocitypowered:velocity-api:3.3.0-SNAPSHOT")
     testImplementation("com.velocitypowered:velocity-api:3.3.0-SNAPSHOT")
     testImplementation("io.mockk:mockk:1.14.6")
