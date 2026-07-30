@@ -21,6 +21,19 @@ class NetworkRtpRequestTest :
                 request.copy(worldName = "survival", targetServer = "survival")
         }
 
+        "round trips the reserved current-world marker" {
+            val request =
+                NetworkRtpRequest(
+                    requestId = UUID.randomUUID(),
+                    playerId = UUID.randomUUID(),
+                    worldName = NetworkRtpRequest.CURRENT_WORLD,
+                    targetServer = "survival",
+                    mode = NetworkRtpMode.REGULAR,
+                )
+
+            NetworkRtpRequest.decode(request.encode()) shouldBe request
+        }
+
         "rejects malformed and trailing payloads" {
             shouldThrow<IllegalArgumentException> {
                 NetworkRtpRequest.decode(byteArrayOf(1, 2, 3))

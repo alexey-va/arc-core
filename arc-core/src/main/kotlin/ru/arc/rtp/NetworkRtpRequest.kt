@@ -53,6 +53,12 @@ data class NetworkRtpRequest(
 
     companion object {
         const val CHANNEL = "ruscrafting:rtp"
+        /**
+         * ProxyARC cannot see a player's Bukkit world. For a bare /rtp issued
+         * while already connected to the Paper target, ARC resolves this
+         * marker from the carrier player's current world before allowlisting.
+         */
+        const val CURRENT_WORLD = "_current"
         const val VERSION = 1
         const val MAX_PAYLOAD_BYTES = 256
 
