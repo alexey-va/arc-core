@@ -716,6 +716,19 @@ class CachedRepositoryTest {
             }
 
         @Test
+        fun `getNow refreshes access time and prevents cleanup eviction`() =
+            runTest {
+                val entity = TestEntity("id1", "hello")
+                repo.save(entity)
+                repo.setLastAccessTime("id1", 0L)
+
+                assertEquals(entity, repo.getNow("id1"))
+                repo.cleanupNow()
+
+                assertEquals(entity, repo.getNow("id1"))
+            }
+
+        @Test
         fun `allNow returns empty list when cache is empty`() {
             assertTrue(repo.allNow().isEmpty())
         }
