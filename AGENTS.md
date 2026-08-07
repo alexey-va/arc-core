@@ -101,11 +101,13 @@ VelocityArcRuntime.installScheduling(server, this)
 
 ## Agent workflow
 
-The mcserver checkout exposes one Codex project skill:
-`mcserver/.agents/skills/ruscrafting-server-ops/`. Its development reference routes
-new modules, migrations, and Kotlin tests back to this canonical file without
-duplicating these boundary rules. Production deployment remains in the
-mcserver operations reference; CMI kit details remain in the plugin-local
+The mcserver checkout exposes focused project skills under
+`mcserver/.agents/skills/`. Core ARC/ProxyARC development selects the
+`ruscrafting-server-ops` development reference, which routes new modules,
+migrations, and Kotlin tests back to this canonical file without duplicating
+these boundary rules. Specialized workflows trigger directly from their own
+skill metadata. Production deployment remains in the mcserver operations
+reference; CMI kit details remain in the plugin-local
 `classic/plugins/CMI/AGENTS.md`.
 
 ## Related docs
