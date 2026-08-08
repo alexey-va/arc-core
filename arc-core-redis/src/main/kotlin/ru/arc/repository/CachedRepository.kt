@@ -49,8 +49,13 @@ class CachedRepository<T : Entity>(
 
     // Load tracking to prevent duplicate loads
     private val loadingDeferreds = ConcurrentHashMap<String, CompletableDeferred<RepoResult<T?>>>()
-    private val loadAttempts = ConcurrentHashMap<String, Long>()
+    private val loadFailures = ConcurrentHashMap<String, CachedLoadFailure>()
     private val loadCooldown = 60_000L // 1 minute
+
+    private data class CachedLoadFailure(
+        val attemptedAt: Long,
+        val error: RepoResult.Error,
+    )
 
     // Observable flows
     private val entityUpdates = MutableSharedFlow<Pair<String, T?>>(extraBufferCapacity = 100)
@@ -62,6 +67,7 @@ class CachedRepository<T : Entity>(
 
     // Lock for atomic operations
     private val mutex = Mutex()
+    private val cacheLifecycleLock = Any()
     private val log = LoggerFactory.getLogger(CachedRepository::class.java)
 
     companion object {
@@ -90,11 +96,14 @@ class CachedRepository<T : Entity>(
         val result =
             try {
                 if (config.loadAllOnStart) {
+                    // Subscribe before the storage snapshot so updates that race
+                    // startup cannot fall into a load/listen gap.
+                    setupSyncListeners()
                     val loadResult = loadAll()
                     if (loadResult.isError) {
                         loadResult.map { }
                     } else {
-                        startServices()
+                        startBackgroundServices()
                         RepoResult.success(Unit)
                     }
                 } else {
@@ -113,11 +122,15 @@ class CachedRepository<T : Entity>(
     }
 
     private fun startServices() {
+        startBackgroundServices()
+        setupSyncListeners()
+    }
+
+    private fun startBackgroundServices() {
         startBackgroundSync()
         if (config.enableCleanup) {
             startCleanupJob()
         }
-        setupSyncListeners()
     }
 
     private fun cleanupAfterFailedInit() {
@@ -151,8 +164,7 @@ class CachedRepository<T : Entity>(
 
     override suspend fun get(id: String): RepoResult<T?> {
         // Try cache first
-        cache.get(id)?.let {
-            updateAccessTime(id)
+        getCached(id)?.let {
             return RepoResult.success(it)
         }
 
@@ -162,9 +174,8 @@ class CachedRepository<T : Entity>(
 
     override suspend fun getOrCreate(id: String, factory: () -> T): RepoResult<T> {
         // Check cache
-        cache.get(id)?.let {
+        getCached(id)?.let {
             log.debug("[{}] getOrCreate: cache hit for {}", config.id, id)
-            updateAccessTime(id)
             return RepoResult.success(it)
         }
         log.debug("[{}] getOrCreate: cache miss for {}, loading from storage", config.id, id)
@@ -187,18 +198,19 @@ class CachedRepository<T : Entity>(
         var created = false
         val entity =
             try {
-                cache.getOrPut(id) {
-                    factory().also {
-                        require(it.id() == id) {
-                            "Created entity id '${it.id()}' does not match requested id '$id'"
+                synchronized(cacheLifecycleLock) {
+                    cache.getOrPut(id) {
+                        factory().also {
+                            require(it.id() == id) {
+                                "Created entity id '${it.id()}' does not match requested id '$id'"
+                            }
+                            created = true
                         }
-                        created = true
-                    }
+                    }.also { updateAccessTime(id) }
                 }
             } catch (e: Exception) {
                 return RepoResult.error("Failed to create entity '$id': ${e.message}", e)
             }
-        updateAccessTime(id)
         if (created) {
             log.debug("[{}] getOrCreate: created new entity {}", config.id, id)
             entityUpdates.tryEmit(id to entity)
@@ -213,8 +225,11 @@ class CachedRepository<T : Entity>(
     }
 
     override suspend fun delete(id: String): RepoResult<Unit> {
-        cache.remove(id)
-        lastAccess.remove(id)
+        synchronized(cacheLifecycleLock) {
+            cache.remove(id)
+            lastAccess.remove(id)
+            loadFailures.remove(id)
+        }
 
         // Delete from storage
         val result = withRetry { storage.delete(id) }
@@ -233,11 +248,11 @@ class CachedRepository<T : Entity>(
     }
 
     override suspend fun all(): RepoResult<List<T>> {
-        return RepoResult.success(cache.all().toList())
+        return RepoResult.success(cachedSnapshot())
     }
 
     override suspend fun exists(id: String): RepoResult<Boolean> {
-        if (cache.contains(id)) return RepoResult.success(true)
+        if (getCached(id) != null) return RepoResult.success(true)
         return storage.exists(id)
     }
 
@@ -249,7 +264,7 @@ class CachedRepository<T : Entity>(
         return entityUpdates
             .filter { it.first == id }
             .map { it.second }
-            .onStart { emit(cache.get(id)) }
+            .onStart { emit(getNow(id)) }
     }
 
     override fun observeAll(): Flow<List<T>> = allUpdates.asStateFlow()
@@ -317,24 +332,26 @@ class CachedRepository<T : Entity>(
         val result = storage.loadAll()
 
         result.map { entities ->
-            val loadedIds = entities.keys
-            val staleIds =
-                cache.keys().filter { id ->
-                    id !in loadedIds && !cache.isDirty(id)
+            synchronized(cacheLifecycleLock) {
+                val loadedIds = entities.keys
+                val staleIds =
+                    cache.keys().filter { id ->
+                        id !in loadedIds && !cache.isDirty(id)
+                    }
+                staleIds.forEach { id ->
+                    cache.remove(id)
+                    lastAccess.remove(id)
+                    entityUpdates.tryEmit(id to null)
                 }
-            staleIds.forEach { id ->
-                cache.remove(id)
-                lastAccess.remove(id)
-                entityUpdates.tryEmit(id to null)
-            }
 
-            entities.forEach { (_, entity) ->
-                if (cache.isDirty(entity.id())) return@forEach
-                cache.put(entity)
-                cache.markClean(entity.id())
-                updateAccessTime(entity.id())
+                entities.forEach { (_, entity) ->
+                    if (cache.isDirty(entity.id())) return@forEach
+                    cache.put(entity)
+                    cache.markClean(entity.id())
+                    updateAccessTime(entity.id())
+                }
+                updateAllFlow()
             }
-            updateAllFlow()
         }
     }
 
@@ -343,24 +360,24 @@ class CachedRepository<T : Entity>(
      * Does not trigger storage load. Use for hot-path reads where cache is guaranteed warm.
      */
     fun getNow(id: String): T? =
-        cache.get(id)?.also {
-            updateAccessTime(id)
-        }
+        getCached(id)
 
     /**
      * Synchronous read of all cached entities.
      */
-    fun allNow(): List<T> = cache.all().toList()
+    fun allNow(): List<T> = cachedSnapshot()
 
     /**
      * Mark entity as dirty so the background save job persists it.
      * Equivalent to calling save() without coroutine overhead.
      */
     fun markDirty(entity: T) {
-        cache.put(entity)
-        updateAccessTime(entity.id())
-        entityUpdates.tryEmit(entity.id() to entity)
-        updateAllFlow()
+        synchronized(cacheLifecycleLock) {
+            cache.put(entity)
+            updateAccessTime(entity.id())
+            entityUpdates.tryEmit(entity.id() to entity)
+            updateAllFlow()
+        }
     }
 
     /**
@@ -384,7 +401,9 @@ class CachedRepository<T : Entity>(
      * Set last access time for testing (internal use).
      */
     internal fun setLastAccessTime(id: String, time: Long) {
-        lastAccess[id] = time
+        synchronized(cacheLifecycleLock) {
+            lastAccess[id] = time
+        }
     }
 
     // =========================================================================
@@ -399,12 +418,17 @@ class CachedRepository<T : Entity>(
             return existingDeferred.await()
         }
 
-        // Check load cooldown
-        val lastAttempt = loadAttempts[id]
-        if (lastAttempt != null && System.currentTimeMillis() - lastAttempt < loadCooldown) {
-            val remaining = loadCooldown - (System.currentTimeMillis() - lastAttempt)
-            log.debug("[{}] loadFromStorage: skipping {} — on cooldown for {}ms more", config.id, id, remaining)
-            return RepoResult.success(null)
+        // Reuse the previous error during cooldown. Returning a successful null
+        // here would let getOrCreate invent an empty entity after a Redis failure.
+        val previousFailure = loadFailures[id]
+        if (previousFailure != null) {
+            val elapsed = System.currentTimeMillis() - previousFailure.attemptedAt
+            if (elapsed < loadCooldown) {
+                val remaining = loadCooldown - elapsed
+                log.debug("[{}] loadFromStorage: reusing failed load for {} — on cooldown for {}ms more", config.id, id, remaining)
+                return previousFailure.error
+            }
+            loadFailures.remove(id, previousFailure)
         }
 
         // Create deferred for this load
@@ -412,31 +436,36 @@ class CachedRepository<T : Entity>(
         loadingDeferreds[id] = deferred
 
         try {
-            loadAttempts[id] = System.currentTimeMillis()
             log.debug("[{}] loadFromStorage: fetching {} from Redis (key={})", config.id, id, config.storageKey)
 
             val result = withRetry { storage.load(id) }
 
             if (result.isSuccess) {
+                loadFailures.remove(id)
                 val entity = result.getOrNull()
                 if (entity != null) {
                     log.debug("[{}] loadFromStorage: loaded {} successfully", config.id, id)
-                    cache.put(entity)
-                    cache.markClean(entity.id())
-                    updateAccessTime(entity.id())
-                    entityUpdates.tryEmit(entity.id() to entity)
-                    updateAllFlow()
+                    synchronized(cacheLifecycleLock) {
+                        cache.put(entity)
+                        cache.markClean(entity.id())
+                        updateAccessTime(entity.id())
+                        entityUpdates.tryEmit(entity.id() to entity)
+                        updateAllFlow()
+                    }
                 } else {
                     log.debug("[{}] loadFromStorage: {} not found in Redis (null)", config.id, id)
                 }
             } else {
-                log.debug("[{}] loadFromStorage: storage error for {}: {}", config.id, id, (result as RepoResult.Error).message)
+                val error = result as RepoResult.Error
+                loadFailures[id] = CachedLoadFailure(System.currentTimeMillis(), error)
+                log.debug("[{}] loadFromStorage: storage error for {}: {}", config.id, id, error.message)
             }
 
             deferred.complete(result)
             return result
         } catch (e: Exception) {
-            val errorResult = RepoResult.error("Failed to load $id: ${e.message}", e)
+            val errorResult = RepoResult.Error("Failed to load $id: ${e.message}", e)
+            loadFailures[id] = CachedLoadFailure(System.currentTimeMillis(), errorResult)
             log.debug("[{}] loadFromStorage: exception loading {}: {}", config.id, id, e.message)
             deferred.complete(errorResult)
             return errorResult
@@ -483,31 +512,33 @@ class CachedRepository<T : Entity>(
         val timeoutMillis = config.entityTimeout.inWholeMilliseconds
         val cutoff = now - timeoutMillis
 
-        val toRemove = mutableListOf<String>()
+        synchronized(cacheLifecycleLock) {
+            val toRemove = mutableListOf<String>()
 
-        // Find entities to evict
-        cache.keys().forEach { id ->
-            // Never evict context entities
-            if (contexts.contains(id)) return@forEach
+            // Find entities to evict
+            cache.keys().forEach { id ->
+                // Never evict context entities
+                if (contexts.contains(id)) return@forEach
 
-            val lastAccessTime = lastAccess[id] ?: 0L
+                val lastAccessTime = lastAccess[id] ?: 0L
 
-            // Evict if not accessed recently
-            if (lastAccessTime < cutoff) {
-                toRemove.add(id)
-            }
-        }
-
-        if (toRemove.isNotEmpty()) {
-            log.debug("Cleaning up ${toRemove.size} expired entities from ${config.id}")
-
-            toRemove.forEach { id ->
-                cache.remove(id)
-                lastAccess.remove(id)
-                entityUpdates.tryEmit(id to null)  // Notify observers
+                // Evict if not accessed recently
+                if (lastAccessTime < cutoff) {
+                    toRemove.add(id)
+                }
             }
 
-            updateAllFlow()
+            if (toRemove.isNotEmpty()) {
+                log.debug("Cleaning up ${toRemove.size} expired entities from ${config.id}")
+
+                toRemove.forEach { id ->
+                    cache.remove(id)
+                    lastAccess.remove(id)
+                    entityUpdates.tryEmit(id to null) // Notify observers
+                }
+
+                updateAllFlow()
+            }
         }
     }
 
@@ -518,33 +549,57 @@ class CachedRepository<T : Entity>(
         lastAccess[id] = System.currentTimeMillis()
     }
 
+    private fun getCached(id: String): T? =
+        synchronized(cacheLifecycleLock) {
+            cache.get(id)?.also { updateAccessTime(id) }
+        }
+
+    private fun cachedSnapshot(): List<T> =
+        synchronized(cacheLifecycleLock) {
+            val entities = cache.all().toList()
+            val now = System.currentTimeMillis()
+            entities.forEach { entity -> lastAccess[entity.id()] = now }
+            entities
+        }
+
     private fun setupSyncListeners() {
         syncService?.onUpdate { entity ->
-            // Check if we have this entity or it's in our context
-            if (cache.contains(entity.id()) || contexts.contains(entity.id())) {
-                val existing = cache.get(entity.id())
-                if (existing != null) {
-                    // Merge if entity supports it
-                    @Suppress("UNCHECKED_CAST")
-                    if (existing is Mergeable<*>) {
-                        (existing as Mergeable<T>).merge(entity)
-                    } else {
-                        cache.put(entity)
+            mutex.withLock {
+                // Full mirrors must also accept entities created on another server
+                // after this repository completed its startup load.
+                val keepsCompleteMirror = config.loadAllOnStart && !config.enableCleanup
+                synchronized(cacheLifecycleLock) {
+                    if (cache.contains(entity.id()) || contexts.contains(entity.id()) || keepsCompleteMirror) {
+                        val existing = cache.get(entity.id())
+                        if (existing != null) {
+                            // Merge if entity supports it
+                            @Suppress("UNCHECKED_CAST")
+                            if (existing is Mergeable<*>) {
+                                (existing as Mergeable<T>).merge(entity)
+                            } else {
+                                cache.put(entity)
+                            }
+                        } else {
+                            cache.put(entity)
+                        }
+                        cache.markClean(entity.id())
+                        updateAccessTime(entity.id())
+                        entityUpdates.tryEmit(entity.id() to entity)
+                        updateAllFlow()
                     }
-                } else {
-                    cache.put(entity)
                 }
-                cache.markClean(entity.id())
-                updateAccessTime(entity.id())
-                entityUpdates.tryEmit(entity.id() to entity)
-                updateAllFlow()
             }
         }
 
         syncService?.onDelete { id ->
-            cache.remove(id)
-            entityUpdates.tryEmit(id to null)
-            updateAllFlow()
+            mutex.withLock {
+                synchronized(cacheLifecycleLock) {
+                    cache.remove(id)
+                    lastAccess.remove(id)
+                    entityUpdates.tryEmit(id to null)
+                    updateAllFlow()
+                }
+            }
         }
 
         syncService?.start()
@@ -572,7 +627,9 @@ class CachedRepository<T : Entity>(
     }
 
     private fun updateAllFlow() {
-        allUpdates.value = cache.all().toList()
+        synchronized(cacheLifecycleLock) {
+            allUpdates.value = cache.all().toList()
+        }
     }
 }
 

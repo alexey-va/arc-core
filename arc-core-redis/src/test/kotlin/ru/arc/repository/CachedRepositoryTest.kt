@@ -1,5 +1,6 @@
 package ru.arc.repository
 
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -136,6 +137,30 @@ class CachedRepositoryTest {
 
                 assertTrue(result.isSuccess)
                 assertEquals("from_storage", result.getOrNull()?.value)
+            }
+
+        @Test
+        fun `getOrCreate never creates during failed-load cooldown`() =
+            runTest {
+                storage.failOnLoad = true
+                var factoryCalls = 0
+
+                val first =
+                    repo.getOrCreate("id1") {
+                        factoryCalls++
+                        TestEntity("id1", "invented")
+                    }
+                storage.failOnLoad = false
+                val second =
+                    repo.getOrCreate("id1") {
+                        factoryCalls++
+                        TestEntity("id1", "invented")
+                    }
+
+                assertTrue(first.isError)
+                assertTrue(second.isError)
+                assertEquals(0, factoryCalls)
+                assertNull(repo.getNow("id1"))
             }
 
         @Test
@@ -356,6 +381,68 @@ class CachedRepositoryTest {
                 syncService.simulateRemoteUpdate(TestEntity("id1", "updated"))
 
                 assertEquals("updated", repo.get("id1").getOrNull()?.value)
+            }
+
+        @Test
+        fun `full mirror accepts remote update for entity not already cached`() =
+            runTest {
+                val fullMirrorRepo =
+                    CachedRepository(
+                        config =
+                            config.copy(
+                                id = "full-mirror",
+                                loadAllOnStart = true,
+                                enableCleanup = false,
+                            ),
+                        storage = storage,
+                        syncService = syncService,
+                    )
+                fullMirrorRepo.init()
+
+                syncService.simulateRemoteUpdate(TestEntity("remote", "created-elsewhere"))
+
+                assertEquals("created-elsewhere", fullMirrorRepo.getNow("remote")?.value)
+                fullMirrorRepo.shutdown()
+            }
+
+        @Test
+        fun `startup load cannot overwrite a remote update received while loading`() =
+            runTest {
+                storage.put(TestEntity("shared", "startup-snapshot"))
+                val snapshotStarted = CompletableDeferred<Unit>()
+                val releaseSnapshot = CompletableDeferred<Unit>()
+                val delayedSnapshotStorage =
+                    object : Storage<TestEntity> by storage {
+                        override suspend fun loadAll(): RepoResult<Map<String, TestEntity>> {
+                            val snapshot = storage.all()
+                            snapshotStarted.complete(Unit)
+                            releaseSnapshot.await()
+                            return RepoResult.success(snapshot)
+                        }
+                    }
+                val fullMirrorRepo =
+                    CachedRepository(
+                        config =
+                            config.copy(
+                                id = "startup-sync",
+                                loadAllOnStart = true,
+                                enableCleanup = false,
+                            ),
+                        storage = delayedSnapshotStorage,
+                        syncService = syncService,
+                    )
+
+                val initJob = launch { fullMirrorRepo.init() }
+                snapshotStarted.await()
+                val remote = TestEntity("shared", "remote-update")
+                storage.put(remote)
+                val updateJob = launch { syncService.simulateRemoteUpdate(remote) }
+                releaseSnapshot.complete(Unit)
+                initJob.join()
+                updateJob.join()
+
+                assertEquals("remote-update", fullMirrorRepo.getNow("shared")?.value)
+                fullMirrorRepo.shutdown()
             }
 
         @Test
@@ -729,6 +816,45 @@ class CachedRepositoryTest {
             }
 
         @Test
+        fun `all refreshes access time and prevents cleanup eviction`() =
+            runTest {
+                val entity = TestEntity("id1", "hello")
+                repo.save(entity)
+                repo.setLastAccessTime("id1", 0L)
+
+                assertEquals(listOf(entity), repo.all().getOrThrow())
+                repo.cleanupNow()
+
+                assertEquals(entity, repo.getNow("id1"))
+            }
+
+        @Test
+        fun `exists refreshes access time and prevents cleanup eviction`() =
+            runTest {
+                val entity = TestEntity("id1", "hello")
+                repo.save(entity)
+                repo.setLastAccessTime("id1", 0L)
+
+                assertTrue(repo.exists("id1").getOrThrow())
+                repo.cleanupNow()
+
+                assertEquals(entity, repo.getNow("id1"))
+            }
+
+        @Test
+        fun `observe initial value refreshes access time and prevents cleanup eviction`() =
+            runTest {
+                val entity = TestEntity("id1", "hello")
+                repo.save(entity)
+                repo.setLastAccessTime("id1", 0L)
+
+                assertEquals(entity, repo.observe("id1").first())
+                repo.cleanupNow()
+
+                assertEquals(entity, repo.getNow("id1"))
+            }
+
+        @Test
         fun `allNow returns empty list when cache is empty`() {
             assertTrue(repo.allNow().isEmpty())
         }
@@ -746,6 +872,19 @@ class CachedRepositoryTest {
                 assertTrue(result.any { it.id() == "a" })
                 assertTrue(result.any { it.id() == "b" })
                 assertTrue(result.any { it.id() == "c" })
+            }
+
+        @Test
+        fun `allNow refreshes access time and prevents cleanup eviction`() =
+            runTest {
+                val entity = TestEntity("id1", "hello")
+                repo.save(entity)
+                repo.setLastAccessTime("id1", 0L)
+
+                assertEquals(listOf(entity), repo.allNow())
+                repo.cleanupNow()
+
+                assertEquals(entity, repo.getNow("id1"))
             }
 
         @Test

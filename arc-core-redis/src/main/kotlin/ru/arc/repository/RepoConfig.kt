@@ -1,6 +1,7 @@
 package ru.arc.repository
 
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
@@ -66,6 +67,8 @@ data class RepoConfig<T : Entity>(
 
     /**
      * Whether to enable automatic cache cleanup.
+     * A repository with [loadAllOnStart] enabled and cleanup disabled is a
+     * complete mirror: remote updates for previously unseen IDs are retained.
      */
     val enableCleanup: Boolean = true,
 
@@ -78,7 +81,7 @@ data class RepoConfig<T : Entity>(
      * Time after which non-context entities are evicted from cache.
      * Entities in context are never evicted.
      */
-    val entityTimeout: Duration = 10.minutes
+    val entityTimeout: Duration = 1.hours
 ) {
     companion object {
         fun <T : Entity> builder(id: String): Builder<T> = Builder(id)
@@ -97,7 +100,7 @@ data class RepoConfig<T : Entity>(
         private var backupInterval: Duration = 10.seconds
         private var enableCleanup: Boolean = true
         private var cleanupInterval: Duration = 1.minutes
-        private var entityTimeout: Duration = 10.minutes
+        private var entityTimeout: Duration = 1.hours
 
         fun storageKey(key: String) = apply { this.storageKey = key }
         fun updateChannel(channel: String) = apply { this.updateChannel = channel }
@@ -131,4 +134,3 @@ data class RepoConfig<T : Entity>(
         )
     }
 }
-

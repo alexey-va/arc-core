@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -27,6 +28,7 @@ class RepoConfigTest {
         assertFalse(config.enableBackups)
         assertNull(config.backupFolder)
         assertEquals(10.seconds, config.backupInterval)
+        assertEquals(1.hours, config.entityTimeout)
     }
 
     @Test
