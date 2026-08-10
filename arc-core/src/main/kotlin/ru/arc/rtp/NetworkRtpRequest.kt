@@ -7,10 +7,24 @@ import java.io.DataOutputStream
 import java.util.Locale
 import java.util.UUID
 
-enum class NetworkRtpMode(val wireId: Int) {
-    FIRST_ENTRY(1),
-    REGULAR(2),
+enum class NetworkRtpMode(
+    val wireId: Int,
+    val onlyIfFirst: Boolean,
+    val serverTransfer: Boolean,
+) {
+    FIRST_ENTRY(1, onlyIfFirst = true, serverTransfer = false),
+    REGULAR(2, onlyIfFirst = false, serverTransfer = false),
+    FIRST_ENTRY_AFTER_TRANSFER(3, onlyIfFirst = true, serverTransfer = true),
+    REGULAR_AFTER_TRANSFER(4, onlyIfFirst = false, serverTransfer = true),
     ;
+
+    fun withServerTransfer(serverTransfer: Boolean): NetworkRtpMode =
+        when {
+            onlyIfFirst && serverTransfer -> FIRST_ENTRY_AFTER_TRANSFER
+            onlyIfFirst -> FIRST_ENTRY
+            serverTransfer -> REGULAR_AFTER_TRANSFER
+            else -> REGULAR
+        }
 
     companion object {
         fun fromWireId(value: Int): NetworkRtpMode =

@@ -15,10 +15,14 @@ import java.util.UUID
 data class BackendRtpRequest(
     val playerId: UUID,
     val worldName: String,
+    val mode: NetworkRtpMode,
 ) {
     init {
         require(worldName == normalizeWorld(worldName)) {
             "Backend RTP world name must be normalized"
+        }
+        require(!mode.serverTransfer) {
+            "Backend RTP request cannot claim that a proxy transfer already happened"
         }
     }
 
@@ -30,6 +34,7 @@ data class BackendRtpRequest(
             data.writeLong(playerId.mostSignificantBits)
             data.writeLong(playerId.leastSignificantBits)
             data.writeUTF(worldName)
+            data.writeByte(mode.wireId)
         }
         return output.toByteArray().also {
             require(it.size <= MAX_PAYLOAD_BYTES) { "Backend RTP request payload is too large" }
@@ -38,13 +43,14 @@ data class BackendRtpRequest(
 
     companion object {
         const val CHANNEL = "ruscrafting:rtp_request"
-        const val VERSION = 1
+        const val VERSION = 2
         const val MAX_PAYLOAD_BYTES = 128
 
         fun create(
             playerId: UUID,
             worldName: String,
-        ): BackendRtpRequest = BackendRtpRequest(playerId, normalizeWorld(worldName))
+            mode: NetworkRtpMode = NetworkRtpMode.REGULAR,
+        ): BackendRtpRequest = BackendRtpRequest(playerId, normalizeWorld(worldName), mode)
 
         fun decode(payload: ByteArray): BackendRtpRequest {
             require(payload.size in 1..MAX_PAYLOAD_BYTES) {
@@ -55,9 +61,19 @@ data class BackendRtpRequest(
                 val request =
                     DataInputStream(input).use { data ->
                         require(data.readInt() == MAGIC) { "Invalid backend RTP request magic" }
-                        require(data.readInt() == VERSION) { "Unsupported backend RTP request version" }
+                        val version = data.readInt()
+                        require(version == LEGACY_VERSION || version == VERSION) {
+                            "Unsupported backend RTP request version"
+                        }
                         val playerId = UUID(data.readLong(), data.readLong())
-                        create(playerId, data.readUTF())
+                        val worldName = data.readUTF()
+                        val mode =
+                            if (version == LEGACY_VERSION) {
+                                NetworkRtpMode.FIRST_ENTRY
+                            } else {
+                                NetworkRtpMode.fromWireId(data.readUnsignedByte())
+                            }
+                        create(playerId, worldName, mode)
                     }
                 require(input.available() == 0) { "Trailing data in backend RTP request payload" }
                 request
@@ -69,6 +85,7 @@ data class BackendRtpRequest(
         }
 
         private const val MAGIC = 0x52544231
+        private const val LEGACY_VERSION = 1
         private val NAME_PATTERN = Regex("[a-z0-9_][a-z0-9_-]{0,31}")
 
         private fun normalizeWorld(raw: String): String =

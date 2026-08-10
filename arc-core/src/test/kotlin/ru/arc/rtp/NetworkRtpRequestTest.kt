@@ -34,6 +34,28 @@ class NetworkRtpRequestTest :
             NetworkRtpRequest.decode(request.encode()) shouldBe request
         }
 
+        "maps transfer-aware modes without changing first-entry intent" {
+            NetworkRtpMode.FIRST_ENTRY.withServerTransfer(true) shouldBe
+                NetworkRtpMode.FIRST_ENTRY_AFTER_TRANSFER
+            NetworkRtpMode.REGULAR.withServerTransfer(true) shouldBe
+                NetworkRtpMode.REGULAR_AFTER_TRANSFER
+            NetworkRtpMode.FIRST_ENTRY_AFTER_TRANSFER.onlyIfFirst shouldBe true
+            NetworkRtpMode.REGULAR_AFTER_TRANSFER.onlyIfFirst shouldBe false
+        }
+
+        "round trips a transfer-aware request" {
+            val request =
+                NetworkRtpRequest(
+                    requestId = UUID.randomUUID(),
+                    playerId = UUID.randomUUID(),
+                    worldName = "survival",
+                    targetServer = "survival",
+                    mode = NetworkRtpMode.REGULAR_AFTER_TRANSFER,
+                )
+
+            NetworkRtpRequest.decode(request.encode()) shouldBe request
+        }
+
         "rejects malformed and trailing payloads" {
             shouldThrow<IllegalArgumentException> {
                 NetworkRtpRequest.decode(byteArrayOf(1, 2, 3))
