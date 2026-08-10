@@ -384,6 +384,21 @@ class CachedRepositoryTest {
             }
 
         @Test
+        fun `remote update does not clear a pending local dirty write`() =
+            runTest {
+                repo.init()
+                val local = TestEntity("id1", "initial")
+                repo.save(local)
+                repo.saveDirty()
+                local.value = "pending-local"
+                repo.markDirty(local)
+
+                syncService.simulateRemoteUpdate(TestEntity("id1", "remote-snapshot"))
+
+                assertEquals(1, repo.getStats().dirtyCount)
+            }
+
+        @Test
         fun `full mirror accepts remote update for entity not already cached`() =
             runTest {
                 val fullMirrorRepo =

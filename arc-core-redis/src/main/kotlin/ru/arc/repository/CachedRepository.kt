@@ -571,6 +571,9 @@ class CachedRepository<T : Entity>(
                 synchronized(cacheLifecycleLock) {
                     if (cache.contains(entity.id()) || contexts.contains(entity.id()) || keepsCompleteMirror) {
                         val existing = cache.get(entity.id())
+                        // A local mutation may race a delayed/self pub-sub snapshot. Applying
+                        // the merge must not acknowledge that unsaved mutation as persisted.
+                        val wasDirty = cache.isDirty(entity.id())
                         if (existing != null) {
                             // Merge if entity supports it
                             @Suppress("UNCHECKED_CAST")
@@ -582,7 +585,7 @@ class CachedRepository<T : Entity>(
                         } else {
                             cache.put(entity)
                         }
-                        cache.markClean(entity.id())
+                        if (wasDirty) cache.markDirty(entity.id()) else cache.markClean(entity.id())
                         updateAccessTime(entity.id())
                         entityUpdates.tryEmit(entity.id() to entity)
                         updateAllFlow()
