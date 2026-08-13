@@ -37,6 +37,8 @@ already-applied migration; append a new version.
 
 ## Threading
 
-JDBC is blocking. Use `SqlExecutor.read`, `write`, or `transaction`; never call
-repository JDBC directly from a Paper, Velocity, or event-loop thread. Render
-the result back on the platform scheduler only after the future completes.
+JDBC is blocking. Use `SqlExecutor.read`, `write`, or `transaction`; use
+`submit` for SQL-adjacent work such as a migrator that owns its own connection.
+Never call repository JDBC directly from a Paper, Velocity, or event-loop
+thread. Render the result back on the platform scheduler only after the future
+completes.

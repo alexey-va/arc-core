@@ -11,6 +11,14 @@ import java.util.concurrent.ExecutionException
 import javax.sql.DataSource
 
 class SqlExecutorTest : StringSpec({
+    "submit runs blocking work on the named SQL executor" {
+        val dataSource = mockk<DataSource>()
+
+        SqlExecutor(dataSource, 1, "sql-test").use { executor ->
+            executor.submit { Thread.currentThread().name }.get() shouldBe "sql-test-1"
+        }
+    }
+
     "read marks the pooled connection read-only and closes it" {
         val connection = mockk<Connection>(relaxed = true)
         val dataSource = mockk<DataSource>()

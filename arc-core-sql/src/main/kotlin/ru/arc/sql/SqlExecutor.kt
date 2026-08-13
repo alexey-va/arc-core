@@ -23,6 +23,10 @@ class SqlExecutor(
     private val executor: ExecutorService =
         Executors.newFixedThreadPool(threads, NamedThreadFactory(threadNamePrefix))
 
+    /** Runs blocking SQL-adjacent work that owns its own connection lifecycle, such as migrations. */
+    fun <T> submit(block: () -> T): CompletableFuture<T> =
+        CompletableFuture.supplyAsync(block, executor)
+
     fun <T> read(block: (Connection) -> T): CompletableFuture<T> =
         CompletableFuture.supplyAsync(
             {
