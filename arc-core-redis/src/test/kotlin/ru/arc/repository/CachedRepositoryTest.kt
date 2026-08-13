@@ -175,6 +175,34 @@ class CachedRepositoryTest {
             }
 
         @Test
+        fun `durable delete preserves evidence and suppresses broadcast when storage fails`() =
+            runTest {
+                val evidence = TestEntity("audit-1", "evidence")
+                repo.save(evidence)
+                storage.failOnSave = true
+
+                val result = repo.deleteDurably(evidence.id())
+
+                assertTrue(result.isError)
+                assertEquals(evidence, repo.getNow(evidence.id()))
+                assertFalse(syncService.getBroadcastedDeletes().contains(evidence.id()))
+            }
+
+        @Test
+        fun `durable delete removes evidence and broadcasts only after storage success`() =
+            runTest {
+                val evidence = TestEntity("audit-2", "evidence")
+                storage.put(evidence)
+                repo.save(evidence)
+
+                val result = repo.deleteDurably(evidence.id())
+
+                assertTrue(result.isSuccess)
+                assertNull(repo.getNow(evidence.id()))
+                assertTrue(syncService.getBroadcastedDeletes().contains(evidence.id()))
+            }
+
+        @Test
         fun `delete removes entity from storage`() =
             runTest {
                 storage.put(TestEntity("id1", "value"))

@@ -247,6 +247,30 @@ class CachedRepository<T : Entity>(
         return result
     }
 
+    /**
+     * Delete only after remote storage confirms durability. Unlike the legacy
+     * [delete] contract, a storage failure leaves the local cache and sync
+     * subscribers untouched. Use this for audit evidence and other records
+     * where a transient storage error must fail closed rather than hide data.
+     */
+    suspend fun deleteDurably(id: String): RepoResult<Unit> = mutex.withLock {
+        val result = withRetry { storage.delete(id) }
+        if (result.isError) {
+            log.warn("Failed to durably delete $id from storage: ${(result as RepoResult.Error).message}")
+            return result
+        }
+
+        synchronized(cacheLifecycleLock) {
+            cache.remove(id)
+            lastAccess.remove(id)
+            loadFailures.remove(id)
+        }
+        syncService?.broadcastDelete(id)
+        entityUpdates.tryEmit(id to null)
+        updateAllFlow()
+        result
+    }
+
     override suspend fun all(): RepoResult<List<T>> {
         return RepoResult.success(cachedSnapshot())
     }
