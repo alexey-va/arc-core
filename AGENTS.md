@@ -28,6 +28,7 @@ arc-core ─────┬───── ARC (Paper: Event DSL, GUI, gameplay)
 | `arc-core-logging/` | `ru.arc:arc-core-logging` | Loki, ArcJsonLayout, LogContext |
 | `arc-core-metrics/` | `ru.arc:arc-core-metrics` | Prometheus registry, cached JVM/OS/disk metrics, scrape HTTP |
 | `arc-core-redis/` | `ru.arc:arc-core-redis` | RedisManager, pub/sub, storage |
+| `arc-core-sql/` | `ru.arc:arc-core-sql` | Optional MySQL/Hikari runtime, async JDBC and migrations |
 | `arc-core-paper/` | `ru.arc:arc-core-paper` | Bukkit scheduling and cached Paper metric snapshots |
 | `arc-core-velocity/` | `ru.arc:arc-core-velocity` | Velocity scheduling, snapshots, and connection counters |
 | `arc-core-ai/` | `ru.arc:arc-core-ai` | OpenRouter LLM, moderation, tool RPC |

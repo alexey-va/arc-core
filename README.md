@@ -24,6 +24,7 @@ Gradle root project: **`ArcCore`** (имя важно для composite build —
 | `arc-core-logging/` | `ru.arc:arc-core-logging` | Loki appender (Tjahzi), ArcJsonLayout, MDC LogContext |
 | `arc-core-metrics/` | `ru.arc:arc-core-metrics` | Cached Prometheus endpoint, JVM/OS/process/disk metrics |
 | `arc-core-redis/` | `ru.arc:arc-core-redis` | RedisManager, pub/sub, storage |
+| `arc-core-sql/` | `ru.arc:arc-core-sql` | Optional MySQL/Hikari runtime, async JDBC and migrations |
 | `arc-core-paper/` | `ru.arc:arc-core-paper` | Scheduling plus Paper world/tick/entity snapshots |
 | `arc-core-velocity/` | `ru.arc:arc-core-velocity` | Scheduling plus proxy/backend/event metrics |
 
@@ -36,7 +37,8 @@ Gradle root project: **`ArcCore`** (имя важно для composite build —
 | `ru.arc.core.platform` | `ArcPlatform` |
 | `ru.arc.util` | `TextUtils` |
 
-Logging packages live in `arc-core-logging`; Redis in `arc-core-redis`.
+Logging packages live in `arc-core-logging`; Redis in `arc-core-redis`; MySQL
+and blocking JDBC infrastructure in `arc-core-sql`.
 
 ## Build
 
@@ -57,6 +59,7 @@ dependencies {
     implementation("ru.arc:arc-core-logging:1.0-SNAPSHOT")
     implementation("ru.arc:arc-core-metrics:1.0-SNAPSHOT")
     implementation("ru.arc:arc-core-redis:1.0-SNAPSHOT")
+    implementation("ru.arc:arc-core-sql:1.0-SNAPSHOT")
     implementation("ru.arc:arc-core-velocity:1.0-SNAPSHOT")
 }
 
@@ -66,6 +69,7 @@ dependencies {
     implementation("ru.arc:arc-core-logging:1.0-SNAPSHOT")
     implementation("ru.arc:arc-core-metrics:1.0-SNAPSHOT")
     implementation("ru.arc:arc-core-redis:1.0-SNAPSHOT")
+    implementation("ru.arc:arc-core-sql:1.0-SNAPSHOT")
     implementation("ru.arc:arc-core-paper:1.0-SNAPSHOT")
 }
 ```

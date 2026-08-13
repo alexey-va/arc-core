@@ -8,6 +8,7 @@ Design specs and implementation plans for arc-core migration. **Do not duplicate
 |------|-------------|
 | [2026-06-24-arc-core-framework-design.md](superpowers/specs/2026-06-24-arc-core-framework-design.md) | Phase A/B/C roadmap, module layout, config strategy |
 | [2026-06-24-arc-core-redis-design.md](superpowers/specs/2026-06-24-arc-core-redis-design.md) | Redis module extraction |
+| [arc-core-sql.md](arc-core-sql.md) | Shared optional MySQL/Hikari runtime and migration contract |
 | [2026-06-24-arc-core-scheduling-design.md](superpowers/specs/2026-06-24-arc-core-scheduling-design.md) | TaskScheduler, Tasks, subtick, Paper/Velocity wiring |
 | [2026-06-24-proxyarc-modules-design.md](superpowers/specs/2026-06-24-proxyarc-modules-design.md) | ProxyARC module layout on arc-core |
 | [2026-06-24-architecture-docs-design.md](superpowers/specs/2026-06-24-architecture-docs-design.md) | Agent-oriented documentation and skills |
