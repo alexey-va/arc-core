@@ -6,6 +6,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.runBlocking
 import ru.arc.redis.RedisOperations
 import ru.arc.repository.redis.RedisStorage
+import ru.arc.repository.redis.RedisInvalidationSyncService
+import ru.arc.repository.redis.RedisSyncMode
 import ru.arc.repository.redis.RedisSyncService
 
 /**
@@ -18,6 +20,7 @@ inline fun <reified T : Entity> redisRepo(
     storageKey: String,
     updateChannel: String,
     scope: CoroutineScope,
+    syncMode: RedisSyncMode = RedisSyncMode.ENTITY,
     configure: RepoConfig.Builder<T>.() -> Unit = {},
 ): CachedRepository<T> {
     val entityType = object : TypeToken<T>() {}.type
@@ -35,12 +38,24 @@ inline fun <reified T : Entity> redisRepo(
         gson = gson,
     )
 
-    val syncService = RedisSyncService<T>(
-        redis = redis,
-        channel = updateChannel,
-        entityType = entityType,
-        gson = gson,
-    )
+    val syncService =
+        when (syncMode) {
+            RedisSyncMode.ENTITY ->
+                RedisSyncService<T>(
+                    redis = redis,
+                    channel = updateChannel,
+                    entityType = entityType,
+                    gson = gson,
+                )
+
+            RedisSyncMode.INVALIDATION ->
+                RedisInvalidationSyncService(
+                    redis = redis,
+                    channel = updateChannel,
+                    loadEntity = storage::load,
+                    gson = gson,
+                )
+        }
 
     val repo = CachedRepository(
         config = config,
