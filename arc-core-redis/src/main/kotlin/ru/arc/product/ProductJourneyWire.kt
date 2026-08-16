@@ -70,6 +70,7 @@ enum class ProductOutcome(
     HOME_CREATED("home_created", ProductPath.SETTLER, ProductActivity.BUILDING),
     LAND_CLAIMED("land_claimed", ProductPath.SETTLER, ProductActivity.BUILDING),
     FOOTHOLD_COMPLETE("foothold_complete", ProductPath.SETTLER, ProductActivity.BUILDING),
+    FOOTHOLD_RECOVERED("foothold_recovered", ProductPath.SETTLER, ProductActivity.BUILDING),
     AUTOBUILD_STARTED("autobuild_started", ProductPath.SETTLER, ProductActivity.BUILDING),
     AUTOBUILD_COMPLETE("autobuild_complete", ProductPath.SETTLER, ProductActivity.BUILDING),
     CONTRACT_COMPLETE("contract_complete", ProductPath.ENGINEER, ProductActivity.PROGRESSION),
@@ -120,6 +121,21 @@ enum class ProductDetailType(val label: String) {
     SERVER("server"),
     SERVER_TARGET("server_target"),
     CONNECTION("connection"),
+    ONBOARDING_HINT("onboarding_hint"),
+}
+
+/** Bounded player-facing onboarding messages retained as product evidence. */
+enum class ProductOnboardingHint(val label: String) {
+    FIRST_RTP("first_rtp"),
+    HOME_CREATED("home_created"),
+    LAND_CLAIMED("land_claimed"),
+    FOOTHOLD_MISMATCH("foothold_mismatch"),
+    FOOTHOLD_COMPLETE("foothold_complete"),
+    BUILD_BOOK_MISSING_HOME("build_book_missing_home"),
+    BUILD_BOOK_MISSING_LAND("build_book_missing_land"),
+    BUILD_BOOK_MISSING_BOTH("build_book_missing_both"),
+    BUILD_BOOK_OUTSIDE_FOOTHOLD("build_book_outside_foothold"),
+    AUTOBUILD_COMPLETE("autobuild_complete"),
 }
 
 enum class ProductConnection(val label: String) {
@@ -499,6 +515,7 @@ object ProductWireCodec {
             ProductDetailType.SERVER_TARGET,
             -> isServerKey(value)
             ProductDetailType.CONNECTION -> ProductConnection.entries.any { it.label == value }
+            ProductDetailType.ONBOARDING_HINT -> ProductOnboardingHint.entries.any { it.label == value }
         }
 
     fun sanitizeDisplay(value: String?): String? =

@@ -49,6 +49,23 @@ class ProductJourneyWireTest :
             ProductWireCodec.decode(ProductWireCodec.encode(signal, Gson()), "survival", now, 35, Gson()) shouldBe signal
         }
 
+        "round-trips only bounded onboarding hint details" {
+            val now = 1_800_000_000_000L
+            val signal =
+                ProductSignal(
+                    eventId = ProductPseudonym.eventId(),
+                    source = "survival",
+                    player = ProductPseudonym.of("new-player"),
+                    occurredAt = now,
+                    kind = ProductEventKind.DETAIL,
+                    detail = ProductDetail(ProductDetailType.ONBOARDING_HINT, ProductOnboardingHint.FOOTHOLD_MISMATCH.label),
+                )
+            val payload = ProductWireCodec.encode(signal, Gson())
+
+            ProductWireCodec.decode(payload, "survival", now, 35, Gson()) shouldBe signal
+            ProductWireCodec.decode(payload.replace("foothold_mismatch", "invented_hint"), "survival", now, 35, Gson()).shouldBeNull()
+        }
+
         "rejects unknown connection labels" {
             val now = 1_800_000_000_000L
             val signal =
