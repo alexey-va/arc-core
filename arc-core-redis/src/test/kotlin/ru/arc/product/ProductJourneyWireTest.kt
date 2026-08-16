@@ -31,6 +31,24 @@ class ProductJourneyWireTest :
             ProductWireCodec.decode(payload.replace("classic_survival", "../../secret"), "proxy", now, 35, Gson()).shouldBeNull()
         }
 
+        "round-trips onboarding outcomes without losing the exact mechanic" {
+            val now = 1_800_000_000_000L
+            val signal =
+                ProductSignal(
+                    eventId = ProductPseudonym.eventId(),
+                    source = "survival",
+                    player = ProductPseudonym.of("new-player"),
+                    occurredAt = now,
+                    kind = ProductEventKind.MEANINGFUL_OUTCOME,
+                    path = ProductPath.SETTLER,
+                    feature = ProductFeature.AUTOBUILD,
+                    activity = ProductActivity.BUILDING,
+                    outcome = ProductOutcome.AUTOBUILD_COMPLETE,
+                )
+
+            ProductWireCodec.decode(ProductWireCodec.encode(signal, Gson()), "survival", now, 35, Gson()) shouldBe signal
+        }
+
         "rejects unknown connection labels" {
             val now = 1_800_000_000_000L
             val signal =
