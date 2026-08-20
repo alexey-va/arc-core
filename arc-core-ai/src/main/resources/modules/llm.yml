@@ -23,3 +23,8 @@ tools:
   invoke-channel: arc.ai.tools.invoke
   result-channel: arc.ai.tools.result
   default-timeout-ms: 30000
+
+npc-chat:
+  request-channel: arc.ai.npc.request
+  response-channel: arc.ai.npc.response
+  timeout-ms: 18000

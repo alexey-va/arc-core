@@ -67,6 +67,15 @@ open class LlmModuleConfig(
     open val toolDefaultTimeoutMs: Long
         get() = config.integer("tools.default-timeout-ms", 30_000).toLong()
 
+    open val npcChatRequestChannel: String
+        get() = config.string("npc-chat.request-channel", "arc.ai.npc.request")
+
+    open val npcChatResponseChannel: String
+        get() = config.string("npc-chat.response-channel", "arc.ai.npc.response")
+
+    open val npcChatTimeoutMs: Long
+        get() = config.integer("npc-chat.timeout-ms", 18_000).toLong()
+
     fun validateProxy() {
         if (proxyEnabled) {
             require(proxyHost.isNotBlank()) { "http-proxy.host is required when http-proxy.enabled is true" }
@@ -104,4 +113,7 @@ class TestLlmModuleConfig(
     override val toolInvokeChannel: String = "arc.ai.tools.invoke",
     override val toolResultChannel: String = "arc.ai.tools.result",
     override val toolDefaultTimeoutMs: Long = 30_000,
+    override val npcChatRequestChannel: String = "arc.ai.npc.request",
+    override val npcChatResponseChannel: String = "arc.ai.npc.response",
+    override val npcChatTimeoutMs: Long = 18_000,
 ) : LlmModuleConfig(EmptyConfig)
