@@ -8,6 +8,7 @@ import java.nio.file.Path
 open class LlmModuleConfig(
     private val config: Config,
     private val dataPath: Path = Path.of("."),
+    private val networkConfig: Config = config,
 ) {
 
     open val llmEnabled: Boolean
@@ -23,13 +24,13 @@ open class LlmModuleConfig(
         get() = config.integer("openrouter.timeout-seconds", 30).toLong()
 
     open val proxyEnabled: Boolean
-        get() = config.bool("http-proxy.enabled", true)
+        get() = networkConfig.bool("http-proxy.enabled", config.bool("http-proxy.enabled", true))
 
     open val proxyHost: String
-        get() = config.string("http-proxy.host", "")
+        get() = networkConfig.string("http-proxy.host", config.string("http-proxy.host", ""))
 
     open val proxyPort: Int
-        get() = config.integer("http-proxy.port", 8888)
+        get() = networkConfig.integer("http-proxy.port", config.integer("http-proxy.port", 8888))
 
     open val moderationModel: String
         get() = config.string("moderation.model", "openai/gpt-4o-mini")
@@ -86,9 +87,19 @@ open class LlmModuleConfig(
     companion object {
         const val RESOURCE = "llm.yml"
 
-        fun load(dataPath: Path): LlmModuleConfig {
+        fun load(
+            dataPath: Path,
+            networkResource: String? = null,
+        ): LlmModuleConfig {
             Config.copyDefaultConfig(ConfigManager.bundledModuleResource(RESOURCE), dataPath, replace = false)
-            val cfg = LlmModuleConfig(ConfigManager.ofModule(dataPath, RESOURCE), dataPath)
+            val baseConfig = ConfigManager.ofModule(dataPath, RESOURCE)
+            val networkConfig =
+                networkResource?.let { resource ->
+                    require(resource != RESOURCE) { "LLM network override must use a separate module file" }
+                    Config.copyDefaultConfig(ConfigManager.bundledModuleResource(resource), dataPath, replace = false)
+                    ConfigManager.ofModule(dataPath, resource)
+                } ?: baseConfig
+            val cfg = LlmModuleConfig(baseConfig, dataPath, networkConfig)
             cfg.validateProxy()
             return cfg
         }
