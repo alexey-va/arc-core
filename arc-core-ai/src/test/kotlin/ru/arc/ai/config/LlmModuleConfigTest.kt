@@ -45,7 +45,7 @@ class LlmModuleConfigTest : FreeSpec({
                     """
                     http-proxy:
                       enabled: true
-                      host: 172.29.172.1
+                      host: 172.29.172.3
                       port: 8888
                     """.trimIndent(),
                 )
@@ -54,7 +54,7 @@ class LlmModuleConfigTest : FreeSpec({
                 val config = LlmModuleConfig.load(dataRoot, "llm-network.yml")
 
                 config.apiKey shouldBe "live-only-test-key"
-                config.proxyHost shouldBe "172.29.172.1"
+                config.proxyHost shouldBe "172.29.172.3"
                 config.proxyPort shouldBe 8888
                 config.llmEnabled shouldBe true
             } finally {
