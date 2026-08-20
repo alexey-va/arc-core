@@ -245,15 +245,29 @@ class NpcChatRpcServer(
             else -> null
         }
 
-    private fun normalizeOutput(text: String?, maxChars: Int): String? =
-        text
+    private fun normalizeOutput(text: String?, maxChars: Int): String? {
+        val normalized =
+            text
             ?.replace(CONTROL_CHARS, "")
             ?.replace(Regex("[\\t ]+"), " ")
             ?.replace(Regex("\\n{3,}"), "\n\n")
             ?.trim()
-            ?.take(maxChars)
-            ?.trim()
             ?.takeIf(String::isNotEmpty)
+            ?: return null
+        if (normalized.length <= maxChars) return normalized
+
+        val clipped = normalized.take(maxChars).trimEnd()
+        val usefulBoundary = (maxChars * 0.3).toInt().coerceAtLeast(1)
+        val sentenceEnd = clipped.indexOfLast { it == '.' || it == '!' || it == '?' || it == '…' }
+        if (sentenceEnd >= usefulBoundary) return clipped.take(sentenceEnd + 1).trim()
+
+        val wordEnd = clipped.lastIndexOfAny(charArrayOf(' ', '\n'))
+        if (wordEnd >= usefulBoundary) {
+            val wholeWords = clipped.take(wordEnd).trimEnd()
+            return if (wholeWords.length < maxChars) "$wholeWords…" else wholeWords.take(maxChars)
+        }
+        return clipped
+    }
 
     private companion object {
         val log = LoggerFactory.getLogger(NpcChatRpcServer::class.java)

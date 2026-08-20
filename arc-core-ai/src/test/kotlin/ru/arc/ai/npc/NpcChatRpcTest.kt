@@ -82,4 +82,42 @@ class NpcChatRpcTest : FreeSpec({
         client.close()
         shouldThrow<IllegalStateException> { client.start() }
     }
+
+    "server shortens long dialogue at a clean sentence or word boundary" {
+        val redis = InMemoryRedis()
+        val config = TestLlmModuleConfig(npcChatTimeoutMs = 1_000)
+        val server = NpcChatRpcServer(redis, config) {
+            CompletableFuture.completedFuture(
+                "Осмотри площадь. Потом загляни на рынок и в мастерские, там проще понять город.",
+            )
+        }
+        val client = NpcChatRpcClient(redis, config)
+        server.start()
+        client.start()
+
+        client.complete(
+            UUID.randomUUID(),
+            "Player",
+            "arrival_host",
+            "Куда идти?",
+            emptyList(),
+            maxOutputChars = 42,
+        ).join() shouldBe "Осмотри площадь."
+
+        server.close()
+        val wordServer = NpcChatRpcServer(redis, config) {
+            CompletableFuture.completedFuture("площадь рынок мастерские порт конюшни кузница")
+        }
+        wordServer.start()
+        client.complete(
+            UUID.randomUUID(),
+            "Player",
+            "arrival_host",
+            "А ещё?",
+            emptyList(),
+            maxOutputChars = 24,
+        ).join() shouldBe "площадь рынок…"
+        client.close()
+        wordServer.close()
+    }
 })
