@@ -114,6 +114,34 @@ class InMemoryRedis(
         }
     }
 
+    override fun compareAndSetMapEntry(
+        key: String,
+        mapKey: String,
+        expectedValue: String?,
+        replacementValue: String?,
+    ): CompletableFuture<Boolean> {
+        require(key.isNotBlank()) { "Redis hash key must not be blank" }
+        require(mapKey.isNotBlank()) { "Redis hash field must not be blank" }
+        return CompletableFuture.supplyAsync {
+            if (saveDelay > 0) Thread.sleep(saveDelay)
+            if (failOnSave) throw RuntimeException("Simulated save failure")
+            val hash = hashes.computeIfAbsent(key) { ConcurrentHashMap() }
+            synchronized(hash) {
+                if (hash[mapKey] != expectedValue || (expectedValue == null && hash.containsKey(mapKey))) {
+                    false
+                } else {
+                    if (replacementValue == null) {
+                        hash.remove(mapKey)
+                    } else {
+                        hash[mapKey] = replacementValue
+                    }
+                    saveOperations.add(SaveOperation(key, mapOf(mapKey to replacementValue)))
+                    true
+                }
+            }
+        }
+    }
+
     override fun registerChannelUnique(channel: String, listener: ChannelListener) {
         channelListeners[channel] = mutableListOf(listener)
     }

@@ -50,6 +50,21 @@ class RedisManager(
         private const val RECONNECT_DELAY_MS = 100L
         private const val PUBLISH_RECONNECT_MIN_INTERVAL_MS = 5_000L
         private const val PUBLISH_NOT_CONNECTED_LOG_INTERVAL_MS = 30_000L
+        private const val COMPARE_AND_SET_HASH_ENTRY_SCRIPT =
+            """
+            local current = redis.call('HGET', KEYS[1], ARGV[1])
+            if ARGV[2] == 'absent' then
+                if current ~= false then return 0 end
+            elseif current == false or current ~= ARGV[3] then
+                return 0
+            end
+            if ARGV[4] == 'delete' then
+                redis.call('HDEL', KEYS[1], ARGV[1])
+            else
+                redis.call('HSET', KEYS[1], ARGV[1], ARGV[5])
+            end
+            return 1
+            """
 
         private fun createDefaultPool(connection: RedisConnection): JedisPooled =
             if (connection.username != null && connection.password != null) {
@@ -521,6 +536,52 @@ class RedisManager(
                     throw e
                 } finally {
                     reportOperation(RedisOperation.LOAD_MAP_ENTRIES, result, started)
+                }
+            }.asCompletableFuture()
+    }
+
+    override fun compareAndSetMapEntry(
+        key: String,
+        mapKey: String,
+        expectedValue: String?,
+        replacementValue: String?,
+    ): CompletableFuture<Boolean> {
+        require(key.isNotBlank()) { "Redis hash key must not be blank" }
+        require(mapKey.isNotBlank()) { "Redis hash field must not be blank" }
+        if (isShuttingDown) {
+            return CompletableFuture.failedFuture(
+                IllegalStateException("Cannot update Redis hash '$key': Redis is not connected"),
+            )
+        }
+
+        return scope
+            .async(Dispatchers.IO) {
+                val started = System.nanoTime()
+                var result = RedisOperationResult.FAILURE
+                try {
+                    if (!ensurePublishReady()) {
+                        error("Cannot update Redis hash '$key': Redis is not connected")
+                    }
+                    val response =
+                        checkNotNull(pub).eval(
+                            COMPARE_AND_SET_HASH_ENTRY_SCRIPT,
+                            listOf(key),
+                            listOf(
+                                mapKey,
+                                if (expectedValue == null) "absent" else "present",
+                                expectedValue.orEmpty(),
+                                if (replacementValue == null) "delete" else "replace",
+                                replacementValue.orEmpty(),
+                            ),
+                        )
+                    result = RedisOperationResult.SUCCESS
+                    (response as? Number)?.toLong() == 1L
+                } catch (e: Exception) {
+                    if (e is JedisConnectionException) connected = false
+                    logger.error("Error comparing Redis hash entry for key: {}", key, e)
+                    throw e
+                } finally {
+                    reportOperation(RedisOperation.COMPARE_AND_SET_MAP_ENTRY, result, started)
                 }
             }.asCompletableFuture()
     }

@@ -18,6 +18,18 @@ interface RedisOperations {
 
     fun loadMapEntries(key: String, vararg mapKeys: String): CompletableFuture<List<String?>>
 
+    /**
+     * Atomically replaces one Redis hash entry when its current value exactly
+     * matches [expectedValue]. A null expected value means the field must be
+     * absent; a null replacement deletes the matching field.
+     */
+    fun compareAndSetMapEntry(
+        key: String,
+        mapKey: String,
+        expectedValue: String?,
+        replacementValue: String?,
+    ): CompletableFuture<Boolean>
+
     fun registerChannelUnique(channel: String, listener: ChannelListener)
 
     fun unregisterChannel(channel: String, listener: ChannelListener)

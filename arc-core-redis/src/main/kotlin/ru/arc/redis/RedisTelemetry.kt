@@ -7,6 +7,7 @@ enum class RedisOperation(val metricTag: String) {
     SAVE_MAP_ENTRIES("save_map_entries"),
     LOAD_MAP("load_map"),
     LOAD_MAP_ENTRIES("load_map_entries"),
+    COMPARE_AND_SET_MAP_ENTRY("compare_and_set_map_entry"),
     HEALTH_CHECK("health_check"),
 }
 
