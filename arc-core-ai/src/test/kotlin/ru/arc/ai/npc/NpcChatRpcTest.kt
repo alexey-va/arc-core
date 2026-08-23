@@ -23,7 +23,7 @@ class NpcChatRpcTest : FreeSpec({
         server.start()
         client.start()
 
-        client.complete(UUID.randomUUID(), "Player", "arrival_host", "Где я?", emptyList()).join() shouldBe
+        client.complete(UUID.randomUUID(), "Player", "test_guide", "Где я?", emptyList()).join() shouldBe
             "Привет, Player!"
         client.pendingCount() shouldBeExactly 0
 
@@ -46,7 +46,7 @@ class NpcChatRpcTest : FreeSpec({
 
         val oversized = List(7) { NpcChatTurn("user", "строка $it") }
         // The Paper client itself keeps only the six newest turns.
-        client.complete(UUID.randomUUID(), "Player", "arrival_host", "Вопрос", oversized).join() shouldBe "wrong"
+        client.complete(UUID.randomUUID(), "Player", "test_guide", "Вопрос", oversized).join() shouldBe "wrong"
         handled.shouldBeTrue()
 
         val request =
@@ -76,7 +76,7 @@ class NpcChatRpcTest : FreeSpec({
         client.start()
 
         shouldThrow<CompletionException> {
-            client.complete(UUID.randomUUID(), "Player", "arrival_host", "Есть кто?", emptyList()).join()
+            client.complete(UUID.randomUUID(), "Player", "test_guide", "Есть кто?", emptyList()).join()
         }
         client.pendingCount() shouldBeExactly 0
         client.close()
@@ -98,7 +98,7 @@ class NpcChatRpcTest : FreeSpec({
         client.complete(
             UUID.randomUUID(),
             "Player",
-            "arrival_host",
+            "test_guide",
             "Куда идти?",
             emptyList(),
             maxOutputChars = 42,
@@ -112,7 +112,7 @@ class NpcChatRpcTest : FreeSpec({
         client.complete(
             UUID.randomUUID(),
             "Player",
-            "arrival_host",
+            "test_guide",
             "А ещё?",
             emptyList(),
             maxOutputChars = 24,
