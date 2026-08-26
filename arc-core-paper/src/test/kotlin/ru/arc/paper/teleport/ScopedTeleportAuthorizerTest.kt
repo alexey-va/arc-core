@@ -4,15 +4,17 @@ import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FreeSpec
 import io.kotest.matchers.shouldBe
 import org.bukkit.Location
-import org.mockbukkit.mockbukkit.MockBukkit
+import ru.arc.paper.testing.MockBukkitTestRuntime
 import java.util.UUID
 
 class ScopedTeleportAuthorizerTest : FreeSpec({
-    beforeSpec { MockBukkit.mock() }
-    afterSpec { MockBukkit.unmock() }
+    lateinit var paper: MockBukkitTestRuntime
+
+    beforeEach { paper = MockBukkitTestRuntime.open() }
+    afterEach { paper.close() }
 
     "authorization is player, world, position, rotation and scope bound" {
-        val server = requireNotNull(MockBukkit.getMock())
+        val server = paper.server
         val firstWorld = server.addSimpleWorld("first")
         val secondWorld = server.addSimpleWorld("second")
         val playerId = UUID.randomUUID()
@@ -31,7 +33,7 @@ class ScopedTeleportAuthorizerTest : FreeSpec({
     }
 
     "tolerance is explicit and inclusive" {
-        val world = requireNotNull(MockBukkit.getMock()).addSimpleWorld("tolerance")
+        val world = paper.addSimpleWorld("tolerance")
         val id = UUID.randomUUID()
         val destination = Location(world, 0.0, 80.0, 0.0, 0f, 0f)
         val authorizer = ScopedTeleportAuthorizer(TeleportMatchTolerance(0.5, 1f))
@@ -42,7 +44,7 @@ class ScopedTeleportAuthorizerTest : FreeSpec({
     }
 
     "exceptions and nested attempts cannot leak authorization" {
-        val world = requireNotNull(MockBukkit.getMock()).addSimpleWorld("cleanup")
+        val world = paper.addSimpleWorld("cleanup")
         val id = UUID.randomUUID()
         val destination = Location(world, 0.0, 64.0, 0.0)
         val authorizer = ScopedTeleportAuthorizer()
@@ -56,7 +58,7 @@ class ScopedTeleportAuthorizerTest : FreeSpec({
     }
 
     "rejects non-finite and worldless destinations before opening a scope" {
-        val world = requireNotNull(MockBukkit.getMock()).addSimpleWorld("invalid")
+        val world = paper.addSimpleWorld("invalid")
         val authorizer = ScopedTeleportAuthorizer()
         shouldThrow<IllegalArgumentException> {
             authorizer.authorize(UUID.randomUUID(), Location(world, Double.NaN, 64.0, 0.0)) {}

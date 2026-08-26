@@ -34,6 +34,7 @@ arc-core ─────┬───── ARC (Paper: Event DSL, GUI, gameplay)
 | `arc-core-redis/` | `ru.arc:arc-core-redis` | Redis plus strict codecs, CAS, origin and replay safety |
 | `arc-core-sql/` | `ru.arc:arc-core-sql` | Optional MySQL/Hikari runtime, async JDBC and migrations |
 | `arc-core-paper/` | `ru.arc:arc-core-paper` | Paper scheduling, transfer/teleport and player-state escrow |
+| `arc-core-paper-testing/` | `ru.arc:arc-core-paper-testing` | Canonical published MockBukkit test runtime and fixtures |
 | `arc-core-velocity/` | `ru.arc:arc-core-velocity` | Velocity scheduling, snapshots, and connection counters |
 | `arc-core-ai/` | `ru.arc:arc-core-ai` | OpenRouter LLM, moderation, tool RPC |
 
@@ -51,6 +52,9 @@ Composite build: `includeBuild("../arc-core")` in ARC/ProxyARC `settings.gradle.
 7. **Agent-facing API:** give each mechanism one searchable owner, typed
    outcomes, KDoc for thread/lifecycle/failure invariants, and bounded
    diagnostics without raw payloads.
+8. **Paper platform tests:** depend on `arc-core-paper-testing`, open one
+   `MockBukkitTestRuntime` per test, and close it with `use`. Never repeat the
+   MockBukkit coordinate or weaken production behavior for an unsupported mock.
 
 ## Decision tree — where to put new code
 
@@ -59,6 +63,7 @@ Composite build: `includeBuild("../arc-core")` in ARC/ProxyARC `settings.gradle.
 | Shared, no Bukkit/Velocity? | `arc-core` or new `arc-core-*` module |
 | Shared Redis transport, codec, CAS, or replay rule? | `arc-core-redis/ru.arc.redis.safety` |
 | Paper API only (Material, Sound)? | `arc-core-paper` |
+| Reusable Paper test fixture or MockBukkit lifecycle? | `arc-core-paper-testing` |
 | Gameplay feature (treasure, stock, …)? | `ARC/src/main/kotlin/ru/arc/{feature}/` |
 | Proxy feature (join, discord, …)? | `ProxyARC/src/main/kotlin/ru/arc/` |
 | Runtime YAML on prod? | `mcserver/*/plugins/ARC/modules/` or `velocity/plugins/ProxyARC/` |
@@ -135,6 +140,7 @@ where ordering crosses storage or platform boundaries.
 |-----|---------|
 | [`README.md`](README.md) | Build, composite build, dependencies |
 | [`docs/shared-primitives.md`](docs/shared-primitives.md) | Shared API routing, contracts, examples, verification |
+| [`docs/paper-testing.md`](docs/paper-testing.md) | MockBukkit dependency, lifecycle, test layers, limitations |
 | [`docs/INDEX.md`](docs/INDEX.md) | Superpowers specs and plans |
 | `ARC/AGENTS.md` | Paper-specific delta |
 | `ProxyARC/AGENTS.md` | Velocity-specific delta |

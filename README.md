@@ -27,6 +27,7 @@ Gradle root project: **`ArcCore`** (имя важно для composite build —
 | `arc-core-redis/` | `ru.arc:arc-core-redis` | Redis manager/storage plus strict codecs, CAS, origin and replay safety |
 | `arc-core-sql/` | `ru.arc:arc-core-sql` | Optional MySQL/Hikari runtime, async JDBC and migrations |
 | `arc-core-paper/` | `ru.arc:arc-core-paper` | Paper scheduling, transfer/teleport boundaries and complete player-state escrow |
+| `arc-core-paper-testing/` | `ru.arc:arc-core-paper-testing` | Published MockBukkit runtime and fixtures for Paper plugin tests |
 | `arc-core-velocity/` | `ru.arc:arc-core-velocity` | Scheduling plus proxy/backend/event metrics |
 
 ### Packages (arc-core)
@@ -76,8 +77,13 @@ dependencies {
     implementation("ru.arc:arc-core-redis:1.0-SNAPSHOT")
     implementation("ru.arc:arc-core-sql:1.0-SNAPSHOT")
     implementation("ru.arc:arc-core-paper:1.0-SNAPSHOT")
+    testImplementation("ru.arc:arc-core-paper-testing:1.0-SNAPSHOT")
 }
 ```
+
+Paper tests use the shared MockBukkit test-kit rather than declaring MockBukkit
+directly. Setup, lifecycle, layer selection, and unsupported-API rules:
+[`docs/paper-testing.md`](docs/paper-testing.md).
 
 Metrics architecture and catalog: [`arc-core-metrics/README.md`](arc-core-metrics/README.md).
 

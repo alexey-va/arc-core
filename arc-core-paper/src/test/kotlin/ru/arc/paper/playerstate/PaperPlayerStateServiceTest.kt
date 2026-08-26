@@ -8,7 +8,7 @@ import org.bukkit.GameMode
 import org.bukkit.Location
 import org.bukkit.Material
 import org.bukkit.inventory.ItemStack
-import org.mockbukkit.mockbukkit.MockBukkit
+import ru.arc.paper.testing.MockBukkitTestRuntime
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
@@ -16,11 +16,13 @@ import java.io.DataOutputStream
 import java.util.concurrent.atomic.AtomicInteger
 
 class PaperPlayerStateServiceTest : FreeSpec({
-    beforeSpec { MockBukkit.mock() }
-    afterSpec { MockBukkit.unmock() }
+    lateinit var paper: MockBukkitTestRuntime
+
+    beforeEach { paper = MockBukkitTestRuntime.open() }
+    afterEach { paper.close() }
 
     "captures, restores, verifies and persists complete supported player state" {
-        val server = requireNotNull(MockBukkit.getMock())
+        val server = paper.server
         val world = server.addSimpleWorld("state-service")
         val player = server.addPlayer("Stateful")
         player.teleport(Location(world, 2.0, 70.0, -4.0, 45f, 5f))
@@ -78,7 +80,7 @@ class PaperPlayerStateServiceTest : FreeSpec({
     }
 
     "wrong identity and off-thread access fail before persistence" {
-        val server = requireNotNull(MockBukkit.getMock())
+        val server = paper.server
         val first = server.addPlayer("FirstState")
         val second = server.addPlayer("SecondState")
         val persisted = AtomicInteger()
@@ -96,7 +98,7 @@ class PaperPlayerStateServiceTest : FreeSpec({
     }
 
     "failed teleport never reports restoration or persists playerdata" {
-        val server = requireNotNull(MockBukkit.getMock())
+        val server = paper.server
         val player = server.addPlayer("TeleportFailure")
         val persisted = AtomicInteger()
         val service = PaperPlayerStateService(
@@ -110,7 +112,7 @@ class PaperPlayerStateServiceTest : FreeSpec({
     }
 
     "unrestorable health fails instead of silently acknowledging a lossy restore" {
-        val server = requireNotNull(MockBukkit.getMock())
+        val server = paper.server
         val player = server.addPlayer("HealthMismatch")
         val persisted = AtomicInteger()
         val service = PaperPlayerStateService(
@@ -124,7 +126,7 @@ class PaperPlayerStateServiceTest : FreeSpec({
     }
 
     "mismatch diagnostics expose bounded field names rather than item contents" {
-        val server = requireNotNull(MockBukkit.getMock())
+        val server = paper.server
         val player = server.addPlayer("MismatchState")
         val service = PaperPlayerStateService(
             PaperPlayerStateCodec(SimpleItemCodec),

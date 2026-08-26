@@ -7,14 +7,16 @@ import net.kyori.adventure.text.Component
 import org.bukkit.GameMode
 import org.bukkit.Material
 import org.bukkit.inventory.ItemStack
-import org.mockbukkit.mockbukkit.MockBukkit
+import ru.arc.paper.testing.MockBukkitTestRuntime
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.UUID
 
 class PaperPlayerStateCodecTest : FreeSpec({
-    beforeSpec { MockBukkit.mock() }
-    afterSpec { MockBukkit.unmock() }
+    lateinit var paper: MockBukkitTestRuntime
+
+    beforeEach { paper = MockBukkitTestRuntime.open() }
+    afterEach { paper.close() }
 
     "native Paper item bytes preserve type, amount and component metadata" {
         val item = ItemStack.of(Material.DIAMOND_SWORD).apply {

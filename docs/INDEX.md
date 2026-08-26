@@ -8,6 +8,7 @@ plans. **Do not duplicate** — link from `AGENTS.md`.
 | File | Description |
 |------|-------------|
 | [shared-primitives.md](shared-primitives.md) | Agent-oriented routing index for reusable plugin lifecycle, persistence, locale, Redis, network, teleport, and player-state mechanisms |
+| [paper-testing.md](paper-testing.md) | Canonical MockBukkit test-kit, test-layer selection, lifecycle, examples, and limitations |
 
 ## Specs
 

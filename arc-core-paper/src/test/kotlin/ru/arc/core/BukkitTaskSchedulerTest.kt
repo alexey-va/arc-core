@@ -3,38 +3,34 @@ package ru.arc.core
 import io.kotest.core.spec.style.FreeSpec
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.shouldBe
-import org.mockbukkit.mockbukkit.MockBukkit
-import org.mockbukkit.mockbukkit.ServerMock
 import ru.arc.paper.player.TestPaperPlugin
+import ru.arc.paper.testing.MockBukkitTestRuntime
+import ru.arc.paper.testing.loadPlugin
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.RejectedExecutionException
 import kotlin.time.Duration.Companion.milliseconds
 
 class BukkitTaskSchedulerTest : FreeSpec({
 
-    lateinit var server: ServerMock
+    lateinit var paper: MockBukkitTestRuntime
     lateinit var plugin: TestPaperPlugin
     lateinit var scheduler: BukkitTaskScheduler
 
-    beforeSpec {
-        MockBukkit.mock()
-        server = MockBukkit.getMock()!!
-        plugin = MockBukkit.load(TestPaperPlugin::class.java)
-    }
-
-    afterSpec {
-        MockBukkit.unmock()
-    }
-
     beforeEach {
+        paper = MockBukkitTestRuntime.open()
+        plugin = paper.loadPlugin<TestPaperPlugin>()
         scheduler = BukkitTaskScheduler(plugin)
+    }
+
+    afterEach {
+        paper.close()
     }
 
     "one-shot tasks are untracked after execution" {
         val counter = AtomicInteger()
         scheduler.runLater(1) { counter.incrementAndGet() }
         scheduler.trackedCount() shouldBe 1
-        server.scheduler.performTicks(1)
+        paper.performTicks(1)
         counter.get() shouldBe 1
         scheduler.trackedCount() shouldBe 0
     }
@@ -43,7 +39,7 @@ class BukkitTaskSchedulerTest : FreeSpec({
         val counter = AtomicInteger()
         val task = scheduler.runTimer(1, 1) { counter.incrementAndGet() }
         scheduler.trackedCount() shouldBe 1
-        server.scheduler.performTicks(3)
+        paper.performTicks(3)
         counter.get() shouldBe 3
         scheduler.trackedCount() shouldBe 1
         task.cancel()
@@ -56,7 +52,7 @@ class BukkitTaskSchedulerTest : FreeSpec({
         scheduler.trackedCount() shouldBe 1
         task.cancel()
         scheduler.trackedCount() shouldBe 0
-        server.scheduler.performTicks(5)
+        paper.performTicks(5)
         counter.get() shouldBe 0
     }
 

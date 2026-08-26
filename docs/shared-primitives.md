@@ -21,6 +21,7 @@ lifecycle mechanisms belong here.
 | Paper backend transfer | `arc-core-paper`: `BackendTransfer`, `BungeeBackendTransfer` | Route only to a typed `BackendServerId`; own channel registration and return a typed delivery outcome. |
 | Narrow teleport exception | `arc-core-paper`: `ScopedTeleportAuthorizer` | Authorize one player and one exact world/position/rotation only for the dynamic extent of one action. Nested scopes are rejected and cleanup is unconditional. |
 | Complete Paper player escrow | `arc-core-paper`: `PaperPlayerStateService`, `PaperPlayerStateCodec` | Capture/restore on the primary thread, use versioned native item bytes plus SHA-256 and bounds, verify every restored field, then call `saveData`. |
+| Paper platform test runtime | `arc-core-paper-testing`: `MockBukkitTestRuntime` | Consume the pinned Paper/MockBukkit pair as a test dependency, own one global runtime per test, drive events and ticks deterministically, and always close it. |
 
 Package names are deliberately searchable and behavior-specific:
 
@@ -33,6 +34,7 @@ ru.arc.redis.safety
 ru.arc.paper.network
 ru.arc.paper.teleport
 ru.arc.paper.playerstate
+ru.arc.paper.testing
 ```
 
 ## Required integration order
@@ -118,6 +120,9 @@ escrowRepository.acknowledgeExactly(receipt.playerId, receipt.envelopeSha256)
   narrow injected seam and cover the new contract in `arc-core` tests.
 - Do not move gameplay state machines, GUI composition, or feature-specific
   repository schemas into core merely because two classes look similar.
+- Do not declare MockBukkit directly in a plugin or manage its global singleton
+  ad hoc. Use `arc-core-paper-testing` and follow
+  [`paper-testing.md`](paper-testing.md).
 
 ## Verification
 
@@ -127,6 +132,7 @@ Run the focused module while iterating and the complete gate before publishing:
 ./gradlew :arc-core:test
 ./gradlew :arc-core-redis:test
 ./gradlew :arc-core-paper:test
+./gradlew :arc-core-paper-testing:test
 ./gradlew testAll publishToMavenLocal
 ```
 
