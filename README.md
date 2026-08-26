@@ -11,7 +11,9 @@ Platform-agnostic **Kotlin-only** framework for **ARC** (Paper) and **ProxyARC**
 
 ## Requirements
 
-- **Java 25** (Temurin)
+- **Java 25** (Temurin) to build the complete multi-module repository
+- published `arc-core` and `*-testing` artifacts target Java 21; the remaining
+  internal runtime modules target Java 25
 - **Kotlin 2.3**
 - Исходники только `.kt` — Gradle task `assertKotlinOnly` падает на `.java`
 
@@ -19,7 +21,7 @@ Platform-agnostic **Kotlin-only** framework for **ARC** (Paper) and **ProxyARC**
 
 Gradle root project: **`ArcCore`** (имя важно для composite build — не совпадает с subproject `arc-core`).
 
-| Module | Artifact | Purpose |
+| Module | Composite artifact | Purpose |
 |--------|----------|---------|
 | `arc-core/` | `ru.arc:arc-core` | Config, lifecycle tasks, identifiers, atomic files, locale, diagnostics |
 | `arc-core-logging/` | `ru.arc:arc-core-logging` | Loki appender (Tjahzi), ArcJsonLayout, MDC LogContext |
@@ -52,6 +54,30 @@ and blocking JDBC infrastructure in `arc-core-sql`.
 export JAVA_HOME=/Library/Java/JavaVirtualMachines/temurin-25.jdk/Contents/Home
 ./gradlew testAll publishToMavenLocal
 ```
+
+## Published releases
+
+Tagged GitHub releases publish every module to the public RusCrafting Maven
+repository under `ru.ruscrafting.arc`:
+
+```kotlin
+repositories {
+    maven("https://repo.rus-crafting.ru/grocermc/") {
+        content { includeGroup("ru.ruscrafting.arc") }
+    }
+}
+
+dependencies {
+    implementation("ru.ruscrafting.arc:arc-core:<release>")
+    testImplementation("ru.ruscrafting.arc:arc-core-paper-testing:<release>")
+}
+```
+
+`ru.arc:*:1.0-SNAPSHOT` remains the source-composite coordinate used by ARC,
+ProxyARC, and local sibling checkouts. Release publishing is resumable and
+immutable: `scripts/publish-release.sh` rejects a conflicting remote file and
+publicly reads every uploaded POM, Gradle module, binary JAR, and sources JAR
+back by SHA-256.
 
 ## Use in Gradle (composite build)
 

@@ -19,6 +19,36 @@ dependencies {
 }
 ```
 
+Pure orchestration tests may additionally consume the platform-neutral
+fixtures without starting MockBukkit:
+
+```kotlin
+dependencies {
+    testImplementation("ru.arc:arc-core-testing:1.0-SNAPSHOT")
+}
+```
+
+Use `DeterministicClock`, `ControlledExecutor`, and `FailureInjector` to drive
+timeouts, queued completions, retries, and recovery failures without sleeps.
+Keep Bukkit events, inventories, commands, scheduler ticks, and plugin
+lifecycle in `arc-core-paper-testing`.
+
+Public plugins that cannot access the private source composite use the
+Java-21-compatible release from RusCrafting Reposilite instead:
+
+```kotlin
+repositories {
+    maven("https://repo.rus-crafting.ru/grocermc/") {
+        content { includeGroup("ru.ruscrafting.arc") }
+    }
+}
+
+dependencies {
+    testImplementation("ru.ruscrafting.arc:arc-core-testing:<release>")
+    testImplementation("ru.ruscrafting.arc:arc-core-paper-testing:<release>")
+}
+```
+
 Do not repeat the MockBukkit coordinate in each plugin. Update the version pair
 in the root `gradle.properties` (`paperApiVersion` and `mockBukkitVersion`) and
 its compatibility tests once, then consume the published test-kit everywhere.
@@ -115,6 +145,7 @@ or simulation API.
 ```bash
 ./gradlew :arc-core-paper-testing:test
 ./gradlew :arc-core-paper:test
+./gradlew :arc-core-testing:test
 ./gradlew testAll publishToMavenLocal
 ```
 

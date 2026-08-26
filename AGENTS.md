@@ -28,17 +28,24 @@ arc-core ─────┬───── ARC (Paper: Event DSL, GUI, gameplay)
 
 | Module | Artifact | Purpose |
 |--------|----------|---------|
-| `arc-core/` | `ru.arc:arc-core` | Config, lifecycle, identifiers, atomic files/recovery journals, locale, diagnostics |
+| `arc-core/` | `ru.arc:arc-core` | Config, lifecycle, identifiers, durable recovery workflows, leased directories, locale, diagnostics |
 | `arc-core-logging/` | `ru.arc:arc-core-logging` | Loki, ArcJsonLayout, LogContext |
 | `arc-core-metrics/` | `ru.arc:arc-core-metrics` | Prometheus registry, cached JVM/OS/disk metrics, scrape HTTP |
 | `arc-core-redis/` | `ru.arc:arc-core-redis` | Redis plus strict codecs, CAS, origin and replay safety |
 | `arc-core-sql/` | `ru.arc:arc-core-sql` | Optional MySQL/Hikari runtime, async JDBC and migrations |
 | `arc-core-paper/` | `ru.arc:arc-core-paper` | Paper scheduling, transfer/teleport and player-state escrow |
+| `arc-core-testing/` | `ru.arc:arc-core-testing` | Platform-neutral deterministic clocks, executors, and failure injection |
 | `arc-core-paper-testing/` | `ru.arc:arc-core-paper-testing` | Canonical published MockBukkit test runtime and fixtures |
 | `arc-core-velocity/` | `ru.arc:arc-core-velocity` | Velocity scheduling, snapshots, and connection counters |
 | `arc-core-ai/` | `ru.arc:arc-core-ai` | OpenRouter LLM, moderation, tool RPC |
 
 Composite build: `includeBuild("../arc-core")` in ARC/ProxyARC `settings.gradle.kts`.
+Public release artifacts use `ru.ruscrafting.arc:<module>:<release>` from
+`https://repo.rus-crafting.ru/grocermc/`; `arc-core` and every `*-testing`
+module must retain Java 21 bytecode compatibility. A published GitHub release
+runs `scripts/publish-release.sh`, which discovers every Maven publication,
+stages complete Gradle metadata and rejects conflicting remote files before
+upload.
 
 ## Boundary rules (non-negotiable)
 
@@ -63,6 +70,7 @@ Composite build: `includeBuild("../arc-core")` in ARC/ProxyARC `settings.gradle.
 | Shared, no Bukkit/Velocity? | `arc-core` or new `arc-core-*` module |
 | Shared Redis transport, codec, CAS, or replay rule? | `arc-core-redis/ru.arc.redis.safety` |
 | Paper API only (Material, Sound)? | `arc-core-paper` |
+| Platform-neutral deterministic test fixture? | `arc-core-testing` |
 | Reusable Paper test fixture or MockBukkit lifecycle? | `arc-core-paper-testing` |
 | Gameplay feature (treasure, stock, …)? | `ARC/src/main/kotlin/ru/arc/{feature}/` |
 | Proxy feature (join, discord, …)? | `ProxyARC/src/main/kotlin/ru/arc/` |
@@ -153,4 +161,5 @@ where ordering crosses storage or platform boundaries.
 ```bash
 export JAVA_HOME=/Library/Java/JavaVirtualMachines/temurin-25.jdk/Contents/Home
 ./gradlew testAll publishToMavenLocal
+./scripts/publish-release.sh <version> --dry-run
 ```
