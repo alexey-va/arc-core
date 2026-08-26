@@ -64,6 +64,27 @@ class DurableRecordJournal<T : Any>(
     @Synchronized
     fun acknowledge(recordId: String): Boolean = store(recordId).deleteIfExists()
 
+    /**
+     * Deletes only when the current decoded record still matches [expected].
+     *
+     * This is process-atomic with every other operation on this journal. The
+     * caller supplies the domain comparison so byte arrays and opaque payloads
+     * are compared by content rather than accidental reference equality.
+     */
+    @Synchronized
+    fun acknowledgeExactly(
+        recordId: String,
+        expected: T,
+        sameContent: (expected: T, current: T) -> Boolean,
+    ): DurableAcknowledgementOutcome {
+        validate(expected)
+        val recordStore = store(recordId)
+        val current = recordStore.loadOrNull() ?: return DurableAcknowledgementOutcome.ALREADY_ACKNOWLEDGED
+        if (!sameContent(expected, current)) return DurableAcknowledgementOutcome.CONTENT_MISMATCH
+        check(recordStore.deleteIfExists()) { "Durable journal record disappeared during exact acknowledgement" }
+        return DurableAcknowledgementOutcome.ACKNOWLEDGED
+    }
+
     /** Loads every committed record in stable identifier order. */
     @Synchronized
     fun loadAll(): List<DurableRecord<T>> {

@@ -47,6 +47,19 @@ class DurableRecordJournalTest : FunSpec({
         journal.loadOrNull("match-1") shouldBe null
     }
 
+    test("exact acknowledgement retains a newer record") {
+        val (_, journal) = journal()
+        journal.commit("match-1", Record(2, "newer"))
+
+        journal.acknowledgeExactly("match-1", Record(1, "older"), Record::equals) shouldBe
+            DurableAcknowledgementOutcome.CONTENT_MISMATCH
+        journal.loadOrNull("match-1") shouldBe Record(2, "newer")
+        journal.acknowledgeExactly("match-1", Record(2, "newer"), Record::equals) shouldBe
+            DurableAcknowledgementOutcome.ACKNOWLEDGED
+        journal.acknowledgeExactly("match-1", Record(2, "newer"), Record::equals) shouldBe
+            DurableAcknowledgementOutcome.ALREADY_ACKNOWLEDGED
+    }
+
     test("rejects traversal and oversized records before commit") {
         val (_, journal) = journal(maxBytes = 8)
 

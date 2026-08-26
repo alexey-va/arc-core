@@ -7,7 +7,7 @@ import java.util.concurrent.CompletableFuture
  *
  * Extracted for testing via [InMemoryRedis] without a live Jedis connection.
  */
-interface RedisOperations {
+interface RedisOperations : AutoCloseable {
     fun publish(channel: String, message: String)
 
     fun saveMap(key: String, map: Map<String, String>)
@@ -36,5 +36,5 @@ interface RedisOperations {
 
     fun init()
 
-    fun close()
+    override fun close()
 }

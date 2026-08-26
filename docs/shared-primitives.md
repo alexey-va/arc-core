@@ -5,6 +5,9 @@ plugins. Before implementing infrastructure locally, search this table by the
 behavior name. Gameplay rules remain in their plugin; reusable safety and
 lifecycle mechanisms belong here.
 
+For a complete composition example, see
+[`agentic-plugin-reference.md`](agentic-plugin-reference.md).
+
 ## Choose the owner
 
 | Need | Module and API | Contract |
@@ -13,8 +16,11 @@ lifecycle mechanisms belong here.
 | Reload-safe scheduled work | `arc-core`: `LifecycleTaskScope`, `whenCompleteSync` | One scope owns one lifecycle. `restart()` cancels old work and stale epoch tokens cannot schedule or execute work. |
 | Bounded crash-safe local state | `arc-core`: `AtomicFileStore` | Resolve below a trusted root, reject traversal/symlinks, validate before and after an atomic replacement, and bound bytes. |
 | Durable per-record recovery | `arc-core`: `DurableRecordJournal` | Commit one bounded record per safe identifier, verify the durable readback, list deterministically, and acknowledge idempotently. Keep domain transitions in the consumer. |
+| Durable recovery call order | `arc-core`: `DurableRecoveryWorkflow` | Commit and compare the durable readback before mutation; restore and verify before exact acknowledgement. Storage, executors, and domain transitions remain injected. |
 | Burst coalescing | `arc-core`: `CoalescingAsyncWriter` | Keep at most one write in flight and the newest pending snapshot. Completion means the submitted snapshot or a newer one was stored. |
 | Stable QA/debug readback | `arc-core`: `StructuredDebugLine` | Emit a bounded single line with ordered safe `key=value` fields. Never include secrets or raw network/persistence payloads. |
+| Canonical runtime events | `arc-core`: `RuntimeEvent`, `StructuredRuntimeEventLine` | Use stable event/outcome names with bounded fields for operator and agent readback. Never attach raw payloads or secrets. |
+| Local expiring network view | `arc-core`: `LeasedNetworkDirectory` | Keep a bounded lease map with deterministic expiry, optional monotonic sequences, capacity rejection, and fail-closed clock rollback. Authenticate transport before observation. |
 | Localized MiniMessage | `arc-core`: `LocalizedMiniMessage` | Validate required keys at startup, select locale with a fallback, and insert untrusted values as `Component` placeholders. |
 | Strict JSON boundary | `arc-core-redis`: `RedisWireCodec`, `BoundedJsonCodec`, `JsonObjectContract`, `JsonArrayContract` | Use the minimal codec contract only for an explicit domain-to-wire adapter; otherwise prefer the bounded implementation, which rejects malformed/trailing data and resource-limit violations, validates an explicit object or array root, then runs domain validation. |
 | Atomic Redis hash transition | `arc-core-redis`: `RedisHashUpdater` | Return typed changed/unchanged/rejected/contended outcomes. Corrupt state fails closed; `consume` deletes only the exact value read. |
@@ -22,6 +28,8 @@ lifecycle mechanisms belong here.
 | Paper backend transfer | `arc-core-paper`: `BackendTransfer`, `BungeeBackendTransfer` | Route only to a typed `BackendServerId`; own channel registration and return a typed delivery outcome. |
 | Narrow teleport exception | `arc-core-paper`: `ScopedTeleportAuthorizer` | Authorize one player and one exact world/position/rotation only for the dynamic extent of one action. Nested scopes are rejected and cleanup is unconditional. |
 | Complete Paper player escrow | `arc-core-paper`: `PaperPlayerStateService`, `PaperPlayerStateCodec` | Capture/restore on the primary thread, use versioned native item bytes plus SHA-256 and bounds, verify every restored field, then call `saveData`. Explicit partial APIs preserve inventory or location for cross-server recovery without weakening full restore. |
+| Paper lifecycle composition | `arc-core-paper`: `PaperPluginRuntime` | Compose rather than inherit: own reload epochs and closeable resources explicitly, close tasks first, and emit canonical bootstrap/ready events. |
+| Platform-neutral test fixtures | `arc-core-testing`: `DeterministicClock`, `ControlledExecutor`, `FailureInjector` | Drive time, queued work, and named failure points without sleeps or races. Keep this artifact test-only in consumers. |
 | Paper platform test runtime | `arc-core-paper-testing`: `MockBukkitTestRuntime` | Consume the pinned Paper/MockBukkit pair as a test dependency, own one global runtime per test, drive events and ticks deterministically, and always close it. |
 
 Package names are deliberately searchable and behavior-specific:
@@ -35,6 +43,8 @@ ru.arc.redis.safety
 ru.arc.paper.network
 ru.arc.paper.teleport
 ru.arc.paper.playerstate
+ru.arc.paper.runtime
+ru.arc.testing
 ru.arc.paper.testing
 ```
 
@@ -57,6 +67,11 @@ owns the durable commit and must prove it succeeded before mutation.
 `restoreAndVerify` returning a `PlayerStateRestoreReceipt` is the earliest safe
 point at which the domain layer may acknowledge the escrow. An unknown storage
 outcome is not permission to mutate or delete recovery state.
+
+`DurableRecoveryWorkflow` encodes that order without choosing persistence or
+threads. A Paper consumer supplies stages that marshal Bukkit mutations and
+restores onto the primary thread; a Redis or file repository supplies exact
+commit/readback and conditional acknowledgement.
 
 ## Minimal examples
 
@@ -121,8 +136,8 @@ inventory must be preserved.
 - Do not build Bungee `Connect` bytes or command strings in a feature.
 - Do not add a feature-local username/server-id regex.
 - Do not create another reload epoch, task bag, atomic JSON file writer,
-  MiniMessage fallback engine, Redis CAS loop, replay map, or player snapshot
-  format.
+  recovery call-order chain, expiring network map, MiniMessage fallback engine,
+  Redis CAS loop, replay map, or player snapshot format.
 - Do not weaken a shared primitive to fit one caller. Add a typed policy or a
   narrow injected seam and cover the new contract in `arc-core` tests.
 - Do not move gameplay state machines, GUI composition, or feature-specific
@@ -139,6 +154,7 @@ Run the focused module while iterating and the complete gate before publishing:
 ./gradlew :arc-core:test
 ./gradlew :arc-core-redis:test
 ./gradlew :arc-core-paper:test
+./gradlew :arc-core-testing:test
 ./gradlew :arc-core-paper-testing:test
 ./gradlew testAll publishToMavenLocal
 ```
