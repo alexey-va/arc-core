@@ -51,6 +51,11 @@ data class SqlConnectionConfig(
             append("&forceConnectionTimeZoneToSession=true")
             append("&sslMode=")
             append(sslMode.name)
+            if (sslMode == SqlSslMode.DISABLED) {
+                // Modern MySQL users default to caching_sha2_password. An explicitly
+                // unencrypted transport needs RSA password exchange to authenticate.
+                append("&allowPublicKeyRetrieval=true")
+            }
             append("&connectTimeout=")
             append(connectionTimeoutMs)
             append("&socketTimeout=")

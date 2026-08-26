@@ -8,34 +8,44 @@ import java.nio.file.Files
 class RedisConfigBootstrapTest : FreeSpec({
 
     "RedisConfigBootstrap" - {
-        "should migrate legacy misc.yml redis section into modules/redis.yml" {
+        "should seed modules redis config only from an explicit current settings reader" {
             ConfigManager.clear()
             val dir = Files.createTempDirectory("arc-redis-bootstrap")
             try {
-                Files.writeString(
-                    dir.resolve("misc.yml"),
-                    """
-                    redis:
-                      ip: legacy-host
-                      port: 12345
-                      username: u
-                      password: p
-                      server-name: spawn
-                      main-server: true
-                      enabled: false
-                    """.trimIndent(),
-                )
-
-                RedisConfigBootstrap.ensure(dir)
+                RedisConfigBootstrap.ensure(dir) {
+                    RedisConnectionSettingsSnapshot(
+                        host = "current-host",
+                        port = 12345,
+                        username = "u",
+                        password = "p",
+                        serverName = "spawn",
+                        mainServer = true,
+                        enabled = false,
+                    )
+                }
 
                 val cfg = RedisModuleConfig.load(dir)
-                cfg.host shouldBe "legacy-host"
+                cfg.host shouldBe "current-host"
                 cfg.port shouldBe 12345
                 cfg.username shouldBe "u"
                 cfg.password shouldBe "p"
                 cfg.serverName shouldBe "spawn"
                 cfg.mainServer shouldBe true
                 cfg.enabled shouldBe false
+            } finally {
+                ConfigManager.clear()
+            }
+        }
+
+        "should not inspect retired plugin config layouts implicitly" {
+            ConfigManager.clear()
+            val dir = Files.createTempDirectory("arc-redis-no-implicit-reader")
+            try {
+                Files.writeString(dir.resolve("misc.yml"), "redis:\n  host: retired-host\n")
+
+                RedisConfigBootstrap.ensure(dir)
+
+                RedisModuleConfig.load(dir).host shouldBe RedisModuleConfig.DEFAULT_HOST
             } finally {
                 ConfigManager.clear()
             }

@@ -30,6 +30,7 @@ Gradle root project: **`ArcCore`** (имя важно для composite build —
 | `arc-core-sql/` | `ru.arc:arc-core-sql` | Optional MySQL/Hikari runtime, async JDBC and migrations |
 | `arc-core-paper/` | `ru.arc:arc-core-paper` | Paper scheduling, transfer/teleport boundaries and complete player-state escrow |
 | `arc-core-paper-testing/` | `ru.arc:arc-core-paper-testing` | Published MockBukkit runtime and fixtures for Paper plugin tests |
+| `arc-core-integration-testing/` | `ru.arc:arc-core-integration-testing` | Published disposable Redis/MySQL Testcontainers fixtures |
 | `arc-core-velocity/` | `ru.arc:arc-core-velocity` | Scheduling plus proxy/backend/event metrics |
 
 ### Packages (arc-core)
@@ -109,8 +110,10 @@ dependencies {
 ```
 
 Paper tests use the shared MockBukkit test-kit rather than declaring MockBukkit
-directly. Setup, lifecycle, layer selection, and unsupported-API rules:
-[`docs/paper-testing.md`](docs/paper-testing.md).
+directly. Redis/MySQL integration tests use the shared container harness rather
+than repeating images, ports, credentials, waits, and cleanup. See
+[`docs/paper-testing.md`](docs/paper-testing.md) and
+[`docs/integration-testing.md`](docs/integration-testing.md).
 
 Metrics architecture and catalog: [`arc-core-metrics/README.md`](arc-core-metrics/README.md).
 

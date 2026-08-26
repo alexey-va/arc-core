@@ -11,6 +11,7 @@ java {
 
 dependencies {
     api(project(":arc-core"))
+    testImplementation("io.kotest:kotest-property:6.0.7")
 }
 
 publishing {

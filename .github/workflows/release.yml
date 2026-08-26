@@ -33,6 +33,10 @@ jobs:
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
           printf 'version=%s\n' "${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+      - name: Verify Docker daemon
+        run: docker info
+      - name: Run release gates
+        run: ./gradlew clean testAll integrationTestAll
       - name: Publish immutable Maven release
         env:
           REPOSILITE_PUBLISH_USERNAME: arc-publisher

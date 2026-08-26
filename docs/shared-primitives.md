@@ -20,6 +20,7 @@ For a complete composition example, see
 | Burst coalescing | `arc-core`: `CoalescingAsyncWriter` | Keep at most one write in flight and the newest pending snapshot. Completion means the submitted snapshot or a newer one was stored. |
 | Stable QA/debug readback | `arc-core`: `StructuredDebugLine` | Emit a bounded single line with ordered safe `key=value` fields. Never include secrets or raw network/persistence payloads. |
 | Canonical runtime events | `arc-core`: `RuntimeEvent`, `StructuredRuntimeEventLine` | Use stable event/outcome names with bounded fields for operator and agent readback. Never attach raw payloads or secrets. |
+| Agent-readable runtime health | `arc-core`: `RuntimeHealthRegistry`, `RuntimeHealthContribution`, `moduleRuntimeHealth` | Register only non-blocking in-memory probes; expose the bounded snapshot through authenticated ops and emit `ARC_HEALTH` periodically. Report readiness, recovery backlog, active leases, schema versions, and dependency state. |
 | Local expiring network view | `arc-core`: `LeasedNetworkDirectory` | Keep a bounded lease map with deterministic expiry, optional monotonic sequences, capacity rejection, and fail-closed clock rollback. Authenticate transport before observation. |
 | Localized MiniMessage | `arc-core`: `LocalizedMiniMessage` | Validate required keys at startup, select locale with a fallback, and insert untrusted values as `Component` placeholders. |
 | Strict JSON boundary | `arc-core-redis`: `RedisWireCodec`, `BoundedJsonCodec`, `JsonObjectContract`, `JsonArrayContract` | Use the minimal codec contract only for an explicit domain-to-wire adapter; otherwise prefer the bounded implementation, which rejects malformed/trailing data and resource-limit violations, validates an explicit object or array root, then runs domain validation. |
@@ -31,6 +32,7 @@ For a complete composition example, see
 | Paper lifecycle composition | `arc-core-paper`: `PaperPluginRuntime` | Compose rather than inherit: own reload epochs and closeable resources explicitly, close tasks first, and emit canonical bootstrap/ready events. |
 | Platform-neutral test fixtures | `arc-core-testing`: `DeterministicClock`, `ControlledExecutor`, `FailureInjector` | Drive time, queued work, and named failure points without sleeps or races. Keep this artifact test-only in consumers. |
 | Paper platform test runtime | `arc-core-paper-testing`: `MockBukkitTestRuntime` | Consume the pinned Paper/MockBukkit pair as a test dependency, own one global runtime per test, drive events and ticks deterministically, and always close it. |
+| Real Redis/MySQL test services | `arc-core-integration-testing`: `RedisTestService`, `MySqlTestService` | Start one disposable Testcontainer with `use`, consume only the returned endpoint, choose an exact image only when schema/version behavior matters, and never depend on a host daemon port or binary. |
 
 Package names are deliberately searchable and behavior-specific:
 
@@ -38,6 +40,7 @@ Package names are deliberately searchable and behavior-specific:
 ru.arc.network
 ru.arc.persistence
 ru.arc.observability
+ru.arc.runtime
 ru.arc.text
 ru.arc.redis.safety
 ru.arc.paper.network
@@ -46,6 +49,7 @@ ru.arc.paper.playerstate
 ru.arc.paper.runtime
 ru.arc.testing
 ru.arc.paper.testing
+ru.arc.testing.containers
 ```
 
 ## Required integration order
@@ -145,6 +149,13 @@ inventory must be preserved.
 - Do not declare MockBukkit directly in a plugin or manage its global singleton
   ad hoc. Use `arc-core-paper-testing` and follow
   [`paper-testing.md`](paper-testing.md).
+- Do not repeat Redis/MySQL Testcontainers setup in a plugin. Use
+  `arc-core-integration-testing` and follow
+  [`integration-testing.md`](integration-testing.md).
+- Do not restore implicit legacy Redis config readers. `RedisConfigBootstrap`
+  copies the bundled default or an explicit consumer-provided
+  `RedisConnectionSettingsSnapshot`; trusted operator config remains flexible
+  in the owning plugin parser.
 
 ## Verification
 
@@ -156,6 +167,7 @@ Run the focused module while iterating and the complete gate before publishing:
 ./gradlew :arc-core-paper:test
 ./gradlew :arc-core-testing:test
 ./gradlew :arc-core-paper-testing:test
+./gradlew :arc-core-integration-testing:integrationTest
 ./gradlew testAll publishToMavenLocal
 ```
 

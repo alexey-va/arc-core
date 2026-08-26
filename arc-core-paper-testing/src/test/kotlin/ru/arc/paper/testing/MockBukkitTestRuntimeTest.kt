@@ -47,6 +47,13 @@ class MockBukkitTestRuntimeTest : FreeSpec({
         MockBukkit.isMocked() shouldBe false
     }
 
+    "creates a bounded generic plugin without transferring lifecycle ownership" {
+        MockBukkitTestRuntime.open().use { runtime ->
+            runtime.createSimplePlugin("AgenticFixture").name shouldBe "AgenticFixture"
+            runtime.isOpen shouldBe true
+        }
+    }
+
     "provides deterministic players, worlds, events, plugin lifecycle and ticks" {
         val executions = AtomicInteger()
         MockBukkitTestRuntime.open().use { runtime ->

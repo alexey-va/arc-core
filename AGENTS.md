@@ -36,6 +36,7 @@ arc-core ─────┬───── ARC (Paper: Event DSL, GUI, gameplay)
 | `arc-core-paper/` | `ru.arc:arc-core-paper` | Paper scheduling, transfer/teleport and player-state escrow |
 | `arc-core-testing/` | `ru.arc:arc-core-testing` | Platform-neutral deterministic clocks, executors, and failure injection |
 | `arc-core-paper-testing/` | `ru.arc:arc-core-paper-testing` | Canonical published MockBukkit test runtime and fixtures |
+| `arc-core-integration-testing/` | `ru.arc:arc-core-integration-testing` | Canonical Redis/MySQL Testcontainers services for real storage seams |
 | `arc-core-velocity/` | `ru.arc:arc-core-velocity` | Velocity scheduling, snapshots, and connection counters |
 | `arc-core-ai/` | `ru.arc:arc-core-ai` | OpenRouter LLM, moderation, tool RPC |
 
@@ -62,6 +63,12 @@ upload.
 8. **Paper platform tests:** depend on `arc-core-paper-testing`, open one
    `MockBukkitTestRuntime` per test, and close it with `use`. Never repeat the
    MockBukkit coordinate or weaken production behavior for an unsupported mock.
+9. **Real storage tests:** depend on `arc-core-integration-testing` and own one
+   `RedisTestService` or `MySqlTestService` with `use`. Keep image choice
+   explicit when version-sensitive, but never repeat container wiring locally.
+10. **Trusted config:** operator-controlled configuration remains expressive.
+    Core may bootstrap its bundled default or a consumer-supplied settings
+    snapshot; it must not guess legacy file locations or add broad allowlists.
 
 ## Decision tree — where to put new code
 
@@ -72,6 +79,7 @@ upload.
 | Paper API only (Material, Sound)? | `arc-core-paper` |
 | Platform-neutral deterministic test fixture? | `arc-core-testing` |
 | Reusable Paper test fixture or MockBukkit lifecycle? | `arc-core-paper-testing` |
+| Disposable real Redis/MySQL fixture? | `arc-core-integration-testing` |
 | Gameplay feature (treasure, stock, …)? | `ARC/src/main/kotlin/ru/arc/{feature}/` |
 | Proxy feature (join, discord, …)? | `ProxyARC/src/main/kotlin/ru/arc/` |
 | Runtime YAML on prod? | `mcserver/*/plugins/ARC/modules/` or `velocity/plugins/ProxyARC/` |
@@ -149,6 +157,7 @@ where ordering crosses storage or platform boundaries.
 | [`README.md`](README.md) | Build, composite build, dependencies |
 | [`docs/shared-primitives.md`](docs/shared-primitives.md) | Shared API routing, contracts, examples, verification |
 | [`docs/paper-testing.md`](docs/paper-testing.md) | MockBukkit dependency, lifecycle, test layers, limitations |
+| [`docs/integration-testing.md`](docs/integration-testing.md) | Shared disposable Redis/MySQL services and integration-test contract |
 | [`docs/INDEX.md`](docs/INDEX.md) | Superpowers specs and plans |
 | `ARC/AGENTS.md` | Paper-specific delta |
 | `ProxyARC/AGENTS.md` | Velocity-specific delta |

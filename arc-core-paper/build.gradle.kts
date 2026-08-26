@@ -9,11 +9,13 @@ val paperApiVersion: String by project
 
 dependencies {
     api(project(":arc-core"))
-    api(project(":arc-core-logging"))
-    api(project(":arc-core-metrics"))
+    compileOnlyApi(project(":arc-core-logging"))
+    compileOnlyApi(project(":arc-core-metrics"))
     compileOnly("io.papermc.paper:paper-api:$paperApiVersion")
 
     testImplementation(project(":arc-core-paper-testing"))
+    testImplementation(project(":arc-core-logging"))
+    testImplementation(project(":arc-core-metrics"))
     testImplementation("io.mockk:mockk:1.14.7")
 }
 

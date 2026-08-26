@@ -9,6 +9,8 @@ plans. **Do not duplicate** — link from `AGENTS.md`.
 |------|-------------|
 | [shared-primitives.md](shared-primitives.md) | Agent-oriented routing index for reusable plugin lifecycle, persistence, locale, Redis, network, teleport, and player-state mechanisms |
 | [paper-testing.md](paper-testing.md) | Canonical MockBukkit test-kit, test-layer selection, lifecycle, examples, and limitations |
+| [integration-testing.md](integration-testing.md) | Canonical disposable Redis/MySQL Testcontainers services and consumer pattern |
+| [agentic-plugin-reference.md](agentic-plugin-reference.md) | Short composition path for lifecycle, health, recovery, MockBukkit, and storage tests |
 
 ## Specs
 

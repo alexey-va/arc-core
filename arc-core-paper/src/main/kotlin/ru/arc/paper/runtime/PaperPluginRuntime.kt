@@ -1,16 +1,15 @@
 package ru.arc.paper.runtime
 
 import org.bukkit.plugin.Plugin
-import ru.arc.core.LifecycleTaskScope
 import ru.arc.core.TaskScheduler
 import ru.arc.core.Tasks
 import ru.arc.observability.RuntimeEvent
-import ru.arc.observability.RuntimeEventOutcome
-import ru.arc.observability.RuntimeEventType
+import ru.arc.observability.RuntimeHealthContribution
+import ru.arc.observability.RuntimeHealthSnapshot
 import ru.arc.observability.StructuredRuntimeEventLine
-import java.util.ArrayDeque
-import java.util.Collections
-import java.util.IdentityHashMap
+import ru.arc.observability.StructuredRuntimeHealthLine
+import ru.arc.runtime.PluginRuntime
+import ru.arc.runtime.PluginRuntimeState
 
 enum class PaperPluginRuntimeState {
     CREATED,
@@ -19,107 +18,65 @@ enum class PaperPluginRuntimeState {
 }
 
 /**
- * Explicit composition root for one Paper plugin lifecycle.
+ * Paper adapter for the platform-neutral [PluginRuntime].
  *
- * This is deliberately not a plugin superclass. The owning plugin constructs
- * it, registers closeable Redis/subscription/executor resources with [own], and
- * schedules reloadable work through [tasks]. [start], [reload], [ready] and
- * [close] are expected on the Paper primary lifecycle thread; owned resources
- * remain responsible for their own blocking-I/O shutdown policy.
- *
- * Reload invalidates and cancels the prior task epoch but does not replace
- * long-lived owned resources. Close is terminal, idempotent, cancels tasks
- * first and then closes resources in reverse registration order.
+ * This is deliberately not a plugin superclass. The owning plugin composes it,
+ * registers closeable resources and non-blocking health probes, and uses the
+ * canonical task scope. Lifecycle methods stay on Paper's primary thread.
  */
 class PaperPluginRuntime(
-    private val plugin: Plugin,
-    private val component: String = plugin.name.lowercase(),
+    plugin: Plugin,
+    component: String = plugin.name.lowercase(),
     scheduler: TaskScheduler = Tasks.scheduler,
-    private val eventSink: (RuntimeEvent) -> Unit = defaultEventSink(plugin),
+    eventSink: (RuntimeEvent) -> Unit = defaultEventSink(plugin),
 ) : AutoCloseable {
-    private val monitor = Any()
-    private val resources = ArrayDeque<AutoCloseable>()
-    private val ownedIdentities = Collections.newSetFromMap(IdentityHashMap<AutoCloseable, Boolean>())
-    val tasks = LifecycleTaskScope(scheduler = scheduler, initiallyActive = false)
+    private val delegate = PluginRuntime(component, scheduler, eventSink, defaultHealthSink(plugin))
 
-    @Volatile
-    var state: PaperPluginRuntimeState = PaperPluginRuntimeState.CREATED
-        private set
+    val tasks get() = delegate.tasks
+    val health get() = delegate.health
 
-    fun start(vararg fields: Pair<String, Any?>): LifecycleTaskScope.Token = synchronized(monitor) {
-        check(state == PaperPluginRuntimeState.CREATED) { "Paper plugin runtime may only start once" }
-        eventSink(
-            RuntimeEvent(
-                RuntimeEventType.PLUGIN_BOOTSTRAP,
-                component,
-                RuntimeEventOutcome.STARTED,
-                fields.toList(),
-            ),
-        )
-        val token = tasks.activate()
-        state = PaperPluginRuntimeState.ACTIVE
-        token
-    }
-
-    fun reload(): LifecycleTaskScope.Token = synchronized(monitor) {
-        check(state == PaperPluginRuntimeState.ACTIVE) { "Paper plugin runtime is not active" }
-        tasks.restart()
-    }
-
-    fun ready(vararg fields: Pair<String, Any?>) {
-        synchronized(monitor) {
-            check(state == PaperPluginRuntimeState.ACTIVE) { "Paper plugin runtime is not active" }
+    val state: PaperPluginRuntimeState
+        get() = when (delegate.state) {
+            PluginRuntimeState.CREATED -> PaperPluginRuntimeState.CREATED
+            PluginRuntimeState.ACTIVE -> PaperPluginRuntimeState.ACTIVE
+            PluginRuntimeState.CLOSED -> PaperPluginRuntimeState.CLOSED
         }
-        eventSink(
-            RuntimeEvent(
-                RuntimeEventType.PLUGIN_READY,
-                component,
-                RuntimeEventOutcome.OK,
-                fields.toList(),
-            ),
-        )
-    }
 
-    /** Registers one long-lived resource for reverse-order shutdown. */
-    fun <T : AutoCloseable> own(resource: T): T = synchronized(monitor) {
-        check(state != PaperPluginRuntimeState.CLOSED) { "Paper plugin runtime is closed" }
-        check(ownedIdentities.add(resource)) { "Paper plugin runtime already owns this resource" }
-        resources.addLast(resource)
-        resource
-    }
+    fun start(vararg fields: Pair<String, Any?>) = delegate.start(*fields)
 
-    fun ownedResourceCount(): Int = synchronized(monitor) { resources.size }
+    fun reload() = delegate.reload()
 
-    override fun close() {
-        val toClose = synchronized(monitor) {
-            if (state == PaperPluginRuntimeState.CLOSED) return
-            state = PaperPluginRuntimeState.CLOSED
-            resources.reversed().toList().also {
-                resources.clear()
-                ownedIdentities.clear()
-            }
-        }
-        var firstFailure: Throwable? = null
-        try {
-            tasks.close()
-        } catch (failure: Throwable) {
-            firstFailure = failure
-        }
-        toClose.forEach { resource ->
-            try {
-                resource.close()
-            } catch (failure: Throwable) {
-                val previous = firstFailure
-                if (previous == null) firstFailure = failure else previous.addSuppressed(failure)
-            }
-        }
-        firstFailure?.let { throw IllegalStateException("Could not close every Paper plugin runtime resource", it) }
-    }
+    fun ready(vararg fields: Pair<String, Any?>) = delegate.ready(*fields)
+
+    fun registerHealth(
+        id: String,
+        probe: () -> RuntimeHealthContribution,
+    ): AutoCloseable = delegate.registerHealth(id, probe)
+
+    fun emitHealth(): RuntimeHealthSnapshot = delegate.emitHealth()
+
+    fun reportHealthEvery(
+        periodTicks: Long,
+        initialDelayTicks: Long = periodTicks,
+    ) = delegate.reportHealthEvery(periodTicks, initialDelayTicks)
+
+    fun snapshot(): RuntimeHealthSnapshot = delegate.snapshot()
+
+    fun <T : AutoCloseable> own(resource: T): T = delegate.own(resource)
+
+    fun ownedResourceCount(): Int = delegate.ownedResourceCount()
+
+    override fun close() = delegate.close()
 
     private companion object {
         fun defaultEventSink(plugin: Plugin): (RuntimeEvent) -> Unit {
             val renderer = StructuredRuntimeEventLine()
             return { event -> plugin.logger.info(renderer.line(event)) }
+        }
+
+        fun defaultHealthSink(plugin: Plugin): (RuntimeHealthSnapshot) -> Unit {
+            val renderer = StructuredRuntimeHealthLine()
+            return { snapshot -> plugin.logger.info(renderer.line(snapshot)) }
         }
     }
 }

@@ -5,6 +5,7 @@ import org.bukkit.plugin.Plugin
 import org.mockbukkit.mockbukkit.MockBukkit
 import org.mockbukkit.mockbukkit.ServerMock
 import org.mockbukkit.mockbukkit.entity.PlayerMock
+import org.mockbukkit.mockbukkit.plugin.PluginMock
 import org.mockbukkit.mockbukkit.world.WorldMock
 
 /**
@@ -40,6 +41,13 @@ class MockBukkitTestRuntime private constructor(
     fun addSimpleWorld(name: String): WorldMock {
         requireOpen()
         return server.addSimpleWorld(name)
+    }
+
+    /** Creates an enabled generic plugin while this runtime owns the singleton. */
+    fun createSimplePlugin(name: String): PluginMock {
+        require(name.matches(Regex("[A-Za-z][A-Za-z0-9_.-]{0,63}"))) { "Mock plugin name must be a stable token" }
+        requireOpen()
+        return MockBukkit.createMockPlugin(name)
     }
 
     /** Loads and enables a plugin using its normal descriptor resource. */

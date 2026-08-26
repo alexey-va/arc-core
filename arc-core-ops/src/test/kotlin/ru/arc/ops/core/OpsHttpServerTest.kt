@@ -5,6 +5,8 @@ import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
+import ru.arc.observability.RuntimeHealthContribution
+import ru.arc.observability.RuntimeHealthRegistry
 import java.util.concurrent.Executors
 
 class OpsLogBufferTest : FreeSpec({
@@ -81,6 +83,30 @@ class OpsRouterTest : FreeSpec({
             val router = OpsRouter.createStandard(platformInfo, consolePort = null)
             router.capabilities.all() shouldContain "core.health"
             router.capabilities.all() shouldContain "console.execute"
+        }
+
+        "should expose the same typed health snapshot through authenticated ops" {
+            val health = RuntimeHealthRegistry("proxyarc") { 42L }
+            health.register("modules") {
+                RuntimeHealthContribution(
+                    recoveryBacklog = 2,
+                    activeLeases = 5,
+                    schemas = mapOf("network" to 3),
+                    dependencies = mapOf("redis" to true),
+                )
+            }
+            health.markReady()
+            val router = OpsRouter.createStandard(platformInfo, consolePort = null, healthProvider = health)
+            val request = router.buildRequest("GET", listOf("health"), emptyMap(), "", config)
+
+            val (code, body) = router.handle(request)
+
+            code shouldBe 200
+            body shouldContain "\"component\":\"proxyarc\""
+            body shouldContain "\"recoveryBacklog\":2"
+            body shouldContain "\"activeLeases\":5"
+            body shouldContain "\"modules.network\":3"
+            body shouldContain "\"modules.redis\":true"
         }
     }
 })

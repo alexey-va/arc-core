@@ -1,5 +1,7 @@
 package ru.arc.ops.core
 
+import ru.arc.observability.RuntimeHealthProvider
+
 data class OpsRequest(
     val method: String,
     val segments: List<String>,
@@ -76,15 +78,26 @@ class OpsRouter(
         fun createStandard(
             platformInfo: OpsPlatformInfoProvider,
             consolePort: OpsConsolePort?,
+            healthProvider: RuntimeHealthProvider? = null,
         ): OpsRouter {
             val router = OpsRouter(platformInfo)
-            router.registerCoreRoutes(consolePort)
+            router.registerCoreRoutes(consolePort, healthProvider)
             return router
         }
 
-        private fun OpsRouter.registerCoreRoutes(consolePort: OpsConsolePort?) {
+        private fun OpsRouter.registerCoreRoutes(
+            consolePort: OpsConsolePort?,
+            healthProvider: RuntimeHealthProvider?,
+        ) {
             register("GET", "health", "core.health") { _ ->
-                200 to OpsJson.ok(mapOf("status" to "up"))
+                val snapshot = healthProvider?.snapshot()
+                val status = snapshot?.state?.wireName ?: "up"
+                200 to OpsJson.ok(
+                    buildMap {
+                        put("status", status)
+                        if (snapshot != null) put("health", snapshot.asMap())
+                    },
+                )
             }
 
             register("GET", "info", "core.info") { request ->

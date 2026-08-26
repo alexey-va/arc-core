@@ -36,6 +36,20 @@ class SqlConnectionConfigTest : StringSpec({
         }
     }
 
+    "RSA key retrieval is limited to explicitly disabled TLS" {
+        val disabled = SqlConnectionConfig(
+            host = "localhost",
+            database = "duels",
+            username = "duels",
+            password = "test-password",
+            sslMode = SqlSslMode.DISABLED,
+        )
+        val encrypted = disabled.copy(sslMode = SqlSslMode.REQUIRED)
+
+        disabled.jdbcUrl() shouldContain "&sslMode=DISABLED&allowPublicKeyRetrieval=true&"
+        encrypted.jdbcUrl() shouldNotContain "allowPublicKeyRetrieval"
+    }
+
     "host cannot inject JDBC URL parameters" {
         shouldThrow<IllegalArgumentException> {
             SqlConnectionConfig(

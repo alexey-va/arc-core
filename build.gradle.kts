@@ -109,7 +109,15 @@ subprojects {
 }
 
 tasks.register("testAll") {
-    dependsOn(subprojects.map { it.tasks.named("test") })
+    dependsOn(subprojects.flatMap { project ->
+        listOf(project.tasks.named("test"), project.tasks.named("assertKotlinOnly"))
+    })
+}
+
+tasks.register("integrationTestAll") {
+    group = "verification"
+    description = "Runs real Redis and MySQL integration fixtures (requires Docker)."
+    dependsOn(":arc-core-integration-testing:integrationTest")
 }
 
 tasks.register("stageRelease") {

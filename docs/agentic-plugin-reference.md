@@ -24,7 +24,16 @@ override fun onEnable() {
     val network = active.own(createNetwork(redis))
     val service = active.own(createService(network))
     service.start()
+    active.registerHealth("runtime") {
+        RuntimeHealthContribution(
+            recoveryBacklog = service.recoveryBacklog,
+            activeLeases = network.activeLeaseCount,
+            schemas = mapOf("journal" to Journal.CURRENT_SCHEMA),
+            dependencies = mapOf("redis" to redis.isConnected()),
+        )
+    }
     active.ready("server" to serverId)
+    active.reportHealthEvery(1_200L)
 }
 
 override fun onDisable() {
@@ -85,3 +94,20 @@ Operator configuration is trusted input. Keep it expressive; validate only
 syntax, resource bounds, and values that cross an untrusted player, network, or
 persistence boundary. Do not add command-root allowlists merely to silence a
 static scanner.
+
+Health probes run from async log or ops threads. They read cached counters and
+flags only: no Bukkit/Velocity calls, Redis, SQL, filesystem access, waits, or
+raw exception/payload output. Expose `runtime.snapshot().asMap()` through the
+authenticated ops route used by MCP, and let `reportHealthEvery` provide the
+same bounded state in Loki.
+
+For real storage seams, add the shared container test artifact:
+
+```kotlin
+integrationTestImplementation("ru.arc:arc-core-integration-testing:1.0-SNAPSHOT")
+```
+
+Use `RedisTestService.start().use { ... }` or
+`MySqlTestService.start(settings).use { ... }`; see
+[`integration-testing.md`](integration-testing.md). Do not fall back to a host
+Redis binary, fixed port, or locally repeated Testcontainers boilerplate.

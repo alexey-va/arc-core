@@ -8,6 +8,7 @@ import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import ru.arc.observability.RuntimeHealthProvider
 
 /**
  * JDK [HttpServer] for authenticated ops endpoints under `/ops/`.
@@ -105,6 +106,7 @@ class OpsHttpServer(
             configProvider: () -> OpsHttpConfig,
             platformInfo: OpsPlatformInfoProvider,
             consolePort: OpsConsolePort? = null,
+            healthProvider: RuntimeHealthProvider? = null,
             executorFactory: (Int) -> ExecutorService = { threadPoolSize ->
                 Executors.newFixedThreadPool(threadPoolSize) { runnable ->
                     Thread(runnable, "arc-ops-http").apply { isDaemon = true }
@@ -113,7 +115,7 @@ class OpsHttpServer(
         ): OpsHttpServer =
             OpsHttpServer(
                 configProvider = configProvider,
-                router = OpsRouter.createStandard(platformInfo, consolePort),
+                router = OpsRouter.createStandard(platformInfo, consolePort, healthProvider),
                 executorFactory = executorFactory,
             )
     }

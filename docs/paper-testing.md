@@ -91,6 +91,8 @@ lifecycle are exercised. `loadSimplePlugin<T>()` is reserved for small test-only
 `MockBukkitTestRuntime` also provides:
 
 - `server` for exact MockBukkit APIs;
+- `createSimplePlugin(name)` when a scheduler/listener seam needs a named
+  descriptor-free plugin without inventing a test subclass;
 - `addPlayer` and `addSimpleWorld` fixtures;
 - `callEvent` returning the same event for cancellation/state assertions;
 - `performTicks` for deterministic delayed and repeating task behavior;
