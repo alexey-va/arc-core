@@ -107,7 +107,10 @@ class LifecycleTaskScope(
         cancelTracked(reactivate = false)
     }
 
-    internal fun trackedCount(): Int = synchronized(monitor) { tracked.size }
+    /** Number of task handles owned by the current epoch. Intended for health checks and deterministic tests. */
+    fun trackedTaskCount(): Int = synchronized(monitor) { tracked.size }
+
+    internal fun trackedCount(): Int = trackedTaskCount()
 
     override fun close() {
         synchronized(monitor) {

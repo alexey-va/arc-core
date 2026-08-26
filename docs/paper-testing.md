@@ -3,8 +3,8 @@
 `arc-core-paper-testing` is the canonical Paper test-kit for ARC and sibling
 plugins. It pins the compatible test runtime pair used by this checkout:
 
-- Paper API `1.21.10-R0.1-SNAPSHOT`;
-- MockBukkit `mockbukkit-v1.21:4.98.0`.
+- Paper API `1.21.11-R0.1-SNAPSHOT`;
+- MockBukkit `mockbukkit-v1.21:4.110.0`.
 
 The module is a test dependency. It must never be shaded into or added to a
 production plugin runtime.
@@ -20,8 +20,8 @@ dependencies {
 ```
 
 Do not repeat the MockBukkit coordinate in each plugin. Update the version pair
-and its compatibility tests in `arc-core-paper-testing` once, then consume the
-published test-kit everywhere.
+in the root `gradle.properties` (`paperApiVersion` and `mockBukkitVersion`) and
+its compatibility tests once, then consume the published test-kit everywhere.
 
 ## Choose the right test layer
 
@@ -105,7 +105,8 @@ an unsupported-operation exception or cannot reproduce Paper behavior:
   report that layer separately.
 
 The local authoritative API evidence for this contract is the resolved
-MockBukkit `4.98.0` source JAR plus the matching Paper API artifact used by the
+MockBukkit `4.110.0` artifact manifest, which declares Paper API
+`1.21.11-R0.1-SNAPSHOT`, plus the matching Paper API artifact used by the
 module. Review those exact artifacts before adopting a version-sensitive helper
 or simulation API.
 

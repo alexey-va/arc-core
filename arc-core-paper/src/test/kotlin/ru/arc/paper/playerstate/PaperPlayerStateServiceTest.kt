@@ -13,6 +13,7 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 
 class PaperPlayerStateServiceTest : FreeSpec({
@@ -107,8 +108,10 @@ class PaperPlayerStateServiceTest : FreeSpec({
             persistPlayerData = { persisted.incrementAndGet() },
         )
         val snapshot = service.capture(player, 1_787_730_000_000)
+        player.inventory.setItem(0, ItemStack.of(Material.DIAMOND, 3))
         shouldThrow<IllegalStateException> { service.restoreAndVerify(player, snapshot) { _, _ -> false } }
         persisted.get() shouldBe 0
+        player.inventory.getItem(0) shouldBe ItemStack.of(Material.DIAMOND, 3)
     }
 
     "unrestorable health fails instead of silently acknowledging a lossy restore" {
@@ -121,8 +124,10 @@ class PaperPlayerStateServiceTest : FreeSpec({
             persistPlayerData = { persisted.incrementAndGet() },
         )
         val snapshot = service.capture(player, 1_787_730_000_000).copy(health = 30.0)
+        player.inventory.setItem(0, ItemStack.of(Material.DIAMOND, 3))
         shouldThrow<IllegalArgumentException> { service.restoreAndVerify(player, snapshot) }
         persisted.get() shouldBe 0
+        player.inventory.getItem(0) shouldBe ItemStack.of(Material.DIAMOND, 3)
     }
 
     "mismatch diagnostics expose bounded field names rather than item contents" {
@@ -136,6 +141,38 @@ class PaperPlayerStateServiceTest : FreeSpec({
         val snapshot = service.capture(player, 1_787_730_000_000)
         player.inventory.setItem(0, ItemStack.of(Material.NETHERITE_SWORD))
         service.mismatches(player, snapshot).shouldContainExactly("storage")
+    }
+
+    "partial recovery preserves live items and can resolve an unavailable origin world explicitly" {
+        val server = paper.server
+        val fallback = server.addSimpleWorld("arena-fallback")
+        val player = server.addPlayer("PartialState")
+        player.teleport(Location(fallback, 4.0, 72.0, -3.0))
+        player.foodLevel = 12
+        val persisted = AtomicInteger()
+        val service =
+            PaperPlayerStateService(
+                PaperPlayerStateCodec(SimpleItemCodec),
+                primaryThread = { true },
+                persistPlayerData = { persisted.incrementAndGet() },
+            )
+        val captured = service.capture(player, 1_787_730_000_000)
+        val unavailable =
+            captured.copy(
+                location = captured.location.copy(worldId = UUID.randomUUID(), worldName = "missing-origin"),
+                compassTarget = captured.compassTarget.copy(worldId = UUID.randomUUID(), worldName = "missing-origin"),
+            )
+        player.inventory.setItem(0, ItemStack.of(Material.DIAMOND, 2))
+        player.foodLevel = 20
+
+        service.restoreWithoutInventoryAndVerify(player, unavailable, fallbackWorld = fallback) { target, destination ->
+            target.teleport(destination)
+        }
+
+        player.inventory.getItem(0) shouldBe ItemStack.of(Material.DIAMOND, 2)
+        player.foodLevel shouldBe 12
+        player.world shouldBe fallback
+        persisted.get() shouldBe 1
     }
 }) {
     companion object {

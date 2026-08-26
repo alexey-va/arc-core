@@ -53,6 +53,20 @@ class LocalizedMiniMessage(
         values: Map<String, Component> = emptyMap(),
     ): Component = deserialize(rawScalar(path, localeTag), localeTag, values)
 
+    /**
+     * Renders an opt-in surface. An explicitly blank selected value disables
+     * the surface; a missing selected value still falls back normally.
+     */
+    fun renderOptional(
+        path: String,
+        localeTag: String? = null,
+        values: Map<String, Component> = emptyMap(),
+    ): Component? {
+        require(path.isNotBlank()) { "Locale message path must not be blank" }
+        val raw = select(localeTag).scalar(path) ?: fallback().scalar(path) ?: missingMessage(path)
+        return raw.takeIf(String::isNotBlank)?.let { deserialize(it, localeTag, values) }
+    }
+
     fun renderLines(
         path: String,
         localeTag: String? = null,

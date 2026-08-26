@@ -12,15 +12,16 @@ lifecycle mechanisms belong here.
 | Player/backend identifiers at a network boundary | `arc-core`: `NetworkPlayerName`, `BackendServerId` | Validate once, then pass the typed value. Widen the explicit policy only for a verified external namespace. |
 | Reload-safe scheduled work | `arc-core`: `LifecycleTaskScope`, `whenCompleteSync` | One scope owns one lifecycle. `restart()` cancels old work and stale epoch tokens cannot schedule or execute work. |
 | Bounded crash-safe local state | `arc-core`: `AtomicFileStore` | Resolve below a trusted root, reject traversal/symlinks, validate before and after an atomic replacement, and bound bytes. |
+| Durable per-record recovery | `arc-core`: `DurableRecordJournal` | Commit one bounded record per safe identifier, verify the durable readback, list deterministically, and acknowledge idempotently. Keep domain transitions in the consumer. |
 | Burst coalescing | `arc-core`: `CoalescingAsyncWriter` | Keep at most one write in flight and the newest pending snapshot. Completion means the submitted snapshot or a newer one was stored. |
 | Stable QA/debug readback | `arc-core`: `StructuredDebugLine` | Emit a bounded single line with ordered safe `key=value` fields. Never include secrets or raw network/persistence payloads. |
 | Localized MiniMessage | `arc-core`: `LocalizedMiniMessage` | Validate required keys at startup, select locale with a fallback, and insert untrusted values as `Component` placeholders. |
-| Strict JSON boundary | `arc-core-redis`: `BoundedJsonCodec` | Require a root object contract, reject unknown/missing fields, malformed/trailing data and resource-limit violations, then run domain validation. |
+| Strict JSON boundary | `arc-core-redis`: `RedisWireCodec`, `BoundedJsonCodec`, `JsonObjectContract`, `JsonArrayContract` | Use the minimal codec contract only for an explicit domain-to-wire adapter; otherwise prefer the bounded implementation, which rejects malformed/trailing data and resource-limit violations, validates an explicit object or array root, then runs domain validation. |
 | Atomic Redis hash transition | `arc-core-redis`: `RedisHashUpdater` | Return typed changed/unchanged/rejected/contended outcomes. Corrupt state fails closed; `consume` deletes only the exact value read. |
 | Pub/sub origin and replay safety | `arc-core-redis`: `OriginBoundRedisBus`, `RecentMessageDeduplicator` | Authorize transport origin before parse, match embedded origin when present, bound and deduplicate message ids, and never log raw rejected payloads. |
 | Paper backend transfer | `arc-core-paper`: `BackendTransfer`, `BungeeBackendTransfer` | Route only to a typed `BackendServerId`; own channel registration and return a typed delivery outcome. |
 | Narrow teleport exception | `arc-core-paper`: `ScopedTeleportAuthorizer` | Authorize one player and one exact world/position/rotation only for the dynamic extent of one action. Nested scopes are rejected and cleanup is unconditional. |
-| Complete Paper player escrow | `arc-core-paper`: `PaperPlayerStateService`, `PaperPlayerStateCodec` | Capture/restore on the primary thread, use versioned native item bytes plus SHA-256 and bounds, verify every restored field, then call `saveData`. |
+| Complete Paper player escrow | `arc-core-paper`: `PaperPlayerStateService`, `PaperPlayerStateCodec` | Capture/restore on the primary thread, use versioned native item bytes plus SHA-256 and bounds, verify every restored field, then call `saveData`. Explicit partial APIs preserve inventory or location for cross-server recovery without weakening full restore. |
 | Paper platform test runtime | `arc-core-paper-testing`: `MockBukkitTestRuntime` | Consume the pinned Paper/MockBukkit pair as a test dependency, own one global runtime per test, drive events and ticks deterministically, and always close it. |
 
 Package names are deliberately searchable and behavior-specific:
@@ -108,6 +109,12 @@ applyTemporaryLoadout(player)
 val receipt = playerState.restoreAndVerify(player, envelope)
 escrowRepository.acknowledgeExactly(receipt.playerId, receipt.envelopeSha256)
 ```
+
+If a destination node intentionally lacks the origin world, pass an explicit
+`fallbackWorld` to the partial restore API. The service resolves and verifies
+the fallback destination; it never guesses one. Use
+`restoreWithoutInventoryAndVerify` only when the owning escrow says the live
+inventory must be preserved.
 
 ## Do not duplicate
 

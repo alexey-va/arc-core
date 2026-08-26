@@ -48,7 +48,7 @@ class RecentMessageDeduplicator(
     fun size(): Int = expiresAtById.size
 
     private fun validateMessageId(messageId: String) {
-        require(messageId.length in 1..160) { "Message id must contain 1 to 160 characters" }
+        require(messageId.length in 1..256) { "Message id must contain 1 to 256 characters" }
         require(messageId.all { it.isLetterOrDigit() || it in ":._-" }) { "Message id contains unsafe characters" }
     }
 

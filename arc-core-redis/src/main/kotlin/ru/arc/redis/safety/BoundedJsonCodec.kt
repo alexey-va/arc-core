@@ -11,31 +11,75 @@ import com.google.gson.stream.JsonReader
 import com.google.gson.stream.JsonToken
 import java.io.IOException
 import java.io.StringReader
+import java.lang.reflect.Type
 import java.math.BigDecimal
+
+/**
+ * Minimal typed wire boundary accepted by shared Redis infrastructure.
+ *
+ * Implement this only when a domain object needs an explicit wire adapter.
+ * Prefer [BoundedJsonCodec] directly for closed JSON DTOs so size, shape and
+ * strictness checks remain visible at the construction site.
+ */
+interface RedisWireCodec<T : Any> {
+    fun encode(value: T): String
+
+    fun decode(raw: String): T
+}
+
+/** Shape contract applied to the fully bounded JSON root. */
+interface JsonRootContract {
+    fun validate(value: JsonElement)
+}
 
 /** Explicit root-object contract for one closed wire type. */
 data class JsonObjectContract(
     val allowedFields: Set<String>,
     val requiredFields: Set<String> = allowedFields,
-) {
+    val fieldContracts: Map<String, JsonRootContract> = emptyMap(),
+) : JsonRootContract {
     init {
         require(allowedFields.isNotEmpty()) { "A JSON object contract must allow at least one field" }
         require(allowedFields.size <= 256) { "A JSON object contract may define at most 256 fields" }
         require(requiredFields.all(allowedFields::contains)) { "Required JSON fields must also be allowed" }
+        require(fieldContracts.keys.all(allowedFields::contains)) { "Nested JSON contracts must target allowed fields" }
         allowedFields.forEach { field ->
             require(field.matches(FIELD_NAME)) { "Unsafe JSON field name in object contract" }
         }
     }
 
-    internal fun validate(value: JsonElement) {
+    override fun validate(value: JsonElement) {
         require(value.isJsonObject) { "Wire JSON root must be an object" }
         val fields = value.asJsonObject.keySet()
         require(fields.all(allowedFields::contains)) { "Wire JSON contains an unknown root field" }
         require(fields.containsAll(requiredFields)) { "Wire JSON is missing a required root field" }
+        fieldContracts.forEach { (field, contract) ->
+            value.asJsonObject.get(field)?.let(contract::validate)
+        }
     }
 
     private companion object {
         val FIELD_NAME = Regex("[A-Za-z][A-Za-z0-9_-]{0,63}")
+    }
+}
+
+/** Explicit root-array contract for a bounded collection wire type. */
+data class JsonArrayContract(
+    val minEntries: Int = 0,
+    val maxEntries: Int,
+    val elementContract: JsonRootContract? = null,
+) : JsonRootContract {
+    init {
+        require(minEntries >= 0) { "JSON array minimum cannot be negative" }
+        require(maxEntries in minEntries..100_000) { "JSON array maximum must be between its minimum and 100000" }
+    }
+
+    override fun validate(value: JsonElement) {
+        require(value.isJsonArray) { "Wire JSON root must be an array" }
+        require(value.asJsonArray.size() in minEntries..maxEntries) {
+            "Wire JSON root array has an invalid number of entries"
+        }
+        elementContract?.let { contract -> value.asJsonArray.forEach(contract::validate) }
     }
 }
 
@@ -62,14 +106,22 @@ data class JsonResourceBounds(
  * nesting/container growth and oversized strings before domain construction.
  * [validate] remains mandatory because JSON shape cannot express domain rules.
  */
-class BoundedJsonCodec<T : Any>(
+class BoundedJsonCodec<T : Any> private constructor(
     private val gson: Gson,
-    private val type: Class<T>,
-    private val rootContract: JsonObjectContract,
+    private val type: Type,
+    private val rootContract: JsonRootContract,
     private val bounds: JsonResourceBounds,
     private val validate: (T) -> Unit,
-) {
-    fun encode(value: T): String {
+) : RedisWireCodec<T> {
+    constructor(
+        gson: Gson,
+        type: Class<T>,
+        rootContract: JsonRootContract,
+        bounds: JsonResourceBounds,
+        validate: (T) -> Unit,
+    ) : this(gson, type as Type, rootContract, bounds, validate)
+
+    override fun encode(value: T): String {
         validate(value)
         val tree = gson.toJsonTree(value)
         validateTree(tree)
@@ -79,7 +131,7 @@ class BoundedJsonCodec<T : Any>(
         return encoded
     }
 
-    fun decode(raw: String): T {
+    override fun decode(raw: String): T {
         require(raw.length in 2..bounds.maxCharacters) { "Wire JSON has an invalid size" }
         val reader = JsonReader(StringReader(raw)).apply { strictness = Strictness.STRICT }
         val tree = try {
@@ -91,7 +143,7 @@ class BoundedJsonCodec<T : Any>(
         }
         require(tree !is JsonNull) { "Wire JSON must not be null" }
         rootContract.validate(tree)
-        val decoded = requireNotNull(gson.fromJson(tree, type)) { "Wire JSON decoded to null" }
+        val decoded = requireNotNull(gson.fromJson<T>(tree, type)) { "Wire JSON decoded to null" }
         validate(decoded)
         return decoded
     }
@@ -163,4 +215,16 @@ class BoundedJsonCodec<T : Any>(
     }
 
     private class NodeCount(var value: Int = 0)
+
+    companion object {
+        /** Creates a bounded codec for a generic wire type such as `List<WireItem>`. */
+        @JvmStatic
+        fun <T : Any> forType(
+            gson: Gson,
+            type: Type,
+            rootContract: JsonRootContract,
+            bounds: JsonResourceBounds,
+            validate: (T) -> Unit,
+        ): BoundedJsonCodec<T> = BoundedJsonCodec(gson, type, rootContract, bounds, validate)
+    }
 }

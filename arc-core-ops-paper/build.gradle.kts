@@ -5,9 +5,11 @@ plugins {
 
 description = "ARC Core Ops Paper — Paper console and item handlers"
 
+val paperApiVersion: String by project
+
 dependencies {
     api(project(":arc-core-ops"))
-    compileOnly("io.papermc.paper:paper-api:1.21.4-R0.1-SNAPSHOT")
+    compileOnly("io.papermc.paper:paper-api:$paperApiVersion")
 
     testImplementation(project(":arc-core-paper-testing"))
 }

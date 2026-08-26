@@ -2,6 +2,7 @@ package ru.arc.paper.playerstate
 
 import org.bukkit.Bukkit
 import org.bukkit.Location
+import org.bukkit.World
 import org.bukkit.attribute.Attribute
 import org.bukkit.entity.Player
 import org.bukkit.inventory.ItemStack
@@ -75,73 +76,89 @@ class PaperPlayerStateService(
     fun restoreAndVerify(
         player: Player,
         envelope: PaperPlayerStateEnvelope,
+        fallbackWorld: World? = null,
         teleport: (Player, Location) -> Boolean = { target, location -> target.teleport(location) },
     ): PlayerStateRestoreReceipt {
         val snapshot = codec.decode(envelope)
-        restoreAndVerify(player, snapshot, teleport)
+        restoreAndVerify(player, snapshot, fallbackWorld, teleport)
         return PlayerStateRestoreReceipt(player.uniqueId, envelope.sha256)
     }
 
     fun restoreAndVerify(
         player: Player,
         snapshot: PaperPlayerStateSnapshot,
+        fallbackWorld: World? = null,
         teleport: (Player, Location) -> Boolean = { target, location -> target.teleport(location) },
     ) {
-        requirePrimaryThread()
-        snapshot.validated()
-        require(player.isOnline && !player.isDead) { "Cannot restore an offline or dead player" }
-        require(player.uniqueId == snapshot.playerId) { "Player-state snapshot belongs to a different player" }
-
-        val destination = snapshot.location.resolve(player)
-        val compass = snapshot.compassTarget.resolve(player)
-        player.closeInventory()
-        player.inventory.storageContents = snapshot.storage.map(::cloneOrNull).toTypedArray()
-        player.inventory.armorContents = snapshot.armor.map(::cloneOrNull).toTypedArray()
-        player.inventory.setItemInOffHand(snapshot.offHand?.clone() ?: ItemStack.empty())
-        player.setItemOnCursor(snapshot.cursor?.clone() ?: ItemStack.empty())
-        player.inventory.heldItemSlot = snapshot.selectedSlot
+        val prepared = prepareNonInventoryState(player, snapshot, fallbackWorld)
+        val destination = snapshot.location.resolve(player, fallbackWorld)
         check(teleport(player, destination)) { "Player-state recovery teleport was rejected" }
-
-        player.compassTarget = compass
-        player.gameMode = snapshot.gameMode
-        player.allowFlight = snapshot.allowFlight
-        player.isFlying = snapshot.flying && snapshot.allowFlight
-        player.flySpeed = snapshot.flySpeed
-        player.walkSpeed = snapshot.walkSpeed
-        player.activePotionEffects.forEach { player.removePotionEffect(it.type) }
-        snapshot.potionEffects.forEach { player.addPotionEffect(it.toPotionEffect()) }
-        val maximumHealth = player.getAttribute(Attribute.MAX_HEALTH)?.value ?: 20.0
-        require(snapshot.health <= maximumHealth + HEALTH_EPSILON) {
-            "Player-state health exceeds the player's current maximum health"
-        }
-        player.health = snapshot.health
-        player.absorptionAmount = snapshot.absorption
-        player.foodLevel = snapshot.foodLevel
-        player.saturation = snapshot.saturation
-        player.exhaustion = snapshot.exhaustion
-        player.totalExperience = snapshot.totalExperience
-        player.level = snapshot.level
-        player.exp = snapshot.experienceProgress
-        player.maximumAir = snapshot.maximumAir
-        player.remainingAir = snapshot.remainingAir
-        player.fireTicks = snapshot.fireTicks
-        player.fallDistance = snapshot.fallDistance
-        player.noDamageTicks = snapshot.noDamageTicks
-        player.freezeTicks = snapshot.freezeTicks
-        if (player.isGliding != snapshot.gliding) player.isGliding = snapshot.gliding
-        @Suppress("DEPRECATION")
-        if (player.isSwimming != snapshot.swimming) player.isSwimming = snapshot.swimming
-        if (player.isSprinting != snapshot.sprinting) player.isSprinting = snapshot.sprinting
-        player.velocity = Vector(snapshot.velocity.x, snapshot.velocity.y, snapshot.velocity.z)
+        applyInventory(player, snapshot)
+        applyNonInventoryState(player, snapshot, prepared)
         player.updateInventory()
 
-        val mismatches = mismatches(player, snapshot)
+        val mismatches = restoreMismatches(player, snapshot, destination, prepared)
         check(mismatches.isEmpty()) { "Player-state verification failed: ${mismatches.joinToString(",")}" }
         persistPlayerData(player)
     }
 
-    /** Returns bounded field names only; item contents never enter diagnostics. */
-    fun mismatches(player: Player, snapshot: PaperPlayerStateSnapshot): List<String> {
+    /** Restores and verifies only item containers and selected slot. */
+    fun restoreInventoryAndVerify(player: Player, snapshot: PaperPlayerStateSnapshot) {
+        requireRestoreTarget(player, snapshot)
+        applyInventory(player, snapshot)
+        player.updateInventory()
+        val mismatches = inventoryMismatches(player, snapshot)
+        check(mismatches.isEmpty()) { "Player-state inventory verification failed: ${mismatches.joinToString(",")}" }
+        persistPlayerData(player)
+    }
+
+    /** Restores inventory and mutable state while intentionally keeping the current location. */
+    fun restoreStateAtCurrentLocationAndVerify(
+        player: Player,
+        snapshot: PaperPlayerStateSnapshot,
+        fallbackWorld: World? = null,
+    ) {
+        val prepared = prepareNonInventoryState(player, snapshot, fallbackWorld)
+        applyInventory(player, snapshot)
+        applyNonInventoryState(player, snapshot, prepared)
+        player.updateInventory()
+        val mismatches = inventoryMismatches(player, snapshot) + nonInventoryStateMismatches(player, snapshot, prepared.compassTarget)
+        check(mismatches.isEmpty()) { "Player-state current-location verification failed: ${mismatches.joinToString(",")}" }
+        persistPlayerData(player)
+    }
+
+    /** Restores mutable non-item state while intentionally keeping inventory and location. */
+    fun restoreNonInventoryStateAtCurrentLocationAndVerify(
+        player: Player,
+        snapshot: PaperPlayerStateSnapshot,
+        fallbackWorld: World? = null,
+    ) {
+        val prepared = prepareNonInventoryState(player, snapshot, fallbackWorld)
+        applyNonInventoryState(player, snapshot, prepared)
+        val mismatches = nonInventoryStateMismatches(player, snapshot, prepared.compassTarget)
+        check(mismatches.isEmpty()) { "Player-state non-inventory verification failed: ${mismatches.joinToString(",")}" }
+        persistPlayerData(player)
+    }
+
+    /** Restores location and mutable non-item state while preserving every live item. */
+    fun restoreWithoutInventoryAndVerify(
+        player: Player,
+        snapshot: PaperPlayerStateSnapshot,
+        fallbackWorld: World? = null,
+        teleport: (Player, Location) -> Boolean = { target, location -> target.teleport(location) },
+    ) {
+        val prepared = prepareNonInventoryState(player, snapshot, fallbackWorld)
+        val destination = snapshot.location.resolve(player, fallbackWorld)
+        check(teleport(player, destination)) { "Player-state recovery teleport was rejected" }
+        applyNonInventoryState(player, snapshot, prepared)
+        val mismatches = nonInventoryStateMismatches(player, snapshot, prepared.compassTarget).toMutableList()
+        if (!sameLocation(player.location, destination)) mismatches += "location"
+        check(mismatches.isEmpty()) { "Player-state non-inventory verification failed: ${mismatches.joinToString(",")}" }
+        persistPlayerData(player)
+    }
+
+    /** Returns bounded item-field names only; item contents never enter diagnostics. */
+    fun inventoryMismatches(player: Player, snapshot: PaperPlayerStateSnapshot): List<String> {
         requirePrimaryThread()
         return buildList {
             if (!sameItems(player.inventory.storageContents.asList(), snapshot.storage)) add("storage")
@@ -149,8 +166,30 @@ class PaperPlayerStateService(
             if (!sameItem(player.inventory.itemInOffHand, snapshot.offHand)) add("offHand")
             if (!sameItem(player.itemOnCursor, snapshot.cursor)) add("cursor")
             if (player.inventory.heldItemSlot != snapshot.selectedSlot) add("selectedSlot")
-            if (!sameLocation(player.location, snapshot.location)) add("location")
-            if (!sameLocation(player.compassTarget, snapshot.compassTarget)) add("compassTarget")
+        }
+    }
+
+    fun locationMatches(player: Player, snapshot: PaperPlayerStateSnapshot): Boolean {
+        requirePrimaryThread()
+        return sameLocation(player.location, snapshot.location)
+    }
+
+    /** Returns bounded non-item field names only. */
+    fun nonInventoryStateMismatches(player: Player, snapshot: PaperPlayerStateSnapshot): List<String> {
+        requirePrimaryThread()
+        return nonInventoryStateMismatches(player, snapshot, expectedCompassTarget = null)
+    }
+
+    private fun nonInventoryStateMismatches(
+        player: Player,
+        snapshot: PaperPlayerStateSnapshot,
+        expectedCompassTarget: Location?,
+    ): List<String> {
+        return buildList {
+            val compassMatches =
+                expectedCompassTarget?.let { sameLocation(player.compassTarget, it) }
+                    ?: sameLocation(player.compassTarget, snapshot.compassTarget)
+            if (!compassMatches) add("compassTarget")
             if (player.gameMode != snapshot.gameMode) add("gameMode")
             if (player.allowFlight != snapshot.allowFlight || player.isFlying != (snapshot.flying && snapshot.allowFlight)) add("flight")
             if (abs(player.flySpeed - snapshot.flySpeed) > FLOAT_EPSILON || abs(player.walkSpeed - snapshot.walkSpeed) > FLOAT_EPSILON) {
@@ -180,12 +219,97 @@ class PaperPlayerStateService(
         }
     }
 
+    /** Returns bounded field names only; item contents never enter diagnostics. */
+    fun mismatches(player: Player, snapshot: PaperPlayerStateSnapshot): List<String> {
+        requirePrimaryThread()
+        return buildList {
+            addAll(inventoryMismatches(player, snapshot))
+            if (!locationMatches(player, snapshot)) add("location")
+            addAll(nonInventoryStateMismatches(player, snapshot))
+        }
+    }
+
+    private fun restoreMismatches(
+        player: Player,
+        snapshot: PaperPlayerStateSnapshot,
+        destination: Location,
+        prepared: PreparedNonInventoryState,
+    ): List<String> = buildList {
+        addAll(inventoryMismatches(player, snapshot))
+        if (!sameLocation(player.location, destination)) add("location")
+        addAll(nonInventoryStateMismatches(player, snapshot, prepared.compassTarget))
+    }
+
+    private fun applyInventory(player: Player, snapshot: PaperPlayerStateSnapshot) {
+        player.closeInventory()
+        player.inventory.storageContents = snapshot.storage.map(::cloneOrNull).toTypedArray()
+        player.inventory.armorContents = snapshot.armor.map(::cloneOrNull).toTypedArray()
+        player.inventory.setItemInOffHand(snapshot.offHand?.clone() ?: ItemStack.empty())
+        player.setItemOnCursor(snapshot.cursor?.clone() ?: ItemStack.empty())
+        player.inventory.heldItemSlot = snapshot.selectedSlot
+    }
+
+    private fun applyNonInventoryState(
+        player: Player,
+        snapshot: PaperPlayerStateSnapshot,
+        prepared: PreparedNonInventoryState,
+    ) {
+        player.compassTarget = prepared.compassTarget
+        player.gameMode = snapshot.gameMode
+        player.allowFlight = snapshot.allowFlight
+        player.isFlying = snapshot.flying && snapshot.allowFlight
+        player.flySpeed = snapshot.flySpeed
+        player.walkSpeed = snapshot.walkSpeed
+        player.activePotionEffects.forEach { player.removePotionEffect(it.type) }
+        prepared.potionEffects.forEach(player::addPotionEffect)
+        player.health = snapshot.health
+        player.absorptionAmount = snapshot.absorption
+        player.foodLevel = snapshot.foodLevel
+        player.saturation = snapshot.saturation
+        player.exhaustion = snapshot.exhaustion
+        player.totalExperience = snapshot.totalExperience
+        player.level = snapshot.level
+        player.exp = snapshot.experienceProgress
+        player.maximumAir = snapshot.maximumAir
+        player.remainingAir = snapshot.remainingAir
+        player.fireTicks = snapshot.fireTicks
+        player.fallDistance = snapshot.fallDistance
+        player.noDamageTicks = snapshot.noDamageTicks
+        player.freezeTicks = snapshot.freezeTicks
+        if (player.isGliding != snapshot.gliding) player.isGliding = snapshot.gliding
+        @Suppress("DEPRECATION")
+        if (player.isSwimming != snapshot.swimming) player.isSwimming = snapshot.swimming
+        if (player.isSprinting != snapshot.sprinting) player.isSprinting = snapshot.sprinting
+        player.velocity = Vector(snapshot.velocity.x, snapshot.velocity.y, snapshot.velocity.z)
+    }
+
+    private fun prepareNonInventoryState(
+        player: Player,
+        snapshot: PaperPlayerStateSnapshot,
+        fallbackWorld: World?,
+    ): PreparedNonInventoryState {
+        requireRestoreTarget(player, snapshot)
+        val compass = snapshot.compassTarget.resolve(player, fallbackWorld)
+        val maximumHealth = player.getAttribute(Attribute.MAX_HEALTH)?.value ?: 20.0
+        require(snapshot.health <= maximumHealth + HEALTH_EPSILON) {
+            "Player-state health exceeds the player's current maximum health"
+        }
+        return PreparedNonInventoryState(compass, snapshot.potionEffects.map(PaperPotionEffectSnapshot::toPotionEffect))
+    }
+
+    private fun requireRestoreTarget(player: Player, snapshot: PaperPlayerStateSnapshot) {
+        requirePrimaryThread()
+        snapshot.validated()
+        require(player.isOnline && !player.isDead) { "Cannot restore an offline or dead player" }
+        require(player.uniqueId == snapshot.playerId) { "Player-state snapshot belongs to a different player" }
+    }
+
     private fun requirePrimaryThread() {
         check(primaryThread()) { "Paper player state may only be accessed on the primary server thread" }
     }
 
-    private fun PaperLocationSnapshot.resolve(player: Player): Location {
-        val world = requireNotNull(player.server.getWorld(worldId)) {
+    private fun PaperLocationSnapshot.resolve(player: Player, fallbackWorld: World?): Location {
+        val world = requireNotNull(player.server.getWorld(worldId) ?: player.server.getWorld(worldName) ?: fallbackWorld) {
             "Player-state world '$worldName' ($worldId) is not loaded"
         }
         return Location(world, x, y, z, yaw, pitch)
@@ -204,6 +328,14 @@ class PaperPlayerStateService(
             abs(current.yaw - expected.yaw) <= locationTolerance.angle &&
             abs(current.pitch - expected.pitch) <= locationTolerance.angle
 
+    private fun sameLocation(current: Location, expected: Location): Boolean =
+        current.world?.uid == expected.world?.uid &&
+            abs(current.x - expected.x) <= locationTolerance.coordinate &&
+            abs(current.y - expected.y) <= locationTolerance.coordinate &&
+            abs(current.z - expected.z) <= locationTolerance.coordinate &&
+            abs(current.yaw - expected.yaw) <= locationTolerance.angle &&
+            abs(current.pitch - expected.pitch) <= locationTolerance.angle
+
     private fun sameItems(first: List<ItemStack?>, second: List<ItemStack?>): Boolean =
         first.size == second.size && first.indices.all { sameItem(first[it], second[it]) }
 
@@ -214,6 +346,11 @@ class PaperPlayerStateService(
     }
 
     private fun cloneOrNull(item: ItemStack?): ItemStack? = item?.takeUnless(ItemStack::isEmpty)?.clone()
+
+    private data class PreparedNonInventoryState(
+        val compassTarget: Location,
+        val potionEffects: List<org.bukkit.potion.PotionEffect>,
+    )
 
     private companion object {
         const val FLOAT_EPSILON = 0.0001f

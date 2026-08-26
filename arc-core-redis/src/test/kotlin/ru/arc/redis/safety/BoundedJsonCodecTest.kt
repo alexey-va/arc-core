@@ -1,6 +1,7 @@
 package ru.arc.redis.safety
 
 import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FreeSpec
 import io.kotest.matchers.shouldBe
@@ -72,5 +73,41 @@ class BoundedJsonCodecTest : FreeSpec({
         shouldThrow<IllegalArgumentException> {
             codec.decode("""{"protocolVersion":1,"id":"ok","origin":"spawn","values":$deeplyNested}""")
         }
+    }
+
+    "supports a bounded root array without weakening object contracts" {
+        val listType = object : TypeToken<List<String>>() {}.type
+        val arrayCodec =
+            BoundedJsonCodec.forType<List<String>>(
+                gson = Gson(),
+                type = listType,
+                rootContract = JsonArrayContract(maxEntries = 2),
+                bounds = JsonResourceBounds(64, maxDepth = 2, maxContainerEntries = 2, maxStringCharacters = 8),
+                validate = { values -> require(values.all { it.isNotBlank() }) },
+            )
+
+        arrayCodec.decode("[\"one\",\"two\"]") shouldBe listOf("one", "two")
+        shouldThrow<IllegalArgumentException> { arrayCodec.decode("[\"one\",\"two\",\"three\"]") }
+        shouldThrow<IllegalArgumentException> { arrayCodec.decode("{\"one\":\"two\"}") }
+    }
+
+    "applies nested contracts before Gson can discard unknown fields" {
+        data class Entry(val id: String)
+        val listType = object : TypeToken<List<Entry>>() {}.type
+        val codec =
+            BoundedJsonCodec.forType<List<Entry>>(
+                gson = Gson(),
+                type = listType,
+                rootContract =
+                    JsonArrayContract(
+                        maxEntries = 2,
+                        elementContract = JsonObjectContract(setOf("id")),
+                    ),
+                bounds = JsonResourceBounds(128, maxDepth = 3, maxContainerEntries = 2, maxStringCharacters = 16),
+                validate = { entries -> require(entries.all { it.id.isNotBlank() }) },
+            )
+
+        codec.decode("[{\"id\":\"one\"}]") shouldBe listOf(Entry("one"))
+        shouldThrow<IllegalArgumentException> { codec.decode("[{\"id\":\"one\",\"command\":\"op\"}]") }
     }
 })

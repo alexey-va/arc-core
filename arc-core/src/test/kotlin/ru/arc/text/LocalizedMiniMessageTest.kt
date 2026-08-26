@@ -23,6 +23,12 @@ class LocalizedMiniMessageTest : FreeSpec({
             .shouldContainExactly("Only English")
     }
 
+    "an explicitly blank optional message stays disabled instead of falling back" {
+        val renderer = renderer()
+        renderer.renderOptional("optional", "ru-RU") shouldBe null
+        plain.serialize(requireNotNull(renderer.renderOptional("optional", "en"))) shouldBe "Enabled"
+    }
+
     "component placeholders keep untrusted MiniMessage literal" {
         val renderer = renderer()
         val rendered = renderer.render(
@@ -55,16 +61,22 @@ class LocalizedMiniMessageTest : FreeSpec({
         private fun renderer(): LocalizedMiniMessage = LocalizedMiniMessage(
             catalogs = mapOf(
                 "en" to MapCatalog(
+                    lists = mapOf("lore" to listOf("First", "Second"), "fallback-lore" to listOf("Only English")),
                     scalars = mapOf(
                         "prefix" to "<gray>Network •</gray>",
                         "welcome" to "<prefix> Hello",
                         "fallback-only" to "<prefix> fallback",
                         "player" to "<prefix> <player>",
+                        "optional" to "Enabled",
                     ),
-                    lists = mapOf("lore" to listOf("First", "Second"), "fallback-lore" to listOf("Only English")),
                 ),
                 "ru" to MapCatalog(
-                    scalars = mapOf("prefix" to "<gray>Сеть •</gray>", "welcome" to "<prefix> Привет", "player" to "<player>"),
+                    scalars = mapOf(
+                        "prefix" to "<gray>Сеть •</gray>",
+                        "welcome" to "<prefix> Привет",
+                        "player" to "<player>",
+                        "optional" to "",
+                    ),
                     lists = mapOf("lore" to listOf("Первая", "Вторая")),
                 ),
             ),

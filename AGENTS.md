@@ -28,7 +28,7 @@ arc-core ─────┬───── ARC (Paper: Event DSL, GUI, gameplay)
 
 | Module | Artifact | Purpose |
 |--------|----------|---------|
-| `arc-core/` | `ru.arc:arc-core` | Config, lifecycle, identifiers, persistence, locale, diagnostics |
+| `arc-core/` | `ru.arc:arc-core` | Config, lifecycle, identifiers, atomic files/recovery journals, locale, diagnostics |
 | `arc-core-logging/` | `ru.arc:arc-core-logging` | Loki, ArcJsonLayout, LogContext |
 | `arc-core-metrics/` | `ru.arc:arc-core-metrics` | Prometheus registry, cached JVM/OS/disk metrics, scrape HTTP |
 | `arc-core-redis/` | `ru.arc:arc-core-redis` | Redis plus strict codecs, CAS, origin and replay safety |

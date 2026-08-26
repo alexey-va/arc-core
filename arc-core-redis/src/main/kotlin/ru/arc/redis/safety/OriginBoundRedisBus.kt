@@ -20,7 +20,7 @@ enum class RedisMessageRejection {
 class OriginBoundRedisBus<T : Any>(
     private val redis: RedisOperations,
     private val channel: String,
-    private val codec: BoundedJsonCodec<T>,
+    private val codec: RedisWireCodec<T>,
     private val originAllowed: (String) -> Boolean,
     private val embeddedOrigin: ((T) -> String)? = null,
     private val messageId: ((T) -> String)? = null,
