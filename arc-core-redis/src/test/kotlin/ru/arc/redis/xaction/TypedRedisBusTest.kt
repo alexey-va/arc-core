@@ -4,6 +4,7 @@ import com.google.gson.Gson
 import io.kotest.core.spec.style.FreeSpec
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
+import io.kotest.assertions.throwables.shouldThrow
 import ru.arc.redis.InMemoryRedis
 import ru.arc.redis.ServerIdentity
 import java.util.concurrent.CopyOnWriteArrayList
@@ -70,5 +71,18 @@ class TypedRedisBusTest : FreeSpec({
         bus.register()
         redis.publish("other-channel", Gson().toJson(TestPayload("nope")))
         count shouldBe 0
+    }
+
+    "rejects oversized outgoing compatibility messages" {
+        val redis = InMemoryRedis()
+        val bus = TypedRedisBus(
+            redis = redis,
+            channel = "arc.test.bus",
+            gson = Gson(),
+            messageType = TestPayload::class.java,
+            onMessage = { _, _ -> },
+        )
+        shouldThrow<IllegalArgumentException> { bus.publish(TestPayload("x".repeat(1_048_577))) }
+        redis.getPublishedMessages() shouldHaveSize 0
     }
 })

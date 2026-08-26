@@ -3,7 +3,7 @@ plugins {
     `maven-publish`
 }
 
-description = "ARC Core Redis — pub/sub, hash ops, in-memory test double"
+description = "ARC Core Redis — storage, strict codecs, CAS, origin and replay safety"
 
 java {
     withSourcesJar()

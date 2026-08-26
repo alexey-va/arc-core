@@ -19,16 +19,20 @@ class TypedRedisBus<T>(
 
     private val listener = ChannelListener { ch, message, originServer ->
         if (ch != channel) return@ChannelListener
+        if (message.length > MAX_MESSAGE_CHARACTERS) {
+            log.error("[{}] Rejected oversized message from server '{}' ({} chars)", channel, originServer, message.length)
+            return@ChannelListener
+        }
         try {
             val parsed = gson.fromJson(message, messageType)
             if (parsed == null) {
-                log.error("[{}] Deserialized null message from server '{}': {}", channel, originServer, message)
+                log.error("[{}] Deserialized null message from server '{}'", channel, originServer)
                 return@ChannelListener
             }
             log.debug("[{}] Received message from server '{}'", channel, originServer)
             onMessage(parsed, originServer)
         } catch (e: Exception) {
-            log.error("[{}] Failed to deserialize message from server '{}': {}", channel, originServer, message, e)
+            log.error("[{}] Failed to deserialize bounded message from server '{}' ({} chars)", channel, originServer, message.length, e)
         }
     }
 
@@ -44,7 +48,12 @@ class TypedRedisBus<T>(
 
     fun publish(message: T) {
         val json = gson.toJson(message)
-        log.debug("[{}] Publishing: {}", channel, json)
+        require(json.length <= MAX_MESSAGE_CHARACTERS) { "Typed Redis message exceeds its size limit" }
+        log.debug("[{}] Publishing message ({} chars)", channel, json.length)
         redis.publish(channel, json)
+    }
+
+    private companion object {
+        const val MAX_MESSAGE_CHARACTERS = 1_048_576
     }
 }

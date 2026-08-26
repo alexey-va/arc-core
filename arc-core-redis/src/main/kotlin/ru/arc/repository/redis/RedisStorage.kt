@@ -45,12 +45,7 @@ class RedisStorage<T : Entity>(
                 return@runCatching null
             }
             val payload = json!!
-            log.debug(
-                "[RedisStorage:{}] raw JSON for {}: {}",
-                storageKey,
-                id,
-                if (payload.length > 200) payload.take(200) + "…" else payload,
-            )
+            log.debug("[RedisStorage:{}] loaded {} JSON characters for {}", storageKey, payload.length, id)
             try {
                 gson.fromJson(payload, entityType) as T?
             } catch (e: Exception) {

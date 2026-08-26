@@ -4,7 +4,8 @@ Platform-agnostic **Kotlin-only** framework for **ARC** (Paper) and **ProxyARC**
 
 **Repository:** [github.com/alexey-va/arc-core](https://github.com/alexey-va/arc-core)
 
-**Architecture for agents:** [`AGENTS.md`](AGENTS.md) — canon for layers, boundaries, migration.
+**Architecture for agents:** [`AGENTS.md`](AGENTS.md) — canon for layers and boundaries.
+**Shared API routing:** [`docs/shared-primitives.md`](docs/shared-primitives.md) — searchable owner, contract, examples, and tests for reusable plugin mechanisms.
 
 > Старый [ARCCore](https://github.com/alexey-va/ARCCore) не используем — развиваем только этот проект.
 
@@ -20,12 +21,12 @@ Gradle root project: **`ArcCore`** (имя важно для composite build —
 
 | Module | Artifact | Purpose |
 |--------|----------|---------|
-| `arc-core/` | `ru.arc:arc-core` | Config, PluginModule, TaskScheduler, Tasks, EventBus |
+| `arc-core/` | `ru.arc:arc-core` | Config, lifecycle tasks, identifiers, atomic files, locale, diagnostics |
 | `arc-core-logging/` | `ru.arc:arc-core-logging` | Loki appender (Tjahzi), ArcJsonLayout, MDC LogContext |
 | `arc-core-metrics/` | `ru.arc:arc-core-metrics` | Cached Prometheus endpoint, JVM/OS/process/disk metrics |
-| `arc-core-redis/` | `ru.arc:arc-core-redis` | RedisManager, pub/sub, storage |
+| `arc-core-redis/` | `ru.arc:arc-core-redis` | Redis manager/storage plus strict codecs, CAS, origin and replay safety |
 | `arc-core-sql/` | `ru.arc:arc-core-sql` | Optional MySQL/Hikari runtime, async JDBC and migrations |
-| `arc-core-paper/` | `ru.arc:arc-core-paper` | Scheduling plus Paper world/tick/entity snapshots |
+| `arc-core-paper/` | `ru.arc:arc-core-paper` | Paper scheduling, transfer/teleport boundaries and complete player-state escrow |
 | `arc-core-velocity/` | `ru.arc:arc-core-velocity` | Scheduling plus proxy/backend/event metrics |
 
 ### Packages (arc-core)
@@ -35,6 +36,10 @@ Gradle root project: **`ArcCore`** (имя важно для composite build —
 | `ru.arc.config` | `Config`, `ConfigManager`, `ConfigHelpers`, `EmptyConfig` |
 | `ru.arc.core` | `TaskScheduler`, `Tasks`, `TaskDsl`, `PluginModule`, `ModuleRegistry` |
 | `ru.arc.core.platform` | `ArcPlatform` |
+| `ru.arc.network` | Typed cross-server player and backend identifiers |
+| `ru.arc.persistence` | Bounded atomic files and coalescing async writes |
+| `ru.arc.observability` | Stable bounded QA/debug lines |
+| `ru.arc.text` | Validated localized MiniMessage rendering |
 | `ru.arc.util` | `TextUtils` |
 
 Logging packages live in `arc-core-logging`; Redis in `arc-core-redis`; MySQL
@@ -92,14 +97,12 @@ Feature code uses `Tasks.delayed`, `Tasks.repeating`, etc. — never platform sc
 
 Tests: `Tasks.withScheduler(TestTaskScheduler()) { ... }`
 
-## Status
+## Shared infrastructure
 
-- [x] Multi-module skeleton (core, logging, redis, paper, velocity)
-- [x] Config ported from ARC (SnakeYAML Engine)
-- [x] PluginModule + ModuleRegistry
-- [x] TaskScheduler + TaskDsl + subtick
-- [x] ProxyARC + ARC wired via composite build
-- [ ] Phase B: CachedRepository / xserver extraction
-- [ ] Phase C: PlayerProvider, domain events
+New ARC, ProxyARC, and sibling-plugin code must consult
+[`docs/shared-primitives.md`](docs/shared-primitives.md) before introducing a
+local infrastructure helper. The index documents the stable APIs and the
+security/order invariants that a caller still owns. Feature-specific gameplay,
+GUI composition, and persistence schemas remain in their plugin.
 
-See [`docs/INDEX.md`](docs/INDEX.md) for migration specs.
+See [`docs/INDEX.md`](docs/INDEX.md) for the documentation index and historical migration specs.

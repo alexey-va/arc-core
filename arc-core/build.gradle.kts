@@ -3,7 +3,7 @@ plugins {
     `maven-publish`
 }
 
-description = "ARC Core — platform-agnostic config, scheduling, events"
+description = "ARC Core — config, lifecycle, identifiers, persistence, locale and diagnostics"
 
 java {
     withSourcesJar()

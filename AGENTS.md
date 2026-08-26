@@ -2,6 +2,10 @@
 
 **Read first.** Platform-agnostic Kotlin framework for ARC (Paper) and ProxyARC (Velocity).
 
+Before writing plugin infrastructure, route the behavior through
+[`docs/shared-primitives.md`](docs/shared-primitives.md). Reimplementing a
+listed mechanism in ARC, ProxyARC, or another plugin is an architecture defect.
+
 Migration history: [`docs/INDEX.md`](docs/INDEX.md)
 
 ## Repository map
@@ -24,12 +28,12 @@ arc-core ─────┬───── ARC (Paper: Event DSL, GUI, gameplay)
 
 | Module | Artifact | Purpose |
 |--------|----------|---------|
-| `arc-core/` | `ru.arc:arc-core` | Config, PluginModule, TaskScheduler, Tasks, EventBus |
+| `arc-core/` | `ru.arc:arc-core` | Config, lifecycle, identifiers, persistence, locale, diagnostics |
 | `arc-core-logging/` | `ru.arc:arc-core-logging` | Loki, ArcJsonLayout, LogContext |
 | `arc-core-metrics/` | `ru.arc:arc-core-metrics` | Prometheus registry, cached JVM/OS/disk metrics, scrape HTTP |
-| `arc-core-redis/` | `ru.arc:arc-core-redis` | RedisManager, pub/sub, storage |
+| `arc-core-redis/` | `ru.arc:arc-core-redis` | Redis plus strict codecs, CAS, origin and replay safety |
 | `arc-core-sql/` | `ru.arc:arc-core-sql` | Optional MySQL/Hikari runtime, async JDBC and migrations |
-| `arc-core-paper/` | `ru.arc:arc-core-paper` | Bukkit scheduling and cached Paper metric snapshots |
+| `arc-core-paper/` | `ru.arc:arc-core-paper` | Paper scheduling, transfer/teleport and player-state escrow |
 | `arc-core-velocity/` | `ru.arc:arc-core-velocity` | Velocity scheduling, snapshots, and connection counters |
 | `arc-core-ai/` | `ru.arc:arc-core-ai` | OpenRouter LLM, moderation, tool RPC |
 
@@ -42,12 +46,18 @@ Composite build: `includeBuild("../arc-core")` in ARC/ProxyARC `settings.gradle.
 3. **Event DSL** stays in ARC plugin (`EventDsl.kt`) — not extracted to arc-core.
 4. **Config:** `get()` accessor pattern + `Test*Config(EmptyConfig)` for tests.
 5. **Tests:** Kotest + MockK; no `@Ignore` / `@Disabled`; no JUnit assertions in Kotlin tests.
+6. **Shared mechanisms:** consult `docs/shared-primitives.md`; extend its typed
+   owner instead of adding a feature-local near-duplicate.
+7. **Agent-facing API:** give each mechanism one searchable owner, typed
+   outcomes, KDoc for thread/lifecycle/failure invariants, and bounded
+   diagnostics without raw payloads.
 
 ## Decision tree — where to put new code
 
 | Question | Target |
 |----------|--------|
 | Shared, no Bukkit/Velocity? | `arc-core` or new `arc-core-*` module |
+| Shared Redis transport, codec, CAS, or replay rule? | `arc-core-redis/ru.arc.redis.safety` |
 | Paper API only (Material, Sound)? | `arc-core-paper` |
 | Gameplay feature (treasure, stock, …)? | `ARC/src/main/kotlin/ru/arc/{feature}/` |
 | Proxy feature (join, discord, …)? | `ProxyARC/src/main/kotlin/ru/arc/` |
@@ -111,11 +121,20 @@ skill metadata. Production deployment remains in the mcserver operations
 reference; CMI kit details remain in the plugin-local
 `classic/plugins/CMI/AGENTS.md`.
 
+For a shared change, start from the behavior name in
+[`docs/shared-primitives.md`](docs/shared-primitives.md), open that owner and its
+same-named test, and preserve the existing typed outcomes. If no owner fits,
+prove that the mechanism is reusable before adding it here and update the index
+in the same commit. Do not make agents infer a required call order from an
+implementation body: encode it in types where possible and in KDoc plus tests
+where ordering crosses storage or platform boundaries.
+
 ## Related docs
 
 | Doc | Purpose |
 |-----|---------|
 | [`README.md`](README.md) | Build, composite build, dependencies |
+| [`docs/shared-primitives.md`](docs/shared-primitives.md) | Shared API routing, contracts, examples, verification |
 | [`docs/INDEX.md`](docs/INDEX.md) | Superpowers specs and plans |
 | `ARC/AGENTS.md` | Paper-specific delta |
 | `ProxyARC/AGENTS.md` | Velocity-specific delta |

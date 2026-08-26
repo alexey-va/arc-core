@@ -1,6 +1,13 @@
 # Superpowers docs index
 
-Design specs and implementation plans for arc-core migration. **Do not duplicate** — link from `AGENTS.md`.
+Current shared API contracts plus historical design specs and implementation
+plans. **Do not duplicate** — link from `AGENTS.md`.
+
+## Current contracts
+
+| File | Description |
+|------|-------------|
+| [shared-primitives.md](shared-primitives.md) | Agent-oriented routing index for reusable plugin lifecycle, persistence, locale, Redis, network, teleport, and player-state mechanisms |
 
 ## Specs
 

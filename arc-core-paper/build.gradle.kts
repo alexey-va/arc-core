@@ -3,7 +3,7 @@ plugins {
     `maven-publish`
 }
 
-description = "ARC Core Paper — Bukkit task scheduler and config extensions"
+description = "ARC Core Paper — scheduling, transfer, teleport and player-state escrow"
 
 dependencies {
     api(project(":arc-core"))
