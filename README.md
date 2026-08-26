@@ -76,8 +76,9 @@ dependencies {
 `ru.arc:*:1.0-SNAPSHOT` remains the source-composite coordinate used by ARC,
 ProxyARC, and local sibling checkouts. Release publishing is resumable and
 immutable: `scripts/publish-release.sh` rejects a conflicting remote file and
-publicly reads every uploaded POM, Gradle module, binary JAR, and sources JAR
-back by SHA-256.
+validates the publisher through Reposilite's read-only auth endpoint before any
+write. It then publicly reads every uploaded POM, Gradle module, binary JAR,
+and sources JAR back by SHA-256.
 
 ## Use in Gradle (composite build)
 

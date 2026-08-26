@@ -2,6 +2,7 @@
 set -euo pipefail
 
 REPOSITORY_URL="${REPOSILITE_PUBLISH_URL:-https://repo.rus-crafting.ru/grocermc}"
+AUTH_URL="${REPOSILITE_AUTH_URL:-https://repo.rus-crafting.ru/api/auth/me}"
 KEYCHAIN_SERVICE="ru.ruscrafting.reposilite.publisher"
 DEFAULT_USERNAME="arc-publisher"
 PUBLICATION_GROUP="ru.ruscrafting.arc"
@@ -19,6 +20,7 @@ fail closed before any upload.
 Credentials:
   REPOSILITE_PUBLISH_USERNAME  Defaults to arc-publisher
   REPOSILITE_PUBLISH_PASSWORD  Secret override for CI/Linux
+  REPOSILITE_AUTH_URL          Read-only credential check endpoint
 
 On macOS the password is otherwise read from Keychain service:
   ru.ruscrafting.reposilite.publisher
@@ -131,19 +133,22 @@ if $DRY_RUN; then
   exit 0
 fi
 
+username="${REPOSILITE_PUBLISH_USERNAME:-$DEFAULT_USERNAME}"
+password="${REPOSILITE_PUBLISH_PASSWORD:-}"
+if [[ -z "$password" ]] && command -v security >/dev/null 2>&1; then
+  password="$(security find-generic-password -a "$username" -s "$KEYCHAIN_SERVICE" -w 2>/dev/null || true)"
+fi
+[[ -n "$password" ]] || die "Publisher credential not found in env or macOS Keychain"
+
+netrc_file="$work_dir/netrc"
+printf 'machine repo.rus-crafting.ru\nlogin %s\npassword %s\n' "$username" "$password" > "$netrc_file"
+chmod 600 "$netrc_file"
+unset password
+
+curl -fsS --max-time 30 --netrc-file "$netrc_file" "$AUTH_URL" -o /dev/null ||
+  die "Publisher credential rejected by Reposilite"
+
 if [[ ${#missing_files[@]} -gt 0 ]]; then
-  username="${REPOSILITE_PUBLISH_USERNAME:-$DEFAULT_USERNAME}"
-  password="${REPOSILITE_PUBLISH_PASSWORD:-}"
-  if [[ -z "$password" ]] && command -v security >/dev/null 2>&1; then
-    password="$(security find-generic-password -a "$username" -s "$KEYCHAIN_SERVICE" -w 2>/dev/null || true)"
-  fi
-  [[ -n "$password" ]] || die "Publisher credential not found in env or macOS Keychain"
-
-  netrc_file="$work_dir/netrc"
-  printf 'machine repo.rus-crafting.ru\nlogin %s\npassword %s\n' "$username" "$password" > "$netrc_file"
-  chmod 600 "$netrc_file"
-  unset password
-
   for file in "${missing_files[@]}"; do
     relative="${file#"$STAGING_ROOT/"}"
     url="${REPOSITORY_URL%/}/$relative"
