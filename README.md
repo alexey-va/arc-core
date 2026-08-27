@@ -29,7 +29,7 @@ Gradle root project: **`ArcCore`** (имя важно для composite build —
 | `arc-core/` | `ru.arc:arc-core` | Config, lifecycle tasks, identifiers, one-time-use protocol, atomic files, locale, diagnostics |
 | `arc-core-logging/` | `ru.arc:arc-core-logging` | Loki appender (Tjahzi), ArcJsonLayout, MDC LogContext |
 | `arc-core-metrics/` | `ru.arc:arc-core-metrics` | Cached Prometheus endpoint, JVM/OS/process/disk metrics |
-| `arc-core-redis/` | `ru.arc:arc-core-redis` | Redis manager/storage plus strict codecs, CAS, origin and replay safety |
+| `arc-core-redis/` | `ru.arc:arc-core-redis` | Redis manager/storage plus strict codecs, CAS, validated topics, request/reply and presence |
 | `arc-core-sql/` | `ru.arc:arc-core-sql` | Optional MySQL/Hikari runtime, async JDBC and migrations |
 | `arc-core-paper/` | `ru.arc:arc-core-paper` | Paper scheduling, transfer/teleport boundaries and complete player-state escrow |
 | `arc-core-paper-testing/` | `ru.arc:arc-core-paper-testing` | Published MockBukkit runtime and fixtures for Paper plugin tests |
@@ -52,6 +52,11 @@ Gradle root project: **`ArcCore`** (имя важно для composite build —
 
 Logging packages live in `arc-core-logging`; Redis in `arc-core-redis`; MySQL
 and blocking JDBC infrastructure in `arc-core-sql`.
+
+Redis consumers should start with [`docs/redis-networking.md`](docs/redis-networking.md):
+use `ValidatedRedisTopic` for events, `RedisRequestReplyChannel` for correlated
+commands, and `RedisPresenceDirectory` for hash-backed node leases instead of
+rebuilding registration, pending maps, timeout tasks, or TTL caches locally.
 
 ## Build
 

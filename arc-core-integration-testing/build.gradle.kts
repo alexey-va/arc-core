@@ -12,6 +12,8 @@ java {
 dependencies {
     api("org.testcontainers:testcontainers:2.0.5")
     testImplementation("com.mysql:mysql-connector-j:9.7.0")
+    testImplementation(project(":arc-core-redis"))
+    testImplementation("com.google.code.gson:gson:2.11.0")
 }
 
 val integrationTest by sourceSets.creating {

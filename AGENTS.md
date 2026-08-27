@@ -31,7 +31,7 @@ arc-core ─────┬───── ARC (Paper: Event DSL, GUI, gameplay)
 | `arc-core/` | `ru.arc:arc-core` | Config, lifecycle, identifiers, one-time-use protocol, durable recovery workflows, leased directories, locale, diagnostics |
 | `arc-core-logging/` | `ru.arc:arc-core-logging` | Loki, ArcJsonLayout, LogContext |
 | `arc-core-metrics/` | `ru.arc:arc-core-metrics` | Prometheus registry, cached JVM/OS/disk metrics, scrape HTTP |
-| `arc-core-redis/` | `ru.arc:arc-core-redis` | Redis plus strict codecs, CAS, origin and replay safety |
+| `arc-core-redis/` | `ru.arc:arc-core-redis` | Redis plus strict codecs, CAS, validated topics, bounded request/reply and presence leases |
 | `arc-core-sql/` | `ru.arc:arc-core-sql` | Optional MySQL/Hikari runtime, async JDBC and migrations |
 | `arc-core-paper/` | `ru.arc:arc-core-paper` | Paper scheduling, transfer/teleport and player-state escrow |
 | `arc-core-testing/` | `ru.arc:arc-core-testing` | Platform-neutral deterministic clocks, executors, and failure injection |
@@ -76,6 +76,7 @@ upload.
 |----------|--------|
 | Shared, no Bukkit/Velocity? | `arc-core` or new `arc-core-*` module |
 | Shared Redis transport, codec, CAS, or replay rule? | `arc-core-redis/ru.arc.redis.safety` |
+| Redis topic, request/reply, or hash-backed presence lifecycle? | `arc-core-redis/ru.arc.redis.network` |
 | Paper API only (Material, Sound)? | `arc-core-paper` |
 | Platform-neutral deterministic test fixture? | `arc-core-testing` |
 | Reusable Paper test fixture or MockBukkit lifecycle? | `arc-core-paper-testing` |
@@ -158,6 +159,7 @@ where ordering crosses storage or platform boundaries.
 | [`docs/shared-primitives.md`](docs/shared-primitives.md) | Shared API routing, contracts, examples, verification |
 | [`docs/paper-testing.md`](docs/paper-testing.md) | MockBukkit dependency, lifecycle, test layers, limitations |
 | [`docs/integration-testing.md`](docs/integration-testing.md) | Shared disposable Redis/MySQL services and integration-test contract |
+| [`docs/redis-networking.md`](docs/redis-networking.md) | Validated topic, request/reply, and presence application layer |
 | [`docs/INDEX.md`](docs/INDEX.md) | Superpowers specs and plans |
 | `ARC/AGENTS.md` | Paper-specific delta |
 | `ProxyARC/AGENTS.md` | Velocity-specific delta |

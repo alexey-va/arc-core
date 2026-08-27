@@ -27,6 +27,12 @@ RedisTestService.start().use { redis ->
 }
 ```
 
+Core's `RedisNetworkLayerIntegrationTest` is the canonical application-layer
+seam: two `RedisManager` instances prove correlated request/reply through real
+pub/sub, then publish and refresh a real hash-backed presence lease. Consumer
+integration tests keep their domain DTO and authorization policies, but reuse
+the same `RedisTestService` rather than recreating container setup.
+
 The default is a pinned Redis image. Pass an explicit image only when a test
 intentionally verifies another supported server version. Always consume
 `endpoint.host` and `endpoint.port`; never assume localhost or 6379.

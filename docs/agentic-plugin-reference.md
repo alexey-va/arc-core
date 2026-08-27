@@ -80,10 +80,13 @@ unknown outcome. Do not generate a replacement claim id during recovery.
 
 ## Network presence
 
-Authenticate and decode with `OriginBoundRedisBus`, then pass only accepted
-messages to `LeasedNetworkDirectory`. The directory owns bounded replacement,
-expiry, rollback, and optional sequence ordering; product TTL stays configured
-by the plugin.
+Use `ValidatedRedisTopic` for fire-and-forget events,
+`RedisRequestReplyChannel` for correlated commands, and
+`RedisPresenceDirectory` for Redis-hash node advertisements. These APIs own
+listener lifecycle, replay bounds, pending request timeouts, and local lease
+cleanup. The plugin still owns its strict wire DTO, origin allowlist, reply
+authorization, domain-entry policy, and configured TTL. See
+[`redis-networking.md`](redis-networking.md).
 
 ## Tests
 

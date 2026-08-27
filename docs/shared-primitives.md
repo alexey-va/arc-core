@@ -27,6 +27,9 @@ For a complete composition example, see
 | Strict JSON boundary | `arc-core-redis`: `RedisWireCodec`, `BoundedJsonCodec`, `JsonObjectContract`, `JsonArrayContract` | Use the minimal codec contract only for an explicit domain-to-wire adapter; otherwise prefer the bounded implementation, which rejects malformed/trailing data and resource-limit violations, validates an explicit object or array root, then runs domain validation. |
 | Atomic Redis hash transition | `arc-core-redis`: `RedisHashUpdater` | Return typed changed/unchanged/rejected/contended outcomes. Corrupt state fails closed; `consume` deletes only the exact value read. |
 | Pub/sub origin and replay safety | `arc-core-redis`: `OriginBoundRedisBus`, `RecentMessageDeduplicator` | Authorize transport origin before parse, match embedded origin when present, bound and deduplicate message ids, and never log raw rejected payloads. |
+| Lifecycle-owned Redis events | `arc-core-redis`: `ValidatedRedisTopic`, `RedisReplayPolicy` | Register exactly once on open, apply the strict codec/origin/replay boundary, publish typed messages, and unregister idempotently on close. Publishing after close fails. |
+| Bounded Redis request/reply | `arc-core-redis`: `RedisRequestReplyChannel`, `RedisRequestResult` | Correlate only an exact bounded id, cap pending requests, validate replies against the original request and transport origin, own timeout cancellation, and complete every pending future on close. |
+| Redis-backed network presence | `arc-core-redis`: `RedisPresenceDirectory`, `RedisPresenceRefresh` | Require hash field = decoded entry id, allowlist origin and domain policy before caching, convert observations into bounded expiring leases, and return typed rejection counts without raw payloads. |
 | Paper backend transfer | `arc-core-paper`: `BackendTransfer`, `BungeeBackendTransfer` | Route only to a typed `BackendServerId`; own channel registration and return a typed delivery outcome. |
 | Narrow teleport exception | `arc-core-paper`: `ScopedTeleportAuthorizer` | Authorize one player and one exact world/position/rotation only for the dynamic extent of one action. Nested scopes are rejected and cleanup is unconditional. |
 | Complete Paper player escrow | `arc-core-paper`: `PaperPlayerStateService`, `PaperPlayerStateCodec` | Capture/restore on the primary thread, use versioned native item bytes plus SHA-256 and bounds, verify every restored field, then call `saveData`. Explicit partial APIs preserve inventory or location for cross-server recovery without weakening full restore. |
@@ -45,6 +48,7 @@ ru.arc.observability
 ru.arc.runtime
 ru.arc.text
 ru.arc.redis.safety
+ru.arc.redis.network
 ru.arc.paper.network
 ru.arc.paper.teleport
 ru.arc.paper.playerstate
@@ -94,7 +98,7 @@ override fun reload() {
 override fun shutdown() = tasks.close()
 ```
 
-Strict Redis message boundary:
+Lifecycle-owned Redis event boundary:
 
 ```kotlin
 val codec = BoundedJsonCodec(
@@ -108,14 +112,13 @@ val codec = BoundedJsonCodec(
     validate = { message -> message.validated() },
 )
 
-val bus = OriginBoundRedisBus(
+val topic = ValidatedRedisTopic.open(
     redis = redis,
     channel = "arc:match:v1",
     codec = codec,
     originAllowed = allowedBackends::contains,
     embeddedOrigin = MatchMessage::origin,
-    messageId = MatchMessage::id,
-    deduplicator = RecentMessageDeduplicator(ttlMillis = 60_000, maxEntries = 4_096),
+    replay = RedisReplayPolicy(MatchMessage::id, ttlMillis = 60_000, maxEntries = 4_096),
     onMessage = { message, origin -> matchService.accept(message, origin) },
 )
 ```
@@ -164,8 +167,9 @@ inventory must be preserved.
 - Do not add a feature-local username/server-id regex.
 - Do not create another reload epoch, task bag, atomic JSON file writer,
   recovery call-order chain, one-time voucher/book table, expiring network map,
-  MiniMessage fallback engine, Redis CAS loop, replay map, or player snapshot
-  format.
+  MiniMessage fallback engine, Redis CAS loop, replay map, pending Redis reply
+  map, pub/sub registration wrapper, hash-backed node TTL cache, or player
+  snapshot format.
 - Do not weaken a shared primitive to fit one caller. Add a typed policy or a
   narrow injected seam and cover the new contract in `arc-core` tests.
 - Do not move gameplay state machines, GUI composition, or feature-specific
@@ -176,6 +180,10 @@ inventory must be preserved.
 - Do not repeat Redis/MySQL Testcontainers setup in a plugin. Use
   `arc-core-integration-testing` and follow
   [`integration-testing.md`](integration-testing.md).
+- Do not compose `OriginBoundRedisBus` and `LeasedNetworkDirectory` manually
+  for ordinary event, request/reply, or hash-presence flows. Use the application
+  layer in [`redis-networking.md`](redis-networking.md); use the lower-level
+  primitives only for a wire protocol that cannot satisfy those contracts.
 - Do not restore implicit legacy Redis config readers. `RedisConfigBootstrap`
   copies the bundled default or an explicit consumer-provided
   `RedisConnectionSettingsSnapshot`; trusted operator config remains flexible
