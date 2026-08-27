@@ -6,6 +6,8 @@ AUTH_URL="${REPOSILITE_AUTH_URL:-https://repo.rus-crafting.ru/api/auth/me}"
 KEYCHAIN_SERVICE="ru.ruscrafting.reposilite.publisher"
 DEFAULT_USERNAME="arc-publisher"
 PUBLICATION_GROUP="ru.ruscrafting.arc"
+EXPECTED_JAVA_RELEASE=25
+EXPECTED_CLASS_MAJOR=69
 DRY_RUN=false
 
 usage() {
@@ -95,8 +97,10 @@ major_version() {
 
 core_major="$(major_version "$STAGING_ROOT/$GROUP_PATH/arc-core/$VERSION/arc-core-$VERSION.jar" ru.arc.persistence.AtomicFileStore)"
 testing_major="$(major_version "$STAGING_ROOT/$GROUP_PATH/arc-core-paper-testing/$VERSION/arc-core-paper-testing-$VERSION.jar" ru.arc.paper.testing.MockBukkitTestRuntime)"
-[[ "$core_major" == "65" ]] || die "arc-core release bytecode must target Java 21 (major 65), found $core_major"
-[[ "$testing_major" == "65" ]] || die "arc-core-paper-testing release bytecode must target Java 21 (major 65), found $testing_major"
+[[ "$core_major" == "$EXPECTED_CLASS_MAJOR" ]] ||
+  die "arc-core release bytecode must target Java $EXPECTED_JAVA_RELEASE (major $EXPECTED_CLASS_MAJOR), found $core_major"
+[[ "$testing_major" == "$EXPECTED_CLASS_MAJOR" ]] ||
+  die "arc-core-paper-testing release bytecode must target Java $EXPECTED_JAVA_RELEASE (major $EXPECTED_CLASS_MAJOR), found $testing_major"
 
 for module_dir in "$STAGING_ROOT/$GROUP_PATH"/*-testing; do
   [[ -d "$module_dir/$VERSION" ]] || continue
@@ -105,7 +109,8 @@ for module_dir in "$STAGING_ROOT/$GROUP_PATH"/*-testing; do
   first_class="$(jar tf "$jar" | awk '/\.class$/ { sub(/\.class$/, ""); gsub(/\//, "."); print; exit }')"
   [[ -n "$first_class" ]] || die "$module release JAR does not contain a class"
   module_major="$(major_version "$jar" "$first_class")"
-  [[ "$module_major" == "65" ]] || die "$module release bytecode must target Java 21 (major 65), found $module_major"
+  [[ "$module_major" == "$EXPECTED_CLASS_MAJOR" ]] ||
+    die "$module release bytecode must target Java $EXPECTED_JAVA_RELEASE (major $EXPECTED_CLASS_MAJOR), found $module_major"
 done
 
 work_dir="$(mktemp -d)"
