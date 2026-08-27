@@ -12,6 +12,7 @@ plans. **Do not duplicate** — link from `AGENTS.md`.
 | [integration-testing.md](integration-testing.md) | Canonical disposable Redis/MySQL Testcontainers services and consumer pattern |
 | [redis-networking.md](redis-networking.md) | Validated Redis topic, bounded request/reply, presence leases, ownership rules, and test contract |
 | [agentic-plugin-reference.md](agentic-plugin-reference.md) | Short composition path for lifecycle, health, recovery, MockBukkit, and storage tests |
+| [new-plugin-contract.md](new-plugin-contract.md) | Executable capability manifest, required module matrix, and pinned CI verifier for new sibling plugins |
 
 ## Specs
 

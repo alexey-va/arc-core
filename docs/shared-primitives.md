@@ -7,6 +7,9 @@ lifecycle mechanisms belong here.
 
 For a complete composition example, see
 [`agentic-plugin-reference.md`](agentic-plugin-reference.md).
+New plugin repositories must make this routing executable with
+[`new-plugin-contract.md`](new-plugin-contract.md); its capability manifest and
+CI verifier reject missing modules and high-signal local duplicates.
 
 ## Choose the owner
 

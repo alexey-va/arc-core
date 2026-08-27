@@ -1,0 +1,9 @@
+name: Verify arc-core consumer architecture
+description: Enforce canonical arc-core modules and reject high-signal plugin-local infrastructure duplicates.
+
+runs:
+  using: composite
+  steps:
+    - name: Verify consumer contract
+      shell: bash
+      run: python3 "$GITHUB_ACTION_PATH/../../../scripts/verify_consumer_architecture.py" "$GITHUB_WORKSPACE"

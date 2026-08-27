@@ -5,6 +5,9 @@
 Before writing plugin infrastructure, route the behavior through
 [`docs/shared-primitives.md`](docs/shared-primitives.md). Reimplementing a
 listed mechanism in ARC, ProxyARC, or another plugin is an architecture defect.
+Every new sibling plugin must also adopt the executable
+[`docs/new-plugin-contract.md`](docs/new-plugin-contract.md) from its first
+commit and keep its consumer verifier green in CI.
 
 Migration history: [`docs/INDEX.md`](docs/INDEX.md)
 
@@ -69,6 +72,10 @@ upload.
 10. **Trusted config:** operator-controlled configuration remains expressive.
     Core may bootstrap its bundled default or a consumer-supplied settings
     snapshot; it must not guess legacy file locations or add broad allowlists.
+11. **New consumers:** keep `arc-core-consumer.toml` at repository root and run
+    `scripts/verify_consumer_architecture.py` locally and through the pinned
+    central GitHub action. Declare a capability before implementing it; do not
+    delete the declaration to hide a verifier failure.
 
 ## Decision tree — where to put new code
 
@@ -159,6 +166,7 @@ where ordering crosses storage or platform boundaries.
 | [`docs/shared-primitives.md`](docs/shared-primitives.md) | Shared API routing, contracts, examples, verification |
 | [`docs/paper-testing.md`](docs/paper-testing.md) | MockBukkit dependency, lifecycle, test layers, limitations |
 | [`docs/integration-testing.md`](docs/integration-testing.md) | Shared disposable Redis/MySQL services and integration-test contract |
+| [`docs/new-plugin-contract.md`](docs/new-plugin-contract.md) | Mandatory capability manifest, baseline modules, verifier, and CI gate for new plugins |
 | [`docs/redis-networking.md`](docs/redis-networking.md) | Validated topic, request/reply, and presence application layer |
 | [`docs/INDEX.md`](docs/INDEX.md) | Superpowers specs and plans |
 | `ARC/AGENTS.md` | Paper-specific delta |

@@ -10,6 +10,7 @@ Platform-agnostic **Kotlin-only** framework for **ARC** (Paper) and **ProxyARC**
 
 **Architecture for agents:** [`AGENTS.md`](AGENTS.md) — canon for layers and boundaries.
 **Shared API routing:** [`docs/shared-primitives.md`](docs/shared-primitives.md) — searchable owner, contract, examples, and tests for reusable plugin mechanisms.
+**New plugin gate:** [`docs/new-plugin-contract.md`](docs/new-plugin-contract.md) — capability manifest plus CI verifier that enforces applicable modules and rejects local infrastructure duplicates.
 
 > Старый [ARCCore](https://github.com/alexey-va/ARCCore) не используем — развиваем только этот проект.
 
@@ -149,5 +150,12 @@ New ARC, ProxyARC, and sibling-plugin code must consult
 local infrastructure helper. The index documents the stable APIs and the
 security/order invariants that a caller still owns. Feature-specific gameplay,
 GUI composition, and persistence schemas remain in their plugin.
+
+Every new sibling repository also starts with `arc-core-consumer.toml` and the
+pinned central verifier. Run it locally with:
+
+```bash
+python3 ../arc-core/scripts/verify_consumer_architecture.py .
+```
 
 See [`docs/INDEX.md`](docs/INDEX.md) for the documentation index and historical migration specs.

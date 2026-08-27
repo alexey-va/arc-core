@@ -1,0 +1,15 @@
+schema = 1
+platform = "paper"
+core_version = "2.1.0"
+
+# Keep only capabilities the plugin actually owns. Add a capability before
+# adding its infrastructure; the verifier will require the matching module and
+# canonical API evidence.
+capabilities = [
+  "health",
+  "localized-text",
+  "logging",
+  "metrics",
+  "paper-testing",
+  "runtime",
+]

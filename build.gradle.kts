@@ -123,6 +123,18 @@ tasks.register("testAll") {
     dependsOn(subprojects.flatMap { project ->
         listOf(project.tasks.named("test"), project.tasks.named("assertKotlinOnly"))
     })
+    dependsOn("consumerArchitectureTest")
+}
+
+tasks.register<Exec>("consumerArchitectureTest") {
+    group = "verification"
+    description = "Tests the executable arc-core contract used by new sibling plugins."
+    commandLine(
+        "python3",
+        "-m",
+        "unittest",
+        "scripts.tests.test_verify_consumer_architecture",
+    )
 }
 
 tasks.register("integrationTestAll") {

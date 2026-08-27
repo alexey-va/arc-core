@@ -4,6 +4,11 @@ This reference is the shortest supported path for a new Paper sibling plugin.
 Each mechanism has one searchable owner, explicit outcomes, and deterministic
 tests; the plugin keeps only its gameplay rules and storage adapters.
 
+Before writing the bootstrap, copy the Paper `arc-core-consumer.toml` template
+and enable the pinned verifier described in
+[`new-plugin-contract.md`](new-plugin-contract.md). The reference below is the
+composition evidence expected by that gate.
+
 ## Runtime composition
 
 Create one `PaperPluginRuntime` in `onEnable`, register resources in creation
@@ -15,10 +20,15 @@ private var runtime: PaperPluginRuntime? = null
 
 override fun onEnable() {
     PaperArcRuntime.installScheduling(this)
+    ArcLogging.install(loggingPlatform, loggingConfigSource, lokiInstallSpec)
     val active = PaperPluginRuntime(this, "example").also {
         runtime = it
         it.start("version" to pluginMeta.version)
     }
+
+    val metrics = active.own(
+        ArcMetricsRuntime(metricsConfig, metricsIdentity, dataFolder.toPath()).also { it.start() },
+    )
 
     val redis = active.own(createRedis())
     val network = active.own(createNetwork(redis))
