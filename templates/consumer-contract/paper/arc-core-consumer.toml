@@ -1,6 +1,6 @@
 schema = 1
 platform = "paper"
-core_version = "2.1.0"
+core_version = "2.1.1"
 
 # Keep only capabilities the plugin actually owns. Add a capability before
 # adding its infrastructure; the verifier will require the matching module and
