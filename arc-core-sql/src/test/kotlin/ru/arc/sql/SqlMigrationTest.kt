@@ -32,4 +32,28 @@ class SqlMigrationTest : StringSpec({
             MySqlMigrator(mockk<DataSource>(), "duels-history;drop")
         }
     }
+
+    "legacy concatenated checksums are explicit and version bounded" {
+        val migration = SqlMigration(4, "two tables", listOf(" CREATE TABLE one (id INT) ", "CREATE TABLE two (id INT)"))
+        val compatibility = SqlMigrationCompatibility.legacyConcatenated(migration)
+
+        compatibility.accepts(4, "CREATE TABLE one (id INT)\nCREATE TABLE two (id INT)".sha256ForTest()) shouldBe true
+        compatibility.accepts(3, "CREATE TABLE one (id INT)\nCREATE TABLE two (id INT)".sha256ForTest()) shouldBe false
+    }
+
+    "compatibility rejects malformed checksums and versions absent from the plan" {
+        shouldThrow<IllegalArgumentException> {
+            SqlMigrationCompatibility(mapOf(1 to setOf("not-a-checksum")))
+        }
+
+        val compatibility = SqlMigrationCompatibility(mapOf(2 to setOf("0".repeat(64))))
+        shouldThrow<IllegalArgumentException> {
+            compatibility.validatePlan(listOf(SqlMigration(1, "first", listOf("SELECT 1"))))
+        }
+    }
 })
+
+private fun String.sha256ForTest(): String =
+    java.security.MessageDigest.getInstance("SHA-256")
+        .digest(toByteArray(java.nio.charset.StandardCharsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }

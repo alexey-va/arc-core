@@ -35,6 +35,13 @@ idempotent (`IF NOT EXISTS`, guarded data backfill, or an equivalent design) so
 a partial server or network failure can be retried safely. Never edit an
 already-applied migration; append a new version.
 
+When adopting core after another migrator already wrote the same history
+table, pass an explicit `SqlMigrationCompatibility` containing only the
+source-verified historical checksum. `legacyConcatenated(...)` covers the old
+RusCrafting convention that hashed trimmed statements joined by a newline.
+Compatibility accepts an existing row only; every newly applied row still uses
+the canonical marker-separated `SqlMigration.checksum`.
+
 ## Threading
 
 JDBC is blocking. Use `SqlExecutor.read`, `write`, or `transaction`; use

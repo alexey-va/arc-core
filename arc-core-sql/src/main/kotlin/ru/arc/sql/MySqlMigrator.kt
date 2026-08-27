@@ -27,13 +27,25 @@ class MySqlMigrator(
     }
 
     fun migrate(migrations: List<SqlMigration>): SqlMigrationReport {
+        return migrate(migrations, SqlMigrationCompatibility.NONE)
+    }
+
+    /**
+     * Migrates while accepting only explicitly source-verified historical checksums.
+     * Compatibility is validated before opening a database connection.
+     */
+    fun migrate(
+        migrations: List<SqlMigration>,
+        compatibility: SqlMigrationCompatibility,
+    ): SqlMigrationReport {
         validatePlan(migrations)
+        compatibility.validatePlan(migrations)
         dataSource.connection.use { connection ->
             acquireLock(connection)
             try {
                 createHistoryTable(connection)
                 val existing = loadHistory(connection)
-                verifyChecksums(migrations, existing)
+                verifyChecksums(migrations, existing, compatibility)
                 val applied = mutableListOf<Int>()
                 for (migration in migrations.sortedBy(SqlMigration::version)) {
                     if (existing.containsKey(migration.version)) continue
@@ -106,10 +118,11 @@ class MySqlMigrator(
     private fun verifyChecksums(
         migrations: List<SqlMigration>,
         existing: Map<Int, String>,
+        compatibility: SqlMigrationCompatibility,
     ) {
         for (migration in migrations) {
             val appliedChecksum = existing[migration.version] ?: continue
-            check(appliedChecksum == migration.checksum) {
+            check(appliedChecksum == migration.checksum || compatibility.accepts(migration.version, appliedChecksum)) {
                 "Applied SQL migration ${migration.version} checksum does not match source"
             }
         }
