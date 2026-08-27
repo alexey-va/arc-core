@@ -7,7 +7,10 @@ import io.kotest.matchers.shouldBe
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import ru.arc.redis.InMemoryRedis
 import ru.arc.redis.ServerIdentity
 import ru.arc.xaction.XCondition
@@ -120,10 +123,19 @@ class RedisRepositoryIntegrationTest : FreeSpec({
             repo1.save(updated)
             repo1.saveDirty()
 
-            kotlinx.coroutines.delay(200)
+            val synced = withContext(Dispatchers.Default) {
+                var candidate = repo2.getNow("sync-id")
+                withTimeout(5.seconds) {
+                    while (candidate == null || candidate.value != "v2" || candidate.counter != 2) {
+                        delay(10)
+                        candidate = repo2.getNow("sync-id")
+                    }
+                }
+                requireNotNull(candidate)
+            }
 
-            repo2.getNow("sync-id")?.value shouldBe "v2"
-            repo2.getNow("sync-id")?.counter shouldBe 2
+            synced.value shouldBe "v2"
+            synced.counter shouldBe 2
 
             shutdown(repo1)
             shutdown(repo2)
