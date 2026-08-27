@@ -68,6 +68,16 @@ Never treat a timeout or unknown commit result as permission to mutate or
 delete. Map storage results to `DurableAcknowledgementOutcome`; a content
 mismatch remains durable for reconciliation.
 
+## Globally one-time effects
+
+Use `OneTimeUseLedger` for vouchers, redeemable books, tickets, and similar
+bearer capabilities. Persist one stable `claimId`; bind every authoritative
+payload field into `OneTimeUseFingerprint`; and keep consumer rows in the
+single `arc_one_time_uses` table with a unique `MySqlOneTimeUsePartition`
+purpose. The only safe lifecycle is claim before mutation, commit after proven
+success, release after a proven pre-mutation failure, or abandon after an
+unknown outcome. Do not generate a replacement claim id during recovery.
+
 ## Network presence
 
 Authenticate and decode with `OriginBoundRedisBus`, then pass only accepted

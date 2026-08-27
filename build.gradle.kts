@@ -28,8 +28,6 @@ subprojects {
 
     group = rootProject.group
     version = rootProject.version
-    val targetJavaVersion = if (name == "arc-core" || name.endsWith("-testing")) 21 else 25
-
     repositories {
         mavenCentral()
         maven("https://repo.papermc.io/repository/maven-public/")
@@ -52,20 +50,19 @@ subprojects {
         toolchain {
             languageVersion.set(JavaLanguageVersion.of(25))
         }
-        sourceCompatibility = JavaVersion.toVersion(targetJavaVersion)
-        targetCompatibility = JavaVersion.toVersion(targetJavaVersion)
+        sourceCompatibility = JavaVersion.VERSION_25
+        targetCompatibility = JavaVersion.VERSION_25
         withSourcesJar()
     }
 
     extensions.configure<KotlinJvmProjectExtension> {
         jvmToolchain(25)
         compilerOptions {
-            jvmTarget.set(if (targetJavaVersion == 21) JvmTarget.JVM_21 else JvmTarget.JVM_25)
+            jvmTarget.set(JvmTarget.JVM_25)
             freeCompilerArgs.addAll(
                 "-jvm-default=enable",
                 "-opt-in=kotlin.RequiresOptIn",
             )
-            if (targetJavaVersion == 21) freeCompilerArgs.add("-Xjdk-release=21")
         }
     }
 
@@ -131,7 +128,10 @@ tasks.register("testAll") {
 tasks.register("integrationTestAll") {
     group = "verification"
     description = "Runs real Redis and MySQL integration fixtures (requires Docker)."
-    dependsOn(":arc-core-integration-testing:integrationTest")
+    dependsOn(
+        ":arc-core-integration-testing:integrationTest",
+        ":arc-core-sql:integrationTest",
+    )
 }
 
 tasks.register("stageRelease") {

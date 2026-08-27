@@ -17,6 +17,7 @@ For a complete composition example, see
 | Bounded crash-safe local state | `arc-core`: `AtomicFileStore` | Resolve below a trusted root, reject traversal/symlinks, validate before and after an atomic replacement, and bound bytes. |
 | Durable per-record recovery | `arc-core`: `DurableRecordJournal` | Commit one bounded record per safe identifier, verify the durable readback, list deterministically, and acknowledge idempotently. Keep domain transitions in the consumer. |
 | Durable recovery call order | `arc-core`: `DurableRecoveryWorkflow` | Commit and compare the durable readback before mutation; restore and verify before exact acknowledgement. Storage, executors, and domain transitions remain injected. |
+| Globally one-time bearer capability | `arc-core`: `OneTimeUseLedger`, `OneTimeUseFingerprint`; `arc-core-sql`: `MySqlOneTimeUseLedger` | Claim the exact identity before value mutation, commit only after proven success, release only before mutation, and abandon an unknown result for exact recovery. Use one shared table and a stable per-feature `purpose`. |
 | Burst coalescing | `arc-core`: `CoalescingAsyncWriter` | Keep at most one write in flight and the newest pending snapshot. Completion means the submitted snapshot or a newer one was stored. |
 | Stable QA/debug readback | `arc-core`: `StructuredDebugLine` | Emit a bounded single line with ordered safe `key=value` fields. Never include secrets or raw network/persistence payloads. |
 | Canonical runtime events | `arc-core`: `RuntimeEvent`, `StructuredRuntimeEventLine` | Use stable event/outcome names with bounded fields for operator and agent readback. Never attach raw payloads or secrets. |
@@ -38,6 +39,7 @@ Package names are deliberately searchable and behavior-specific:
 
 ```text
 ru.arc.network
+ru.arc.onetime
 ru.arc.persistence
 ru.arc.observability
 ru.arc.runtime
@@ -129,6 +131,27 @@ val receipt = playerState.restoreAndVerify(player, envelope)
 escrowRepository.acknowledgeExactly(receipt.playerId, receipt.envelopeSha256)
 ```
 
+One-time bearer capability:
+
+```kotlin
+val request = OneTimeUseClaimRequest(
+    identity = OneTimeUseIdentity(voucherId, OneTimeUseFingerprint.sha256(signedPayload)),
+    claimId = voucherId, // stable operation id; never generate a new id on retry
+    claimantId = playerId,
+)
+
+when (val result = ledger.claim(request).join()) {
+    is OneTimeUseClaimResult.Acquired -> {
+        val claim = result.claim
+        // Apply the external effect exactly once. If its outcome is unknown,
+        // abandon(claim); do not release it.
+        ledger.commit(claim).join()
+    }
+    OneTimeUseClaimResult.AlreadyConsumed -> Unit
+    else -> error("one-time capability is not claimable: $result")
+}
+```
+
 If a destination node intentionally lacks the origin world, pass an explicit
 `fallbackWorld` to the partial restore API. The service resolves and verifies
 the fallback destination; it never guesses one. Use
@@ -140,8 +163,9 @@ inventory must be preserved.
 - Do not build Bungee `Connect` bytes or command strings in a feature.
 - Do not add a feature-local username/server-id regex.
 - Do not create another reload epoch, task bag, atomic JSON file writer,
-  recovery call-order chain, expiring network map, MiniMessage fallback engine,
-  Redis CAS loop, replay map, or player snapshot format.
+  recovery call-order chain, one-time voucher/book table, expiring network map,
+  MiniMessage fallback engine, Redis CAS loop, replay map, or player snapshot
+  format.
 - Do not weaken a shared primitive to fit one caller. Add a typed policy or a
   narrow injected seam and cover the new contract in `arc-core` tests.
 - Do not move gameplay state machines, GUI composition, or feature-specific
@@ -167,6 +191,7 @@ Run the focused module while iterating and the complete gate before publishing:
 ./gradlew :arc-core-paper:test
 ./gradlew :arc-core-testing:test
 ./gradlew :arc-core-paper-testing:test
+./gradlew :arc-core-sql:compileIntegrationTestKotlin
 ./gradlew :arc-core-integration-testing:integrationTest
 ./gradlew testAll publishToMavenLocal
 ```

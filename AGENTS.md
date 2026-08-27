@@ -28,7 +28,7 @@ arc-core ─────┬───── ARC (Paper: Event DSL, GUI, gameplay)
 
 | Module | Artifact | Purpose |
 |--------|----------|---------|
-| `arc-core/` | `ru.arc:arc-core` | Config, lifecycle, identifiers, durable recovery workflows, leased directories, locale, diagnostics |
+| `arc-core/` | `ru.arc:arc-core` | Config, lifecycle, identifiers, one-time-use protocol, durable recovery workflows, leased directories, locale, diagnostics |
 | `arc-core-logging/` | `ru.arc:arc-core-logging` | Loki, ArcJsonLayout, LogContext |
 | `arc-core-metrics/` | `ru.arc:arc-core-metrics` | Prometheus registry, cached JVM/OS/disk metrics, scrape HTTP |
 | `arc-core-redis/` | `ru.arc:arc-core-redis` | Redis plus strict codecs, CAS, origin and replay safety |
@@ -43,7 +43,7 @@ arc-core ─────┬───── ARC (Paper: Event DSL, GUI, gameplay)
 Composite build: `includeBuild("../arc-core")` in ARC/ProxyARC `settings.gradle.kts`.
 Public release artifacts use `ru.ruscrafting.arc:<module>:<release>` from
 `https://repo.rus-crafting.ru/grocermc/`; `arc-core` and every `*-testing`
-module must retain Java 21 bytecode compatibility. A published GitHub release
+module targets Java 25 bytecode. A published GitHub release
 runs `scripts/publish-release.sh`, which discovers every Maven publication,
 stages complete Gradle metadata and rejects conflicting remote files before
 upload.

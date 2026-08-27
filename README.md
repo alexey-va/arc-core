@@ -16,8 +16,7 @@ Platform-agnostic **Kotlin-only** framework for **ARC** (Paper) and **ProxyARC**
 ## Requirements
 
 - **Java 25** (Temurin) to build the complete multi-module repository
-- published `arc-core` and `*-testing` artifacts target Java 21; the remaining
-  internal runtime modules target Java 25
+- every published module targets Java 25
 - **Kotlin 2.3**
 - Исходники только `.kt` — Gradle task `assertKotlinOnly` падает на `.java`
 
@@ -27,7 +26,7 @@ Gradle root project: **`ArcCore`** (имя важно для composite build —
 
 | Module | Composite artifact | Purpose |
 |--------|----------|---------|
-| `arc-core/` | `ru.arc:arc-core` | Config, lifecycle tasks, identifiers, atomic files, locale, diagnostics |
+| `arc-core/` | `ru.arc:arc-core` | Config, lifecycle tasks, identifiers, one-time-use protocol, atomic files, locale, diagnostics |
 | `arc-core-logging/` | `ru.arc:arc-core-logging` | Loki appender (Tjahzi), ArcJsonLayout, MDC LogContext |
 | `arc-core-metrics/` | `ru.arc:arc-core-metrics` | Cached Prometheus endpoint, JVM/OS/process/disk metrics |
 | `arc-core-redis/` | `ru.arc:arc-core-redis` | Redis manager/storage plus strict codecs, CAS, origin and replay safety |
@@ -47,6 +46,7 @@ Gradle root project: **`ArcCore`** (имя важно для composite build —
 | `ru.arc.network` | Typed cross-server player and backend identifiers |
 | `ru.arc.persistence` | Bounded atomic files and coalescing async writes |
 | `ru.arc.observability` | Stable bounded QA/debug lines |
+| `ru.arc.onetime` | Typed claim/commit/release/abandon protocol for bearer capabilities |
 | `ru.arc.text` | Validated localized MiniMessage rendering |
 | `ru.arc.util` | `TextUtils` |
 
