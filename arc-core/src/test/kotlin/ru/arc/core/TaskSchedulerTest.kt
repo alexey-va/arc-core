@@ -1,15 +1,16 @@
 package ru.arc.core
 
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FreeSpec
 import io.kotest.matchers.ints.shouldBeGreaterThan
 import io.kotest.matchers.shouldBe
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
-import io.kotest.assertions.throwables.shouldThrow
 
 class TaskSchedulerTest : FreeSpec({
     "TestTaskScheduler" - {
@@ -29,31 +30,44 @@ class TaskSchedulerTest : FreeSpec({
     "ExecutorTaskScheduler" - {
         "one-shot tasks are untracked after execution" {
             val executor = Executors.newSingleThreadScheduledExecutor()
-            val scheduler = ExecutorTaskScheduler(executor, Executors.newScheduledThreadPool(1))
+            val asyncExecutor = Executors.newSingleThreadScheduledExecutor()
+            val scheduler = ExecutorTaskScheduler(executor, asyncExecutor)
             val counter = AtomicInteger()
+            val releaseTask = CountDownLatch(1)
 
-            scheduler.runLater(0) { counter.incrementAndGet() }
+            scheduler.runLater(0) {
+                releaseTask.await(5, TimeUnit.SECONDS) shouldBe true
+                counter.incrementAndGet()
+            }
             scheduler.trackedCount() shouldBe 1
-            Thread.sleep(50)
+            releaseTask.countDown()
+            executor.submit {}.get(5, TimeUnit.SECONDS)
             counter.get() shouldBe 1
             scheduler.trackedCount() shouldBe 0
 
             executor.shutdownNow()
+            asyncExecutor.shutdownNow()
         }
 
         "repeating tasks stay tracked until cancelled" {
             val executor = Executors.newSingleThreadScheduledExecutor()
-            val scheduler = ExecutorTaskScheduler(executor, Executors.newScheduledThreadPool(1))
+            val asyncExecutor = Executors.newSingleThreadScheduledExecutor()
+            val scheduler = ExecutorTaskScheduler(executor, asyncExecutor)
             val counter = AtomicInteger()
+            val firstRun = CountDownLatch(1)
 
-            val task = scheduler.runTimer(0, 1) { counter.incrementAndGet() }
+            val task = scheduler.runTimer(0, 1) {
+                counter.incrementAndGet()
+                firstRun.countDown()
+            }
             scheduler.trackedCount() shouldBe 1
-            Thread.sleep(200)
+            firstRun.await(5, TimeUnit.SECONDS) shouldBe true
             counter.get() shouldBeGreaterThan 0
             task.cancel()
             scheduler.trackedCount() shouldBe 0
 
             executor.shutdownNow()
+            asyncExecutor.shutdownNow()
         }
 
         "rejected tasks are not retained in the scheduler registry" {
