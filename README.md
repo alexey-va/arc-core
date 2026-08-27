@@ -85,7 +85,7 @@ and sources JAR back by SHA-256.
 
 ```kotlin
 // settings.gradle.kts
-includeBuild("../arc-core")  // or ~/IdeaProjects/arc-core
+includeBuild("../arc-core")  // or ~/RusCrafting/arc-core
 
 // build.gradle.kts — ProxyARC
 dependencies {

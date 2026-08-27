@@ -15,10 +15,10 @@ Migration history: [`docs/INDEX.md`](docs/INDEX.md)
 | **arc-core** (this) | Shared framework | This file — **canon** |
 | [ARC](https://github.com/alexey-va/ARC) | Paper gameplay plugin | `ARC/AGENTS.md` |
 | [ProxyARC](https://github.com/alexey-va/ProxyARC) | Velocity proxy plugin | `ProxyARC/AGENTS.md` |
-| [mcserver](https://github.com/alexey-va/arserver-plugins) | Runtime YAML, deploy | `mcserver/AGENTS.md` + `TASKS.md` |
+| [ruscrafting-ops](https://github.com/alexey-va/ruscrafting-ops) | Runtime YAML, deploy | `ruscrafting-ops/AGENTS.md` + `TASKS.md` |
 
 ```
-mcserver (ops, runtime YAML)
+ruscrafting-ops (ops, runtime YAML)
     │
 arc-core ─────┬───── ARC (Paper: Event DSL, GUI, gameplay)
               └───── ProxyARC (Velocity: join, discord, antibot)
@@ -82,7 +82,7 @@ upload.
 | Disposable real Redis/MySQL fixture? | `arc-core-integration-testing` |
 | Gameplay feature (treasure, stock, …)? | `ARC/src/main/kotlin/ru/arc/{feature}/` |
 | Proxy feature (join, discord, …)? | `ProxyARC/src/main/kotlin/ru/arc/` |
-| Runtime YAML on prod? | `mcserver/*/plugins/ARC/modules/` or `velocity/plugins/ProxyARC/` |
+| Runtime YAML on prod? | `ruscrafting-ops/*/plugins/ARC/modules/` or `velocity/plugins/ProxyARC/` |
 
 ## Module pattern
 
@@ -133,12 +133,12 @@ VelocityArcRuntime.installScheduling(server, this)
 
 ## Agent workflow
 
-The mcserver checkout exposes focused project skills under
-`mcserver/.agents/skills/`. Core ARC/ProxyARC development selects the
+The ruscrafting-ops checkout exposes focused project skills under
+`ruscrafting-ops/.agents/skills/`. Core ARC/ProxyARC development selects the
 `ruscrafting-server-ops` development reference, which routes new modules,
 migrations, and Kotlin tests back to this canonical file without duplicating
 these boundary rules. Specialized workflows trigger directly from their own
-skill metadata. Production deployment remains in the mcserver operations
+skill metadata. Production deployment remains in the ruscrafting-ops operations
 reference; CMI kit details remain in the plugin-local
 `classic/plugins/CMI/AGENTS.md`.
 
@@ -161,7 +161,7 @@ where ordering crosses storage or platform boundaries.
 | [`docs/INDEX.md`](docs/INDEX.md) | Superpowers specs and plans |
 | `ARC/AGENTS.md` | Paper-specific delta |
 | `ProxyARC/AGENTS.md` | Velocity-specific delta |
-| `mcserver/AGENTS.md` | Deploy, MCP, server roles |
+| `ruscrafting-ops/AGENTS.md` | Deploy, MCP, server roles |
 | `ARC/src/main/kotlin/ru/arc/gui/GUI.md` | GuiDsl patterns |
 | `ARC/src/main/kotlin/ru/arc/ops/AGENTS.md` | Ops HTTP, CMI kits API |
 
