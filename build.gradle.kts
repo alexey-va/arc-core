@@ -69,6 +69,13 @@ subprojects {
         }
     }
 
+    tasks.withType<Jar>().configureEach {
+        from(rootProject.file("LICENSE")) {
+            into("META-INF")
+            rename { "LICENSE-arc-core.txt" }
+        }
+    }
+
     pluginManager.withPlugin("maven-publish") {
         extensions.configure<PublishingExtension> {
             publications.withType(MavenPublication::class.java).configureEach {
@@ -76,6 +83,13 @@ subprojects {
                     name.set(project.description)
                     description.set(project.description)
                     url.set("https://github.com/alexey-va/arc-core")
+                    licenses {
+                        license {
+                            name.set("Apache License, Version 2.0")
+                            url.set("https://www.apache.org/licenses/LICENSE-2.0.txt")
+                            distribution.set("repo")
+                        }
+                    }
                     scm {
                         connection.set("scm:git:https://github.com/alexey-va/arc-core.git")
                         developerConnection.set("scm:git:ssh://git@github.com/alexey-va/arc-core.git")

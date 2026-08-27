@@ -1,5 +1,9 @@
 # arc-core
 
+arc-core is licensed under the [Apache License 2.0](LICENSE). Every published
+binary JAR embeds the complete license at `META-INF/LICENSE-arc-core.txt`, and
+the generated Maven POM declares the same license.
+
 Platform-agnostic **Kotlin-only** framework for **ARC** (Paper) and **ProxyARC** (Velocity).
 
 **Repository:** [github.com/alexey-va/arc-core](https://github.com/alexey-va/arc-core)

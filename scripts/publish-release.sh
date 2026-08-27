@@ -77,6 +77,15 @@ module_count="$(find "$STAGING_ROOT/$GROUP_PATH" -mindepth 1 -maxdepth 1 -type d
 for pom in "$STAGING_ROOT/$GROUP_PATH"/*/"$VERSION"/*.pom; do
   ! grep -q '<groupId>ru\.arc</groupId>\|<version>1\.0-SNAPSHOT</version>' "$pom" ||
     die "Staged POM contains an unpublished composite-build coordinate: $pom"
+  grep -q '<name>Apache License, Version 2.0</name>' "$pom" ||
+    die "Staged POM is missing Apache-2.0 metadata: $pom"
+  grep -q '<url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>' "$pom" ||
+    die "Staged POM is missing the Apache-2.0 license URL: $pom"
+done
+
+for jar in "$STAGING_ROOT/$GROUP_PATH"/*/"$VERSION"/*.jar; do
+  jar tf "$jar" | grep -qx 'META-INF/LICENSE-arc-core.txt' ||
+    die "Staged JAR is missing META-INF/LICENSE-arc-core.txt: $jar"
 done
 
 major_version() {
