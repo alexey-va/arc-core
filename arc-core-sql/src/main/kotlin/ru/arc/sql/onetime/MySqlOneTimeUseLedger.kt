@@ -20,6 +20,7 @@ import java.nio.ByteBuffer
 import java.security.MessageDigest
 import java.sql.Connection
 import java.sql.PreparedStatement
+import java.sql.SQLException
 import java.sql.Timestamp
 import java.time.Clock
 import java.util.UUID
@@ -60,22 +61,34 @@ class MySqlOneTimeUseStore(
     private val clock: Clock = Clock.systemUTC(),
 ) {
     fun claim(connection: Connection, request: OneTimeUseClaimRequest): OneTimeUseClaimResult {
-        val inserted = connection.prepareStatement(
-            """
-            INSERT INTO ${partition.quotedTable}
-                (`purpose`, `use_id`, `fingerprint`, `claimant_id`, `claim_id`, `claim_scope`, `status`, `claimed_at`)
-            VALUES (?, ?, ?, ?, ?, ?, 'CLAIMED', ?)
-            ON DUPLICATE KEY UPDATE `use_id` = `use_id`
-            """.trimIndent(),
-        ).use { statement ->
-            statement.setString(1, partition.purpose)
-            statement.setBytes(2, request.identity.useId.bytes())
-            statement.setBytes(3, request.identity.fingerprint.bytes())
-            statement.setBytes(4, request.claimantId.bytes())
-            statement.setBytes(5, request.claimId.bytes())
-            statement.setString(6, request.scope?.value)
-            statement.setTimestamp(7, Timestamp.from(clock.instant()))
-            statement.executeUpdate() == 1
+        val inserted = try {
+            connection.prepareStatement(
+                """
+                INSERT INTO ${partition.quotedTable}
+                    (`purpose`, `use_id`, `fingerprint`, `claimant_id`, `claim_id`, `claim_scope`, `status`, `claimed_at`)
+                VALUES (?, ?, ?, ?, ?, ?, 'CLAIMED', ?)
+                """.trimIndent(),
+            ).use { statement ->
+                statement.setString(1, partition.purpose)
+                statement.setBytes(2, request.identity.useId.bytes())
+                statement.setBytes(3, request.identity.fingerprint.bytes())
+                statement.setBytes(4, request.claimantId.bytes())
+                statement.setBytes(5, request.claimId.bytes())
+                statement.setString(6, request.scope?.value)
+                statement.setTimestamp(7, Timestamp.from(clock.instant()))
+                statement.executeUpdate()
+            }
+            true
+        } catch (failure: SQLException) {
+            // Connector/J may report an idempotent ON DUPLICATE KEY no-op as one
+            // affected row, which is indistinguishable from a fresh insert. A
+            // plain insert gives us an exact creation signal; MySQL keeps the
+            // transaction usable after duplicate-key error 1062 so the locked
+            // row can be classified below.
+            if (failure.errorCode != MYSQL_DUPLICATE_KEY || failure.sqlState != SQL_STATE_INTEGRITY_CONSTRAINT) {
+                throw failure
+            }
+            false
         }
         val row = load(connection, request.identity.useId, forUpdate = true)
             ?: return OneTimeUseClaimResult.IdentityConflict
@@ -184,6 +197,8 @@ class MySqlOneTimeUseStore(
     }
 
     private companion object {
+        const val MYSQL_DUPLICATE_KEY = 1062
+        const val SQL_STATE_INTEGRITY_CONSTRAINT = "23000"
         const val STATUS_CLAIMED = "CLAIMED"
         const val STATUS_COMMITTED = "COMMITTED"
     }
