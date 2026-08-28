@@ -1,0 +1,7 @@
+feature:
+  enabled: true
+  title: Bundled title
+list:
+  - bundled-value
+new-section:
+  message: Added safely

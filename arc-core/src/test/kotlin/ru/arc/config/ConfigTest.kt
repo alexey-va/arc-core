@@ -129,5 +129,68 @@ class ConfigTest : FreeSpec({
                 config.setStructured("bad", java.math.BigDecimal.ONE)
             }.exceptionOrNull().shouldBeInstanceOf<IllegalArgumentException>()
         }
+
+        "should merge new bundled keys without replacing operator values" {
+            val dir = Files.createTempDirectory("arc-core-config-merge")
+            val yaml = dir.resolve("module.yml")
+            Files.writeString(
+                yaml,
+                """
+                feature:
+                  enabled: false
+                  operator-note: keep-me
+                list:
+                  - operator-value
+                unknown:
+                  nested: 42
+                """.trimIndent() + "\n",
+            )
+            ConfigManager.clear()
+            val config = ConfigManager.of(dir, "module.yml")
+
+            config.mergeMissingFromBundled("config/merge-defaults.yml") shouldBe true
+            config.boolean("feature.enabled", true) shouldBe false
+            config.string("feature.operator-note") shouldBe "keep-me"
+            config.string("feature.title") shouldBe "Bundled title"
+            config.stringList("list") shouldBe listOf("operator-value")
+            config.int("unknown.nested") shouldBe 42
+            config.string("new-section.message") shouldBe "Added safely"
+
+            val afterFirstMerge = Files.readString(yaml)
+            config.mergeMissingFromBundled("config/merge-defaults.yml") shouldBe false
+            Files.readString(yaml) shouldBe afterFirstMerge
+
+            ConfigManager.clear()
+            val reloaded = ConfigManager.of(dir, "module.yml")
+            reloaded.boolean("feature.enabled", true) shouldBe false
+            reloaded.string("feature.title") shouldBe "Bundled title"
+            reloaded.string("new-section.message") shouldBe "Added safely"
+        }
+
+        "should preserve an explicit type conflict for feature validation" {
+            val dir = Files.createTempDirectory("arc-core-config-merge-conflict")
+            val yaml = dir.resolve("module.yml")
+            Files.writeString(yaml, "feature: operator-scalar\n")
+            ConfigManager.clear()
+            val config = ConfigManager.of(dir, "module.yml")
+
+            config.mergeMissingFromBundled("config/merge-defaults.yml") shouldBe true
+            config.string("feature") shouldBe "operator-scalar"
+            config.stringOrNull("feature.title") shouldBe null
+            config.string("new-section.message") shouldBe "Added safely"
+        }
+
+        "should fail without mutating the file when bundled defaults are missing" {
+            val dir = Files.createTempDirectory("arc-core-config-merge-missing")
+            val yaml = dir.resolve("module.yml")
+            Files.writeString(yaml, "feature: true\n")
+            ConfigManager.clear()
+            val config = ConfigManager.of(dir, "module.yml")
+
+            runCatching {
+                config.mergeMissingFromBundled("config/not-packaged.yml")
+            }.exceptionOrNull().shouldBeInstanceOf<IllegalArgumentException>()
+            Files.readString(yaml) shouldBe "feature: true\n"
+        }
     }
 })

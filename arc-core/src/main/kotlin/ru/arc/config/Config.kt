@@ -802,7 +802,58 @@ open class Config(
     /** Load (or reload) from disk. Called from [reload] and init. */
     fun load() = reload()
 
+    /**
+     * Adds keys introduced by a newer bundled YAML without replacing operator-owned values.
+     *
+     * Existing scalars, lists, mappings and unknown keys remain authoritative. Missing mapping
+     * entries are copied recursively from [resource] and the resulting file is persisted atomically.
+     * A type conflict is deliberately preserved so normal feature validation can report the
+     * operator's invalid explicit value instead of silently repairing it.
+     *
+     * @return `true` when at least one missing key was added and persisted.
+     */
+    fun mergeMissingFromBundled(resource: String): Boolean {
+        require(resource.isNotBlank()) { "Bundled config resource must not be blank" }
+        val defaults = loadBundledMapping(resource)
+        val changed = nodeLock.write { mergeMissingMappings(rootNode, defaults) }
+        if (changed) saveStrict()
+        return changed
+    }
+
     // ── Internal node-tree helpers ─────────────────────────────────────────
+
+    private fun loadBundledMapping(resource: String): MappingNode {
+        val stream = requireNotNull(openBundledResource(resource)) {
+            "Bundled config resource is missing: $resource"
+        }
+        return stream.bufferedReader(Charsets.UTF_8).use { reader ->
+            val node = Compose(loadSettings).composeReader(reader).orElse(null)
+            require(node is MappingNode) { "Bundled config resource must contain a YAML mapping: $resource" }
+            node
+        }
+    }
+
+    private fun mergeMissingMappings(
+        current: MappingNode,
+        defaults: MappingNode,
+    ): Boolean {
+        var changed = false
+        defaults.value.forEach { defaultTuple ->
+            val defaultKey = (defaultTuple.keyNode as? ScalarNode)?.value ?: return@forEach
+            val existing = current.value.find { (it.keyNode as? ScalarNode)?.value == defaultKey }
+            if (existing == null) {
+                current.value.add(defaultTuple)
+                changed = true
+            } else {
+                val currentMapping = existing.valueNode as? MappingNode
+                val defaultMapping = defaultTuple.valueNode as? MappingNode
+                if (currentMapping != null && defaultMapping != null) {
+                    changed = mergeMissingMappings(currentMapping, defaultMapping) || changed
+                }
+            }
+        }
+        return changed
+    }
 
     private fun loadNode(): MappingNode {
         return try {

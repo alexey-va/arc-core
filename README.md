@@ -51,6 +51,11 @@ Gradle root project: **`ArcCore`** (имя важно для composite build —
 | `ru.arc.text` | Validated localized MiniMessage rendering |
 | `ru.arc.util` | `TextUtils` |
 
+Feature configs that contain operator-owned values can opt into additive upgrades with
+`Config.mergeMissingFromBundled(resource)`. The merge recursively copies only missing
+keys from the packaged YAML, preserves existing and unknown values, and atomically saves
+the result. Explicit type conflicts remain untouched for the feature's validator to reject.
+
 Logging packages live in `arc-core-logging`; Redis in `arc-core-redis`; MySQL
 and blocking JDBC infrastructure in `arc-core-sql`.
 
