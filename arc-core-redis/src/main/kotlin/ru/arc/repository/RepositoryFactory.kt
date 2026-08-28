@@ -9,6 +9,7 @@ import ru.arc.repository.redis.RedisStorage
 import ru.arc.repository.redis.RedisInvalidationSyncService
 import ru.arc.repository.redis.RedisSyncMode
 import ru.arc.repository.redis.RedisSyncService
+import kotlin.time.Duration
 
 /**
  * Creates and initializes a [CachedRepository] backed by Redis.
@@ -21,6 +22,8 @@ inline fun <reified T : Entity> redisRepo(
     updateChannel: String,
     scope: CoroutineScope,
     syncMode: RedisSyncMode = RedisSyncMode.ENTITY,
+    localSyncOrigin: String? = null,
+    invalidationCoalesceWindow: Duration = Duration.ZERO,
     configure: RepoConfig.Builder<T>.() -> Unit = {},
 ): CachedRepository<T> {
     val entityType = object : TypeToken<T>() {}.type
@@ -54,6 +57,8 @@ inline fun <reified T : Entity> redisRepo(
                     channel = updateChannel,
                     loadEntity = storage::load,
                     gson = gson,
+                    localOrigin = localSyncOrigin,
+                    invalidationCoalesceMillis = invalidationCoalesceWindow.inWholeMilliseconds,
                 )
         }
 
