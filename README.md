@@ -32,7 +32,7 @@ Gradle root project: **`ArcCore`** (имя важно для composite build —
 | `arc-core-metrics/` | `ru.arc:arc-core-metrics` | Cached Prometheus endpoint, JVM/OS/process/disk metrics |
 | `arc-core-redis/` | `ru.arc:arc-core-redis` | Redis manager/storage plus strict codecs, CAS, validated topics, request/reply and presence |
 | `arc-core-sql/` | `ru.arc:arc-core-sql` | Optional MySQL/Hikari runtime, async JDBC and migrations |
-| `arc-core-paper/` | `ru.arc:arc-core-paper` | Paper scheduling, transfer/teleport boundaries and complete player-state escrow |
+| `arc-core-paper/` | `ru.arc:arc-core-paper` | Paper scheduling, audience/teleport delivery, chunk-ticket lifecycle, and complete player-state escrow |
 | `arc-core-paper-testing/` | `ru.arc:arc-core-paper-testing` | Published MockBukkit runtime and fixtures for Paper plugin tests |
 | `arc-core-integration-testing/` | `ru.arc:arc-core-integration-testing` | Published disposable Redis/MySQL Testcontainers fixtures |
 | `arc-core-velocity/` | `ru.arc:arc-core-velocity` | Scheduling plus proxy/backend/event metrics |

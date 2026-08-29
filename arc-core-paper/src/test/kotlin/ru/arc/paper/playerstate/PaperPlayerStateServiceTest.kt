@@ -22,6 +22,20 @@ class PaperPlayerStateServiceTest : FreeSpec({
     beforeEach { paper = MockBukkitTestRuntime.open() }
     afterEach { paper.close() }
 
+    "legacy persistence callback keeps its defaulted source contract" {
+        val player = paper.server.addPlayer("LegacyPersistence")
+        val persisted = AtomicInteger()
+        val service = PaperPlayerStateService(
+            primaryThread = { true },
+            persistPlayerData = { persisted.incrementAndGet() },
+        )
+        val snapshot = service.capture(player, 1_787_730_000_000)
+
+        service.restoreInventoryAndVerify(player, snapshot)
+
+        persisted.get() shouldBe 1
+    }
+
     "captures, restores, verifies and persists complete supported player state" {
         val server = paper.server
         val world = server.addSimpleWorld("state-service")
@@ -56,7 +70,11 @@ class PaperPlayerStateServiceTest : FreeSpec({
 
         val persisted = AtomicInteger()
         val codec = PaperPlayerStateCodec(SimpleItemCodec)
-        val service = PaperPlayerStateService(codec, primaryThread = { true }, persistPlayerData = { persisted.incrementAndGet() })
+        val service = PaperPlayerStateService(
+            codec,
+            primaryThread = { true },
+            playerDataPersistence = PaperPlayerDataPersistence { persisted.incrementAndGet() },
+        )
         val envelope = service.captureEnvelope(player, 1_787_730_000_000)
         val expected = codec.decode(envelope)
 
@@ -88,7 +106,7 @@ class PaperPlayerStateServiceTest : FreeSpec({
         val service = PaperPlayerStateService(
             PaperPlayerStateCodec(SimpleItemCodec),
             primaryThread = { true },
-            persistPlayerData = { persisted.incrementAndGet() },
+            playerDataPersistence = PaperPlayerDataPersistence { persisted.incrementAndGet() },
         )
         val snapshot = service.capture(first, 1_787_730_000_000)
         shouldThrow<IllegalArgumentException> { service.restoreAndVerify(second, snapshot) }
@@ -105,7 +123,7 @@ class PaperPlayerStateServiceTest : FreeSpec({
         val service = PaperPlayerStateService(
             PaperPlayerStateCodec(SimpleItemCodec),
             primaryThread = { true },
-            persistPlayerData = { persisted.incrementAndGet() },
+            playerDataPersistence = PaperPlayerDataPersistence { persisted.incrementAndGet() },
         )
         val snapshot = service.capture(player, 1_787_730_000_000)
         player.inventory.setItem(0, ItemStack.of(Material.DIAMOND, 3))
@@ -121,7 +139,7 @@ class PaperPlayerStateServiceTest : FreeSpec({
         val service = PaperPlayerStateService(
             PaperPlayerStateCodec(SimpleItemCodec),
             primaryThread = { true },
-            persistPlayerData = { persisted.incrementAndGet() },
+            playerDataPersistence = PaperPlayerDataPersistence { persisted.incrementAndGet() },
         )
         val snapshot = service.capture(player, 1_787_730_000_000).copy(health = 30.0)
         player.inventory.setItem(0, ItemStack.of(Material.DIAMOND, 3))
@@ -136,7 +154,7 @@ class PaperPlayerStateServiceTest : FreeSpec({
         val service = PaperPlayerStateService(
             PaperPlayerStateCodec(SimpleItemCodec),
             primaryThread = { true },
-            persistPlayerData = {},
+            playerDataPersistence = PaperPlayerDataPersistence {},
         )
         val snapshot = service.capture(player, 1_787_730_000_000)
         player.inventory.setItem(0, ItemStack.of(Material.NETHERITE_SWORD))
@@ -154,7 +172,7 @@ class PaperPlayerStateServiceTest : FreeSpec({
             PaperPlayerStateService(
                 PaperPlayerStateCodec(SimpleItemCodec),
                 primaryThread = { true },
-                persistPlayerData = { persisted.incrementAndGet() },
+                playerDataPersistence = PaperPlayerDataPersistence { persisted.incrementAndGet() },
             )
         val captured = service.capture(player, 1_787_730_000_000)
         val unavailable =

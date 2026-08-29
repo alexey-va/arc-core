@@ -205,6 +205,58 @@ fun redisTest() = RedisTestService.start().use { }
         self.assertIn("arc-core-sql", output)
         self.assertIn("MySqlOneTimeUseLedger", output)
 
+    def test_accepts_typed_paper_platform_port_capabilities(self) -> None:
+        manifest = self.root / "arc-core-consumer.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                '"runtime"]',
+                '"runtime", "chunk-tickets", "paper-audience", "paper-teleport"]',
+            ),
+            encoding="utf-8",
+        )
+        main_source = self.root / "src/main/kotlin/example/ExamplePlugin.kt"
+        main_source.write_text(
+            main_source.read_text(encoding="utf-8")
+            + "\nval audienceDelivery: PaperAudienceEffects = nativeAudience()"
+            + "\nval teleports: PaperTeleportExecutor = nativeTeleports()"
+            + "\nval chunkTickets: PaperChunkTicketRegistry = chunkTicketRegistry()\n",
+            encoding="utf-8",
+        )
+        test_source = self.root / "src/test/kotlin/example/ExamplePluginTest.kt"
+        test_source.write_text(
+            test_source.read_text(encoding="utf-8")
+            + "\nval recordedAudience = RecordingPaperAudienceEffects()"
+            + "\nval recordedTeleports = RecordingPaperTeleportExecutor()\n",
+            encoding="utf-8",
+        )
+
+        exit_code, output = self.verify()
+
+        self.assertEqual(0, exit_code)
+        self.assertIn("paper-audience", output)
+        self.assertIn("paper-teleport", output)
+
+    def test_rejects_paper_platform_capability_without_test_adapter_evidence(self) -> None:
+        manifest = self.root / "arc-core-consumer.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                '"runtime"]',
+                '"runtime", "paper-teleport"]',
+            ),
+            encoding="utf-8",
+        )
+        main_source = self.root / "src/main/kotlin/example/ExamplePlugin.kt"
+        main_source.write_text(
+            main_source.read_text(encoding="utf-8") + "\nval teleports: PaperTeleportExecutor = nativeTeleports()\n",
+            encoding="utf-8",
+        )
+
+        exit_code, output = self.verify()
+
+        self.assertEqual(1, exit_code)
+        self.assertIn("paper-teleport", output)
+        self.assertIn("RecordingPaperTeleportExecutor", output)
+
     def test_accepts_canonical_velocity_composition(self) -> None:
         velocity = self.root / "velocity"
         velocity.mkdir()

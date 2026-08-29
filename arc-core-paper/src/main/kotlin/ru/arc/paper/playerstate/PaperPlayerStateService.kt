@@ -25,9 +25,24 @@ data class PlayerStateRestoreReceipt(
 class PaperPlayerStateService(
     private val codec: PaperPlayerStateCodec = PaperPlayerStateCodec(),
     private val primaryThread: () -> Boolean = Bukkit::isPrimaryThread,
-    private val persistPlayerData: (Player) -> Unit = Player::saveData,
+    persistPlayerData: (Player) -> Unit = Player::saveData,
     private val locationTolerance: TeleportMatchTolerance = TeleportMatchTolerance(),
 ) {
+    private val playerDataPersistence = PaperPlayerDataPersistence { player -> persistPlayerData(player) }
+
+    /** Typed port constructor; the callback primary remains for binary/source compatibility. */
+    constructor(
+        codec: PaperPlayerStateCodec = PaperPlayerStateCodec(),
+        primaryThread: () -> Boolean = Bukkit::isPrimaryThread,
+        playerDataPersistence: PaperPlayerDataPersistence,
+        locationTolerance: TeleportMatchTolerance = TeleportMatchTolerance(),
+    ) : this(
+        codec = codec,
+        primaryThread = primaryThread,
+        persistPlayerData = playerDataPersistence::persist,
+        locationTolerance = locationTolerance,
+    )
+
     fun capture(player: Player, capturedAtMillis: Long): PaperPlayerStateSnapshot {
         requirePrimaryThread()
         require(player.isOnline && !player.isDead) { "Cannot capture an offline or dead player" }
@@ -99,7 +114,7 @@ class PaperPlayerStateService(
 
         val mismatches = restoreMismatches(player, snapshot, destination, prepared)
         check(mismatches.isEmpty()) { "Player-state verification failed: ${mismatches.joinToString(",")}" }
-        persistPlayerData(player)
+        playerDataPersistence.persist(player)
     }
 
     /** Restores and verifies only item containers and selected slot. */
@@ -109,7 +124,7 @@ class PaperPlayerStateService(
         player.updateInventory()
         val mismatches = inventoryMismatches(player, snapshot)
         check(mismatches.isEmpty()) { "Player-state inventory verification failed: ${mismatches.joinToString(",")}" }
-        persistPlayerData(player)
+        playerDataPersistence.persist(player)
     }
 
     /** Restores inventory and mutable state while intentionally keeping the current location. */
@@ -124,7 +139,7 @@ class PaperPlayerStateService(
         player.updateInventory()
         val mismatches = inventoryMismatches(player, snapshot) + nonInventoryStateMismatches(player, snapshot, prepared.compassTarget)
         check(mismatches.isEmpty()) { "Player-state current-location verification failed: ${mismatches.joinToString(",")}" }
-        persistPlayerData(player)
+        playerDataPersistence.persist(player)
     }
 
     /** Restores mutable non-item state while intentionally keeping inventory and location. */
@@ -137,7 +152,7 @@ class PaperPlayerStateService(
         applyNonInventoryState(player, snapshot, prepared)
         val mismatches = nonInventoryStateMismatches(player, snapshot, prepared.compassTarget)
         check(mismatches.isEmpty()) { "Player-state non-inventory verification failed: ${mismatches.joinToString(",")}" }
-        persistPlayerData(player)
+        playerDataPersistence.persist(player)
     }
 
     /** Restores location and mutable non-item state while preserving every live item. */
@@ -154,7 +169,7 @@ class PaperPlayerStateService(
         val mismatches = nonInventoryStateMismatches(player, snapshot, prepared.compassTarget).toMutableList()
         if (!sameLocation(player.location, destination)) mismatches += "location"
         check(mismatches.isEmpty()) { "Player-state non-inventory verification failed: ${mismatches.joinToString(",")}" }
-        persistPlayerData(player)
+        playerDataPersistence.persist(player)
     }
 
     /** Returns bounded item-field names only; item contents never enter diagnostics. */

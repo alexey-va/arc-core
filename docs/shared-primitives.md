@@ -35,8 +35,11 @@ CI verifier reject missing modules and high-signal local duplicates.
 | Bounded Redis request/reply | `arc-core-redis`: `RedisRequestReplyChannel`, `RedisRequestResult` | Correlate only an exact bounded id, cap pending requests, validate replies against the original request and transport origin, own timeout cancellation, and complete every pending future on close. |
 | Redis-backed network presence | `arc-core-redis`: `RedisPresenceDirectory`, `RedisPresenceRefresh` | Require hash field = decoded entry id, allowlist origin and domain policy before caching, convert observations into bounded expiring leases, and return typed rejection counts without raw payloads. |
 | Paper backend transfer | `arc-core-paper`: `BackendTransfer`, `BungeeBackendTransfer` | Route only to a typed `BackendServerId`; own channel registration and return a typed delivery outcome. |
+| Transient Paper player UI | `arc-core-paper`: `PaperAudienceEffects`, `NativePaperAudienceEffects`; `arc-core-paper-testing`: `RecordingPaperAudienceEffects` | Gameplay owns content and timing. Production delegates to the exact Adventure API; tests record every effect and still delegate supported calls to MockBukkit. |
+| Local asynchronous Paper teleport | `arc-core-paper`: `PaperTeleportExecutor`, `NativePaperTeleportExecutor`; `arc-core-paper-testing`: `RecordingPaperTeleportExecutor` | Gameplay owns authorization, destination choice, generation tokens, and completion. The port owns only the exact pinned Paper call and a recordable test boundary. |
+| Reference-counted Paper chunk tickets | `arc-core-paper`: `PaperChunkTicketRegistry`, `PaperChunkTicketLease` | Create one registry per plugin lifecycle. Share one native plugin ticket across idempotent leases, never remove a borrowed ticket, reject new leases after close, and retain uncertain cleanup for retry. |
 | Narrow teleport exception | `arc-core-paper`: `ScopedTeleportAuthorizer` | Authorize one player and one exact world/position/rotation only for the dynamic extent of one action. Nested scopes are rejected and cleanup is unconditional. |
-| Complete Paper player escrow | `arc-core-paper`: `PaperPlayerStateService`, `PaperPlayerStateCodec` | Capture/restore on the primary thread, use versioned native item bytes plus SHA-256 and bounds, verify every restored field, then call `saveData`. Explicit partial APIs preserve inventory or location for cross-server recovery without weakening full restore. |
+| Complete Paper player escrow | `arc-core-paper`: `PaperPlayerStateService`, `PaperPlayerStateCodec`, `PaperPlayerDataPersistence`; `arc-core-paper-testing`: `RecordingPaperPlayerDataPersistence` | Capture/restore on the primary thread, use versioned native item bytes plus SHA-256 and bounds, verify every restored field, then persist through the exact Paper boundary. Explicit partial APIs preserve inventory or location for cross-server recovery without weakening full restore. |
 | Paper lifecycle composition | `arc-core-paper`: `PaperPluginRuntime` | Compose rather than inherit: own reload epochs and closeable resources explicitly, close tasks first, and emit canonical bootstrap/ready events. |
 | Platform-neutral test fixtures | `arc-core-testing`: `DeterministicClock`, `ControlledExecutor`, `FailureInjector` | Drive time, queued work, and named failure points without sleeps or races. Keep this artifact test-only in consumers. |
 | Paper platform test runtime | `arc-core-paper-testing`: `MockBukkitTestRuntime` | Consume the pinned Paper/MockBukkit pair as a test dependency, own one global runtime per test, drive events and ticks deterministically, and always close it. |
@@ -54,6 +57,8 @@ ru.arc.text
 ru.arc.redis.safety
 ru.arc.redis.network
 ru.arc.paper.network
+ru.arc.paper.audience
+ru.arc.paper.chunk
 ru.arc.paper.teleport
 ru.arc.paper.playerstate
 ru.arc.paper.runtime
@@ -168,6 +173,9 @@ inventory must be preserved.
 ## Do not duplicate
 
 - Do not build Bungee `Connect` bytes or command strings in a feature.
+- Do not repeat raw Adventure delivery, local `teleportAsync`, `saveData`, or
+  plugin chunk-ticket lifecycle behind feature callbacks. Compose the matching
+  `arc-core-paper` port from a feature-named semantic interface.
 - Do not add a feature-local username/server-id regex.
 - Do not create another reload epoch, task bag, atomic JSON file writer,
   recovery call-order chain, one-time voucher/book table, expiring network map,

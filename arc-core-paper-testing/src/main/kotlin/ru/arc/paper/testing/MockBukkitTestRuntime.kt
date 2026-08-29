@@ -1,7 +1,9 @@
 package ru.arc.paper.testing
 
 import org.bukkit.event.Event
+import org.bukkit.entity.Player
 import org.bukkit.plugin.Plugin
+import net.kyori.adventure.title.Title
 import org.mockbukkit.mockbukkit.MockBukkit
 import org.mockbukkit.mockbukkit.ServerMock
 import org.mockbukkit.mockbukkit.entity.PlayerMock
@@ -76,6 +78,18 @@ class MockBukkitTestRuntime private constructor(
         server.scheduler.performTicks(ticks)
     }
 
+    /** Number of `Player.saveData()` calls observed for this player in the active scenario. */
+    fun playerDataSaveCount(player: Player): Int {
+        requireOpen()
+        return MockBukkitObservations.playerDataSaveCount(player)
+    }
+
+    /** Snapshot of Adventure titles shown to this player in the active scenario. */
+    fun adventureTitles(player: Player): List<Title> {
+        requireOpen()
+        return MockBukkitObservations.titles(player)
+    }
+
     override fun close() {
         synchronized(lifecycleMonitor) {
             if (closed) return
@@ -101,14 +115,18 @@ class MockBukkitTestRuntime private constructor(
         private val lifecycleMonitor = Any()
 
         @JvmStatic
-        fun open(): MockBukkitTestRuntime = open(ServerMock())
+        fun open(): MockBukkitTestRuntime = open(ArcServerMock())
 
         @JvmStatic
-        fun open(server: ServerMock): MockBukkitTestRuntime = synchronized(lifecycleMonitor) {
-            check(!MockBukkit.isMocked()) {
-                "MockBukkit already has an active server; close the owning MockBukkitTestRuntime first"
+        fun open(server: ServerMock): MockBukkitTestRuntime {
+            MockBukkitCompatibility.install()
+            return synchronized(lifecycleMonitor) {
+                check(!MockBukkit.isMocked()) {
+                    "MockBukkit already has an active server; close the owning MockBukkitTestRuntime first"
+                }
+                MockBukkitCompatibility.resetObservations()
+                MockBukkitTestRuntime(MockBukkit.mock(server))
             }
-            MockBukkitTestRuntime(MockBukkit.mock(server))
         }
     }
 }
@@ -118,3 +136,26 @@ inline fun <reified T : Plugin> MockBukkitTestRuntime.loadPlugin(vararg construc
 
 inline fun <reified T : Plugin> MockBukkitTestRuntime.loadSimplePlugin(vararg constructorArguments: Any): T =
     loadSimplePlugin(T::class.java, *constructorArguments)
+
+/**
+ * Turns MockBukkit API gaps into real failures instead of JUnit aborted/skipped tests.
+ *
+ * MockBukkit's `UnimplementedOperationException` is an assumption-abort exception. Without this
+ * guard, a scenario can look green while none of its assertions ran. Wrap the complete scenario,
+ * including scheduler advancement, so an unsupported operation cannot escape as a skipped test.
+ */
+fun <T> failOnUnsupportedMockBukkitOperation(block: () -> T): T = try {
+    block()
+} catch (failure: Throwable) {
+    val unsupported = generateSequence(failure as Throwable?) { it.cause }
+        .firstOrNull { it.javaClass.name == MOCK_BUKKIT_UNIMPLEMENTED_OPERATION }
+    if (unsupported != null) {
+        throw AssertionError("MockBukkit scenario reached an unsupported Paper API operation").apply {
+            initCause(unsupported)
+        }
+    }
+    throw failure
+}
+
+private const val MOCK_BUKKIT_UNIMPLEMENTED_OPERATION =
+    "org.mockbukkit.mockbukkit.exception.UnimplementedOperationException"

@@ -65,6 +65,9 @@ or MockBukkit singleton.
 | `sql` | `arc-core-sql` plus `MySqlTestService` |
 | `integration-testing` | `arc-core-integration-testing` and one shared test service |
 | `backend-transfer` | `BackendTransfer` / `BungeeBackendTransfer` |
+| `chunk-tickets` | `PaperChunkTicketRegistry`; one lifecycle-owned registry per plugin |
+| `paper-audience` | `PaperAudienceEffects` plus `RecordingPaperAudienceEffects` in platform tests |
+| `paper-teleport` | `PaperTeleportExecutor` plus `RecordingPaperTeleportExecutor` in platform tests |
 | `scoped-teleport` | `ScopedTeleportAuthorizer` |
 | `player-state` | `PaperPlayerStateService` |
 | `ai` | `arc-core-ai` |
@@ -87,3 +90,9 @@ a typed policy or narrow adapter seam and tests, update
 [`shared-primitives.md`](shared-primitives.md), then add the consumer
 capability. Do not add an exception list that silently legalizes a second
 implementation.
+
+The plugin still owns feature vocabulary. Start with a small semantic interface
+and native adapter when the operation is shaped like the feature. Promote only
+the exact reusable platform mechanism or lifecycle to Core, with its matching
+testing artifact when needed; do not promote locale keys, domain DTOs, or a bag
+of unrelated callbacks.

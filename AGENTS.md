@@ -36,7 +36,7 @@ arc-core ─────┬───── ARC (Paper: Event DSL, GUI, gameplay)
 | `arc-core-metrics/` | `ru.arc:arc-core-metrics` | Prometheus registry, cached JVM/OS/disk metrics, scrape HTTP |
 | `arc-core-redis/` | `ru.arc:arc-core-redis` | Redis plus strict codecs, CAS, validated topics, bounded request/reply and presence leases |
 | `arc-core-sql/` | `ru.arc:arc-core-sql` | Optional MySQL/Hikari runtime, async JDBC and migrations |
-| `arc-core-paper/` | `ru.arc:arc-core-paper` | Paper scheduling, transfer/teleport and player-state escrow |
+| `arc-core-paper/` | `ru.arc:arc-core-paper` | Paper scheduling, audience/teleport delivery, chunk-ticket lifecycle, and player-state escrow |
 | `arc-core-testing/` | `ru.arc:arc-core-testing` | Platform-neutral deterministic clocks, executors, and failure injection |
 | `arc-core-paper-testing/` | `ru.arc:arc-core-paper-testing` | Canonical published MockBukkit test runtime and fixtures |
 | `arc-core-integration-testing/` | `ru.arc:arc-core-integration-testing` | Canonical Redis/MySQL Testcontainers services for real storage seams |
@@ -66,13 +66,18 @@ upload.
 8. **Paper platform tests:** depend on `arc-core-paper-testing`, open one
    `MockBukkitTestRuntime` per test, and close it with `use`. Never repeat the
    MockBukkit coordinate or weaken production behavior for an unsupported mock.
-9. **Real storage tests:** depend on `arc-core-integration-testing` and own one
+9. **Typed platform ports:** keep feature meaning in a plugin-owned, narrowly
+   named interface. Put an exact reusable Paper mechanism in `arc-core-paper`
+   and its recorder or compatibility body in `arc-core-paper-testing`. Never
+   replace either layer with a callback bag, god context, or production fallback
+   added only to satisfy MockBukkit.
+10. **Real storage tests:** depend on `arc-core-integration-testing` and own one
    `RedisTestService` or `MySqlTestService` with `use`. Keep image choice
    explicit when version-sensitive, but never repeat container wiring locally.
-10. **Trusted config:** operator-controlled configuration remains expressive.
+11. **Trusted config:** operator-controlled configuration remains expressive.
     Core may bootstrap its bundled default or a consumer-supplied settings
     snapshot; it must not guess legacy file locations or add broad allowlists.
-11. **New consumers:** keep `arc-core-consumer.toml` at repository root and run
+12. **New consumers:** keep `arc-core-consumer.toml` at repository root and run
     `scripts/verify_consumer_architecture.py` locally and through the pinned
     central GitHub action. Declare a capability before implementing it; do not
     delete the declaration to hide a verifier failure.
@@ -85,10 +90,12 @@ upload.
 | Shared Redis transport, codec, CAS, or replay rule? | `arc-core-redis/ru.arc.redis.safety` |
 | Redis topic, request/reply, or hash-backed presence lifecycle? | `arc-core-redis/ru.arc.redis.network` |
 | Paper API only (Material, Sound)? | `arc-core-paper` |
+| Reusable exact Paper call/lifecycle with a stable contract? | `arc-core-paper` plus its `arc-core-paper-testing` double when needed |
 | Platform-neutral deterministic test fixture? | `arc-core-testing` |
 | Reusable Paper test fixture or MockBukkit lifecycle? | `arc-core-paper-testing` |
 | Disposable real Redis/MySQL fixture? | `arc-core-integration-testing` |
 | Gameplay feature (treasure, stock, …)? | `ARC/src/main/kotlin/ru/arc/{feature}/` |
+| Feature-specific Paper semantics or domain DTOs? | A narrow interface and native adapter in the owning plugin |
 | Proxy feature (join, discord, …)? | `ProxyARC/src/main/kotlin/ru/arc/` |
 | Runtime YAML on prod? | `ruscrafting-ops/*/plugins/ARC/modules/` or `velocity/plugins/ProxyARC/` |
 

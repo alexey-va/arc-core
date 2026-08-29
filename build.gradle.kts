@@ -119,6 +119,13 @@ subprojects {
     tasks.named("check") { dependsOn("assertKotlinOnly") }
 }
 
+// Both suites attach a Byte Buddy agent to MockBukkit classes. Their concurrent
+// workers have repeatedly stalled during JVM retransformation, so keep the
+// production-module platform tests ahead of the shared test-kit suite.
+project(":arc-core-paper-testing").tasks.named<Test>("test") {
+    mustRunAfter(project(":arc-core-paper").tasks.named<Test>("test"))
+}
+
 tasks.register("testAll") {
     dependsOn(subprojects.flatMap { project ->
         listOf(project.tasks.named("test"), project.tasks.named("assertKotlinOnly"))

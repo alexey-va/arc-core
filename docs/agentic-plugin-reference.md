@@ -113,6 +113,29 @@ testImplementation("ru.arc:arc-core-paper-testing:1.0-SNAPSHOT")
 - `FailureInjector` names exact failure points.
 - `MockBukkitTestRuntime` owns one Paper singleton per test and always closes.
 
+## Platform ports without a god context
+
+Keep domain services ignorant of whether Paper, MockBukkit, or a hand-written
+fake performs an effect. Give the plugin a narrow semantic interface such as
+`FarmBlockPlatform` or `GiveawayAudience`; its production adapter may compose
+one or more exact Core mechanisms such as `PaperAudienceEffects`,
+`PaperTeleportExecutor`, or `PaperChunkTicketRegistry`.
+
+The split is intentional:
+
+```text
+feature service -> plugin semantic port -> native plugin adapter -> Core exact Paper port
+       test      -> plugin fake          -> optional Core recorder / MockBukkit runtime
+```
+
+Do not collapse unrelated block, entity, chunk, audience, persistence, and
+network operations into one `PlatformContext`, and do not expose a constructor
+full of function callbacks. A semantic port changes when the feature language
+changes; a Core port changes only when the shared pinned-platform contract
+changes. Promote the latter only when reuse or lifecycle/safety evidence is
+concrete, then add its test-kit counterpart and consumer capability in the same
+change.
+
 Operator configuration is trusted input. Keep it expressive; validate only
 syntax, resource bounds, and values that cross an untrusted player, network, or
 persistence boundary. Do not add command-root allowlists merely to silence a

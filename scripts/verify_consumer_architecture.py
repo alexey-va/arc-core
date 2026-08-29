@@ -55,15 +55,26 @@ REQUIRED_CAPABILITIES = {
 
 CAPABILITY_MODULES = {
     "ai": {"arc-core-ai"},
+    "chunk-tickets": {"arc-core-paper"},
     "deterministic-testing": {"arc-core-testing"},
     "integration-testing": {"arc-core-integration-testing"},
     "one-time-use": {"arc-core-sql", "arc-core-integration-testing"},
+    "paper-audience": {"arc-core-paper", "arc-core-paper-testing"},
+    "paper-teleport": {"arc-core-paper", "arc-core-paper-testing"},
     "redis-networking": {"arc-core-redis", "arc-core-integration-testing"},
     "sql": {"arc-core-sql", "arc-core-integration-testing"},
 }
 
 PLATFORM_ONLY_CAPABILITIES = {
-    "paper": {"backend-transfer", "paper-testing", "player-state", "scoped-teleport"},
+    "paper": {
+        "backend-transfer",
+        "chunk-tickets",
+        "paper-audience",
+        "paper-teleport",
+        "paper-testing",
+        "player-state",
+        "scoped-teleport",
+    },
     "velocity": set(),
 }
 
@@ -71,6 +82,7 @@ KNOWN_CAPABILITIES = {
     "ai",
     "atomic-files",
     "backend-transfer",
+    "chunk-tickets",
     "coalesced-writes",
     "durable-recovery",
     "deterministic-testing",
@@ -80,6 +92,8 @@ KNOWN_CAPABILITIES = {
     "logging",
     "metrics",
     "one-time-use",
+    "paper-audience",
+    "paper-teleport",
     "paper-testing",
     "player-state",
     "redis-networking",
@@ -94,6 +108,7 @@ CAPABILITY_EVIDENCE = {
     "ai": (("main", re.compile(r"\bru\.arc\.ai\.")),),
     "atomic-files": (("main", re.compile(r"\bAtomicFileStore\b")),),
     "backend-transfer": (("main", re.compile(r"\b(?:BackendTransfer|BungeeBackendTransfer)\b")),),
+    "chunk-tickets": (("main", re.compile(r"\bPaperChunkTicketRegistry\b")),),
     "coalesced-writes": (("main", re.compile(r"\bCoalescingAsyncWriter\b")),),
     "durable-recovery": (("main", re.compile(r"\b(?:DurableRecoveryWorkflow|DurableRecordJournal)\b")),),
     "deterministic-testing": (("test", re.compile(r"\b(?:DeterministicClock|ControlledExecutor|FailureInjector)\b")),),
@@ -109,6 +124,14 @@ CAPABILITY_EVIDENCE = {
         ("main", re.compile(r"\bru\.arc\.onetime\.")),
         ("main", re.compile(r"\bMySqlOneTimeUseLedger\b")),
         ("integration", re.compile(r"\bMySqlTestService\b")),
+    ),
+    "paper-audience": (
+        ("main", re.compile(r"\bPaperAudienceEffects\b")),
+        ("test", re.compile(r"\bRecordingPaperAudienceEffects\b")),
+    ),
+    "paper-teleport": (
+        ("main", re.compile(r"\bPaperTeleportExecutor\b")),
+        ("test", re.compile(r"\bRecordingPaperTeleportExecutor\b")),
     ),
     "paper-testing": (("test", re.compile(r"\bMockBukkitTestRuntime\b")),),
     "player-state": (("main", re.compile(r"\bPaperPlayerStateService\b")),),

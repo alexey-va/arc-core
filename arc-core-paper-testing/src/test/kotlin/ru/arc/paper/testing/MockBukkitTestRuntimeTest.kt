@@ -3,11 +3,15 @@ package ru.arc.paper.testing
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FreeSpec
 import io.kotest.matchers.shouldBe
+import net.kyori.adventure.text.Component
+import net.kyori.adventure.title.Title
 import org.bukkit.Location
+import org.bukkit.Material
 import org.bukkit.event.EventHandler
 import org.bukkit.event.Listener
 import org.bukkit.event.player.PlayerTeleportEvent
 import org.bukkit.plugin.java.JavaPlugin
+import org.bukkit.inventory.ItemStack
 import org.mockbukkit.mockbukkit.MockBukkit
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -84,6 +88,46 @@ class MockBukkitTestRuntimeTest : FreeSpec({
             shouldThrow<IllegalArgumentException> { runtime.performTicks(-1) }
         }
         HarnessPlugin.disabled.get() shouldBe 1
+    }
+
+    "fails closed when MockBukkit would otherwise abort and skip a scenario" {
+        val failure = shouldThrow<AssertionError> {
+            failOnUnsupportedMockBukkitOperation {
+                MockBukkitTestRuntime.open().use { runtime ->
+                    runtime.addPlayer("Agent").showDemoScreen()
+                }
+            }
+        }
+
+        failure.message shouldBe "MockBukkit scenario reached an unsupported Paper API operation"
+        failure.cause!!::class shouldBe org.mockbukkit.mockbukkit.exception.UnimplementedOperationException::class
+        MockBukkit.isMocked() shouldBe false
+    }
+
+    "patches declared MockBukkit gaps and records inherited Adventure titles" {
+        MockBukkitTestRuntime.open().use { runtime ->
+            val player = runtime.addPlayer("Agent")
+            val world = runtime.addSimpleWorld("patched")
+
+            player.saveData()
+            runtime.playerDataSaveCount(player) shouldBe 1
+
+            val title = Title.title(Component.text("Five"), Component.text("Seconds"))
+            player.showTitle(title)
+            runtime.adventureTitles(player) shouldBe listOf(title)
+
+            world.getBlockAt(0, 100, 0).isPassable shouldBe true
+            world.getBlockAt(0, 100, 0).setType(Material.STONE)
+            world.getBlockAt(0, 100, 0).isPassable shouldBe false
+
+            val destination = Location(world, 4.0, 80.0, -2.0)
+            player.teleportAsync(destination).join() shouldBe true
+            player.location shouldBe destination
+
+            val item = ItemStack.of(Material.DIAMOND, 2)
+            item.effectiveName() shouldBe Component.translatable(item.translationKey())
+            item.asHoverEvent().value().count() shouldBe 2
+        }
     }
 }) {
     open class HarnessPlugin : JavaPlugin() {

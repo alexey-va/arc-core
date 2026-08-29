@@ -4,7 +4,7 @@
 plugins. It pins the compatible test runtime pair used by this checkout:
 
 - Paper API `1.21.11-R0.1-SNAPSHOT`;
-- MockBukkit `mockbukkit-v1.21:4.110.0`.
+- MockBukkit `mockbukkit-v1.21:4.116.3`.
 
 The module is a test dependency. It must never be shaded into or added to a
 production plugin runtime.
@@ -88,6 +88,11 @@ Use `loadPlugin<T>()` for a real plugin so descriptor loading and enable
 lifecycle are exercised. `loadSimplePlugin<T>()` is reserved for small test-only
 `JavaPlugin` implementations that intentionally have no descriptor.
 
+Wrap the complete scenario in `failOnUnsupportedMockBukkitOperation { ... }`.
+MockBukkit models an unimplemented API as a JUnit assumption abort, which test
+engines report as skipped. The ARC guard converts that condition into a real
+failure so a green build cannot hide an unexecuted scenario.
+
 `MockBukkitTestRuntime` also provides:
 
 - `server` for exact MockBukkit APIs;
@@ -96,12 +101,60 @@ lifecycle are exercised. `loadSimplePlugin<T>()` is reserved for small test-only
 - `addPlayer` and `addSimpleWorld` fixtures;
 - `callEvent` returning the same event for cancellation/state assertions;
 - `performTicks` for deterministic delayed and repeating task behavior;
+- `playerDataSaveCount` and `adventureTitles` for patched Paper observations;
 - idempotent `close`, including plugin disable and scheduler shutdown.
 
 MockBukkit owns the process-global Bukkit singleton. Never share one runtime
 between tests or run tests that own it concurrently in the same JVM. A nested
 runtime fails immediately with an ownership error rather than silently leaking
 players, listeners, tasks, or plugins across cases.
+
+Use two deliberate port layers when Paper delivery and feature meaning are not
+the same thing:
+
+- the plugin owns a semantic port named after the feature action;
+- `arc-core-paper` owns the exact reusable Paper call or lifecycle;
+- the plugin's native adapter composes the two;
+- tests replace the semantic port for domain behavior and use the matching
+  `arc-core-paper-testing` recorder when the exact delivery matters.
+
+For example, giveaways decide what a countdown means; Core only delivers the
+Adventure payload. This avoids both one callback per effect and a generic
+platform context that leaks Paper mechanics into the service:
+
+```kotlin
+interface GiveawayAudience {
+    fun showCountdown(player: Player, seconds: Int)
+}
+
+class PaperGiveawayAudience(
+    private val effects: PaperAudienceEffects = NativePaperAudienceEffects,
+) : GiveawayAudience {
+    override fun showCountdown(player: Player, seconds: Int) {
+        effects.showTitle(player, countdownTitle(seconds))
+    }
+}
+
+class GiveawayService(private val audience: GiveawayAudience) {
+    fun tick(player: Player, seconds: Int) = audience.showCountdown(player, seconds)
+}
+```
+
+`PaperAudienceEffects`, `PaperTeleportExecutor`, and
+`PaperPlayerDataPersistence` have recording implementations in the test-kit.
+`PaperChunkTicketRegistry` exposes an injectable exact backend because its
+reference counting, borrowed-ticket ownership, uncertain release, and close
+retry are Core lifecycle behavior rather than MockBukkit behavior.
+
+`MockBukkitTestRuntime` also installs test-JVM compatibility patches before it
+opens the server. Byte Buddy retransformation replaces only existing method
+bodies and remains compatible with JaCoCo/other class transformers. The current
+patch set supplies deterministic test semantics for `Player.saveData`, item
+`effectiveName`/hover events, block passability, and `teleportAsync`. An ARC
+`PlayerMock` subclass records Adventure titles because that method is an
+inherited default and cannot be added safely by HotSwap. These patches belong
+only to `arc-core-paper-testing`; no consumer production artifact contains the
+agent or patched classes.
 
 ## What a strong platform test proves
 
@@ -136,8 +189,37 @@ an unsupported-operation exception or cannot reproduce Paper behavior:
 - retain a lab or controlled real-runtime check for the platform operation and
   report that layer separately.
 
+Do not treat an ARC compatibility body as proof of CraftBukkit internals. For
+example, the patched `saveData` records the call but does not write a player DAT
+file, and patched `teleportAsync` delegates to MockBukkit's synchronous
+teleport. Exact persistence, chunk loading, packet rendering, NMS, and plugin
+interoperability still require a real Paper E2E lane.
+
+Before writing a compatibility patch, classify the missing operation:
+
+1. Check the pinned Paper and MockBukkit versions and inspect the resolved
+   sources/signature. Upgrade the shared pair when the current release already
+   implements the operation compatibly.
+2. If multiple plugins need the same exact Paper mechanism, or it owns shared
+   lifecycle/safety rules, add a typed production port to `arc-core-paper` and
+   the recorder or exact compatibility body to `arc-core-paper-testing`.
+3. If the behavior is feature-shaped (farm blocks/entities, giveaway state,
+   arena rules), keep a small semantic port and native adapter in that plugin;
+   put its fake or MockBukkit adapter in `src/test`.
+4. Bytecode-patch only an existing, exact MockBukkit method body with small
+   deterministic semantics. Fail when a requested signature is absent. Never
+   simulate NMS, packets, chunk generation, another plugin, or a domain state
+   machine in a global patch.
+5. Preserve a real Paper E2E lane for behavior the mock cannot prove.
+
+Promote a plugin-local adapter to Core only after a second real consumer, a
+verified cross-plugin duplicate, or a lifecycle/safety invariant establishes a
+stable shared contract. Update `shared-primitives.md`, the consumer capability,
+and both production/test modules together. Do not move feature DTOs, locale
+keys, or a service locator into Core merely to reduce line count.
+
 The local authoritative API evidence for this contract is the resolved
-MockBukkit `4.110.0` artifact manifest, which declares Paper API
+MockBukkit `4.116.3` artifact manifest, which declares Paper API
 `1.21.11-R0.1-SNAPSHOT`, plus the matching Paper API artifact used by the
 module. Review those exact artifacts before adopting a version-sensitive helper
 or simulation API.
