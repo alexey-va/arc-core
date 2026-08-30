@@ -8,6 +8,5 @@ core_version = "2.1.1"
 capabilities = [
   "health",
   "logging",
-  "metrics",
   "runtime",
 ]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import tomllib
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
@@ -15,6 +16,17 @@ PAPER_MODULES = (
     "arc-core-metrics",
     "arc-core-paper",
 )
+
+TEMPLATE_ROOT = Path(__file__).resolve().parents[2] / "templates" / "consumer-contract"
+
+
+class ConsumerContractTemplateTest(unittest.TestCase):
+    def test_new_plugin_templates_do_not_enable_metrics_by_default(self) -> None:
+        for platform in ("paper", "velocity"):
+            manifest = TEMPLATE_ROOT / platform / "arc-core-consumer.toml"
+            with self.subTest(platform=platform):
+                contract = tomllib.loads(manifest.read_text(encoding="utf-8"))
+                self.assertNotIn("metrics", contract["capabilities"])
 
 
 class ConsumerArchitectureVerifierTest(unittest.TestCase):

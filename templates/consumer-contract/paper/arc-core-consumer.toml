@@ -9,7 +9,6 @@ capabilities = [
   "health",
   "localized-text",
   "logging",
-  "metrics",
   "paper-testing",
   "runtime",
 ]
