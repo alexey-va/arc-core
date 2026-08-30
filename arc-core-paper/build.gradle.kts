@@ -3,7 +3,7 @@ plugins {
     `maven-publish`
 }
 
-description = "ARC Core Paper — scheduling, transfer, teleport and player-state escrow"
+description = "ARC Core Paper — scheduling, transfer, teleport, player-state escrow and nameplates"
 
 val paperApiVersion: String by project
 

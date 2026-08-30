@@ -31,12 +31,12 @@ arc-core ─────┬───── ARC (Paper: Event DSL, GUI, gameplay)
 
 | Module | Artifact | Purpose |
 |--------|----------|---------|
-| `arc-core/` | `ru.arc:arc-core` | Config, lifecycle, identifiers, one-time-use protocol, durable recovery workflows, leased directories, locale, diagnostics |
+| `arc-core/` | `ru.arc:arc-core` | Config, lifecycle, identifiers, one-time-use protocol, durable recovery workflows, leased directories, locale, diagnostics, nameplate composition |
 | `arc-core-logging/` | `ru.arc:arc-core-logging` | Loki, ArcJsonLayout, LogContext |
 | `arc-core-metrics/` | `ru.arc:arc-core-metrics` | Prometheus registry, cached JVM/OS/disk metrics, scrape HTTP |
 | `arc-core-redis/` | `ru.arc:arc-core-redis` | Redis plus strict codecs, CAS, validated topics, bounded request/reply and presence leases |
 | `arc-core-sql/` | `ru.arc:arc-core-sql` | Optional MySQL/Hikari runtime, async JDBC and migrations |
-| `arc-core-paper/` | `ru.arc:arc-core-paper` | Paper scheduling, audience/teleport delivery, chunk-ticket lifecycle, and player-state escrow |
+| `arc-core-paper/` | `ru.arc:arc-core-paper` | Paper scheduling, audience/teleport delivery, chunk-ticket lifecycle, player-state escrow, and transient player nameplates |
 | `arc-core-testing/` | `ru.arc:arc-core-testing` | Platform-neutral deterministic clocks, executors, and failure injection |
 | `arc-core-paper-testing/` | `ru.arc:arc-core-paper-testing` | Canonical published MockBukkit test runtime and fixtures |
 | `arc-core-integration-testing/` | `ru.arc:arc-core-integration-testing` | Canonical Redis/MySQL Testcontainers services for real storage seams |
@@ -90,6 +90,7 @@ upload.
 | Shared Redis transport, codec, CAS, or replay rule? | `arc-core-redis/ru.arc.redis.safety` |
 | Redis topic, request/reply, or hash-backed presence lifecycle? | `arc-core-redis/ru.arc.redis.network` |
 | Paper API only (Material, Sound)? | `arc-core-paper` |
+| Reusable layered player nameplate? | `arc-core` composer + one `arc-core-paper` display lifecycle |
 | Reusable exact Paper call/lifecycle with a stable contract? | `arc-core-paper` plus its `arc-core-paper-testing` double when needed |
 | Platform-neutral deterministic test fixture? | `arc-core-testing` |
 | Reusable Paper test fixture or MockBukkit lifecycle? | `arc-core-paper-testing` |
@@ -171,6 +172,7 @@ where ordering crosses storage or platform boundaries.
 |-----|---------|
 | [`README.md`](README.md) | Build, composite build, dependencies |
 | [`docs/shared-primitives.md`](docs/shared-primitives.md) | Shared API routing, contracts, examples, verification |
+| [`docs/player-nameplates.md`](docs/player-nameplates.md) | Layer ownership, Paper visibility/lifecycle, consumer example, testing |
 | [`docs/paper-testing.md`](docs/paper-testing.md) | MockBukkit dependency, lifecycle, test layers, limitations |
 | [`docs/integration-testing.md`](docs/integration-testing.md) | Shared disposable Redis/MySQL services and integration-test contract |
 | [`docs/new-plugin-contract.md`](docs/new-plugin-contract.md) | Mandatory capability manifest, baseline modules, verifier, and CI gate for new plugins |

@@ -2,6 +2,7 @@ package ru.arc.paper.testing
 
 import io.kotest.core.spec.style.FreeSpec
 import io.kotest.matchers.shouldBe
+import net.kyori.adventure.text.Component
 import org.bukkit.Location
 import org.bukkit.event.player.PlayerTeleportEvent
 
@@ -37,6 +38,29 @@ class RecordingPaperPlatformPortsTest : FreeSpec({
                 ),
             )
             player.location shouldBe destination
+        }
+    }
+
+    "nameplate display factory records content visibility attachment and cleanup" {
+        MockBukkitTestRuntime.open().use { runtime ->
+            val target = runtime.addPlayer("Target")
+            val viewer = runtime.addPlayer("Viewer")
+            val factory = RecordingPaperNameplateDisplayFactory()
+            val display = factory.create(target, Component.text("20 ❤"))
+
+            display.show(viewer)
+            display.update(Component.text("19 ❤"))
+            display.isAttachedTo(target) shouldBe true
+
+            val record = factory.latest(target.uniqueId)!!
+            record.contents shouldBe listOf(Component.text("20 ❤"), Component.text("19 ❤"))
+            record.shownTo shouldBe setOf(viewer.uniqueId)
+
+            display.hide(viewer)
+            record.shownTo shouldBe emptySet()
+            display.close()
+            record.closed shouldBe true
+            display.isAttachedTo(target) shouldBe false
         }
     }
 })

@@ -3,7 +3,7 @@ plugins {
     `maven-publish`
 }
 
-description = "ARC Core — config, lifecycle, identifiers, persistence, locale and diagnostics"
+description = "ARC Core — config, lifecycle, identifiers, persistence, locale, diagnostics and nameplates"
 
 java {
     withSourcesJar()

@@ -27,12 +27,12 @@ Gradle root project: **`ArcCore`** (имя важно для composite build —
 
 | Module | Composite artifact | Purpose |
 |--------|----------|---------|
-| `arc-core/` | `ru.arc:arc-core` | Config, lifecycle tasks, identifiers, one-time-use protocol, atomic files, locale, diagnostics |
+| `arc-core/` | `ru.arc:arc-core` | Config, lifecycle tasks, identifiers, one-time-use protocol, atomic files, locale, diagnostics, nameplate composition |
 | `arc-core-logging/` | `ru.arc:arc-core-logging` | Loki appender (Tjahzi), ArcJsonLayout, MDC LogContext |
 | `arc-core-metrics/` | `ru.arc:arc-core-metrics` | Cached Prometheus endpoint, JVM/OS/process/disk metrics |
 | `arc-core-redis/` | `ru.arc:arc-core-redis` | Redis manager/storage plus strict codecs, CAS, validated topics, request/reply and presence |
 | `arc-core-sql/` | `ru.arc:arc-core-sql` | Optional MySQL/Hikari runtime, async JDBC and migrations |
-| `arc-core-paper/` | `ru.arc:arc-core-paper` | Paper scheduling, audience/teleport delivery, chunk-ticket lifecycle, and complete player-state escrow |
+| `arc-core-paper/` | `ru.arc:arc-core-paper` | Paper scheduling, audience/teleport delivery, chunk-ticket lifecycle, complete player-state escrow, and transient player nameplates |
 | `arc-core-paper-testing/` | `ru.arc:arc-core-paper-testing` | Published MockBukkit runtime and fixtures for Paper plugin tests |
 | `arc-core-integration-testing/` | `ru.arc:arc-core-integration-testing` | Published disposable Redis/MySQL Testcontainers fixtures |
 | `arc-core-velocity/` | `ru.arc:arc-core-velocity` | Scheduling plus proxy/backend/event metrics |
@@ -48,6 +48,7 @@ Gradle root project: **`ArcCore`** (имя важно для composite build —
 | `ru.arc.persistence` | Bounded atomic files and coalescing async writes |
 | `ru.arc.observability` | Stable bounded QA/debug lines |
 | `ru.arc.onetime` | Typed claim/commit/release/abandon protocol for bearer capabilities |
+| `ru.arc.nameplate` | Bounded, deterministic player nameplate row composition |
 | `ru.arc.text` | Validated localized MiniMessage rendering |
 | `ru.arc.util` | `TextUtils` |
 

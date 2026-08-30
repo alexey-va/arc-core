@@ -8,6 +8,7 @@ plans. **Do not duplicate** — link from `AGENTS.md`.
 | File | Description |
 |------|-------------|
 | [shared-primitives.md](shared-primitives.md) | Agent-oriented routing index for reusable plugin lifecycle, one-time-use, persistence, locale, Redis, network, teleport, and player-state mechanisms |
+| [player-nameplates.md](player-nameplates.md) | Layered player nameplate composition, Paper visibility and display lifecycle, consumer example, and test seam |
 | [paper-testing.md](paper-testing.md) | Canonical MockBukkit test-kit, test-layer selection, lifecycle, examples, and limitations |
 | [integration-testing.md](integration-testing.md) | Canonical disposable Redis/MySQL Testcontainers services and consumer pattern |
 | [redis-networking.md](redis-networking.md) | Validated Redis topic, bounded request/reply, presence leases, ownership rules, and test contract |
