@@ -96,6 +96,33 @@ fun testRuntime() = MockBukkitTestRuntime.open().use { }
         self.assertEqual(0, exit_code)
         self.assertIn("CONSUMER_CONTRACT_SUMMARY status=ok", output)
 
+    def test_accepts_paper_composition_without_a_metrics_exporter(self) -> None:
+        manifest = self.root / "arc-core-consumer.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(', "metrics"', ""),
+            encoding="utf-8",
+        )
+        build = self.root / "build.gradle.kts"
+        build.write_text(
+            build.read_text(encoding="utf-8").replace(
+                '    implementation("ru.ruscrafting.arc:arc-core-metrics:2.1.0")\n',
+                "",
+            ),
+            encoding="utf-8",
+        )
+        source = self.root / "src/main/kotlin/example/ExamplePlugin.kt"
+        source.write_text(
+            source.read_text(encoding="utf-8")
+            .replace("import ru.arc.metrics.core.ArcMetricsRuntime\n", "")
+            .replace("    ArcMetricsRuntime(metricsConfig)\n", ""),
+            encoding="utf-8",
+        )
+
+        exit_code, output = self.verify()
+
+        self.assertEqual(0, exit_code)
+        self.assertIn("CONSUMER_CONTRACT_SUMMARY status=ok", output)
+
     def test_rejects_missing_required_module(self) -> None:
         build = self.root / "build.gradle.kts"
         build.write_text(

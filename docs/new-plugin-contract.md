@@ -41,14 +41,19 @@ gate pass.
 
 | Platform | Required runtime modules | Required test modules | Required composition |
 |---|---|---|---|
-| Paper | `arc-core`, `arc-core-logging`, `arc-core-metrics`, `arc-core-paper` | `arc-core-paper-testing` | `PaperArcRuntime`, `PaperPluginRuntime`, `ArcLogging`, `ArcMetricsRuntime`, health probes, `LocalizedMiniMessage`, `MockBukkitTestRuntime` |
-| Velocity | `arc-core`, `arc-core-logging`, `arc-core-metrics`, `arc-core-velocity` | none until a test capability is selected | `VelocityArcRuntime`, `PluginRuntime`, `ArcLogging`, `ArcMetricsRuntime`, health probes |
+| Paper | `arc-core`, `arc-core-logging`, `arc-core-paper` | `arc-core-paper-testing` | `PaperArcRuntime`, `PaperPluginRuntime`, `ArcLogging`, health probes, `LocalizedMiniMessage`, `MockBukkitTestRuntime` |
+| Velocity | `arc-core`, `arc-core-logging`, `arc-core-velocity` | none until a test capability is selected | `VelocityArcRuntime`, `PluginRuntime`, `ArcLogging`, health probes |
 
 The baseline makes lifecycle ownership, scheduling installation, bounded health,
-logging/metrics versions, localization, and deterministic platform testing
+logging versions, localization, and deterministic platform testing
 visible from the first commit. A plugin may remain small; it must not replace
 the baseline with a local superclass, scheduler bag, health DTO, locale engine,
 or MockBukkit singleton.
+
+The `metrics` capability and `arc-core-metrics` module are optional. Keep the
+Prometheus listener in the central ARC/ProxyARC runtimes; ordinary add-on
+plugins should expose bounded health through their owning runtime instead of
+opening another fixed port.
 
 ## Capability routing
 

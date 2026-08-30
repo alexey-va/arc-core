@@ -39,18 +39,18 @@ CORE_MODULES = {
 
 PLATFORM_MODULES = {
     "paper": {
-        "runtime": {"arc-core", "arc-core-logging", "arc-core-metrics", "arc-core-paper"},
+        "runtime": {"arc-core", "arc-core-logging", "arc-core-paper"},
         "testing": {"arc-core-paper-testing"},
     },
     "velocity": {
-        "runtime": {"arc-core", "arc-core-logging", "arc-core-metrics", "arc-core-velocity"},
+        "runtime": {"arc-core", "arc-core-logging", "arc-core-velocity"},
         "testing": set(),
     },
 }
 
 REQUIRED_CAPABILITIES = {
-    "paper": {"runtime", "health", "localized-text", "logging", "metrics", "paper-testing"},
-    "velocity": {"runtime", "health", "logging", "metrics"},
+    "paper": {"runtime", "health", "localized-text", "logging", "paper-testing"},
+    "velocity": {"runtime", "health", "logging"},
 }
 
 CAPABILITY_MODULES = {
@@ -58,6 +58,7 @@ CAPABILITY_MODULES = {
     "chunk-tickets": {"arc-core-paper"},
     "deterministic-testing": {"arc-core-testing"},
     "integration-testing": {"arc-core-integration-testing"},
+    "metrics": {"arc-core-metrics"},
     "one-time-use": {"arc-core-sql", "arc-core-integration-testing"},
     "paper-audience": {"arc-core-paper", "arc-core-paper-testing"},
     "paper-teleport": {"arc-core-paper", "arc-core-paper-testing"},

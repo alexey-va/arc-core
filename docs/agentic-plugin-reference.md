@@ -26,10 +26,6 @@ override fun onEnable() {
         it.start("version" to pluginMeta.version)
     }
 
-    val metrics = active.own(
-        ArcMetricsRuntime(metricsConfig, metricsIdentity, dataFolder.toPath()).also { it.start() },
-    )
-
     val redis = active.own(createRedis())
     val network = active.own(createNetwork(redis))
     val service = active.own(createService(network))
@@ -52,6 +48,10 @@ override fun onDisable() {
     Tasks.reset()
 }
 ```
+
+Do not install a Prometheus listener in an ordinary add-on plugin. Central
+ARC/ProxyARC runtimes may opt into `arc-core-metrics`; add-ons publish bounded
+health through `PaperPluginRuntime` and avoid per-plugin ports and samplers.
 
 ## Durable mutation and recovery
 
