@@ -158,6 +158,39 @@ class PaperPlayerNameplatesTest : FreeSpec({
         policy.canView(viewer, target) shouldBe false
     }
 
+    "native visibility policy can hide targets outside the configured camera cone" {
+        val viewer = paper.addPlayer("Viewer")
+        val target = paper.addPlayer("Target")
+        val world = viewer.world
+        val policy = ViewAlignedPaperNameplateVisibilityPolicy(
+            delegate = NativePaperNameplateVisibilityPolicy(
+                PaperNameplateOptions(
+                    maxDistance = 64.0,
+                    requireLineOfSight = false,
+                ),
+            ),
+            minimumAlignment = 0.5,
+        )
+        target.teleport(Location(world, 0.0, 64.0, 12.0))
+
+        viewer.teleport(Location(world, 0.0, 64.0, 0.0, 0F, 0F))
+        policy.canView(viewer, target) shouldBe true
+
+        viewer.teleport(Location(world, 0.0, 64.0, 0.0, 90F, 0F))
+        policy.canView(viewer, target) shouldBe false
+
+        val unrestricted = ViewAlignedPaperNameplateVisibilityPolicy(
+            delegate = NativePaperNameplateVisibilityPolicy(
+                PaperNameplateOptions(maxDistance = 64.0, requireLineOfSight = false),
+            ),
+            minimumAlignment = -1.0,
+        )
+        unrestricted.canView(viewer, target) shouldBe true
+
+        runCatching { ViewAlignedPaperNameplateVisibilityPolicy(unrestricted, 1.01) }.isFailure shouldBe true
+        runCatching { ViewAlignedPaperNameplateVisibilityPolicy(unrestricted, Double.NaN) }.isFailure shouldBe true
+    }
+
     "a repeated platform failure is isolated and logged once until recovery" {
         val target = paper.addPlayer("Target")
         val registry = PlayerNameplateRegistry()

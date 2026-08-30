@@ -76,6 +76,14 @@ beyond the configured distance, or behind blocks. The `TextDisplay` also has
 see-through rendering disabled. A consumer may inject a stricter
 `PaperNameplateVisibilityPolicy` for an arena or duel.
 
+`ViewAlignedPaperNameplateVisibilityPolicy` can wrap the native policy and hide
+a plate when its target leaves an approximate camera cone. Its threshold is a
+normalized direction dot product: `-1.0` disables the extra check, `0.0` keeps
+the forward hemisphere and `0.5` keeps targets within roughly 60 degrees of the
+camera center. The server does not know the client's exact FOV or aspect ratio,
+so consumers should keep this value configurable and validate it visually for
+their surface.
+
 `PaperNameplateOptions.scale` and `verticalOffset` control the complete native
 display transformation. Keep their defaults for an additive row at the normal
 passenger anchor; set explicit values only after checking the composed plate
