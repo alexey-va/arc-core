@@ -55,6 +55,8 @@ Feature configs that contain operator-owned values can opt into additive upgrade
 `Config.mergeMissingFromBundled(resource)`. The merge recursively copies only missing
 keys from the packaged YAML, preserves existing and unknown values, and atomically saves
 the result. Explicit type conflicts remain untouched for the feature's validator to reject.
+Files that also contain environment-owned mappings can pass `excludedRootKeys`; those
+root sections are neither created nor recursively merged.
 
 Logging packages live in `arc-core-logging`; Redis in `arc-core-redis`; MySQL
 and blocking JDBC infrastructure in `arc-core-sql`.

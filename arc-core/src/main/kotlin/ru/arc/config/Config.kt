@@ -813,9 +813,29 @@ open class Config(
      * @return `true` when at least one missing key was added and persisted.
      */
     fun mergeMissingFromBundled(resource: String): Boolean {
+        return mergeMissingFromBundled(resource, emptySet())
+    }
+
+    /**
+     * Adds bundled defaults while leaving selected operator-owned root mappings untouched.
+     *
+     * This is intended for files that combine a shared settings schema with environment-owned
+     * sections such as world zones. An excluded root key is neither created nor recursively
+     * merged. The complete result is still persisted in one atomic replacement.
+     */
+    fun mergeMissingFromBundled(
+        resource: String,
+        excludedRootKeys: Set<String>,
+    ): Boolean {
         require(resource.isNotBlank()) { "Bundled config resource must not be blank" }
+        require(excludedRootKeys.none(String::isBlank)) { "Excluded root keys must not be blank" }
         val defaults = loadBundledMapping(resource)
-        val changed = nodeLock.write { mergeMissingMappings(rootNode, defaults) }
+        val filteredDefaults = createMappingNode(
+            defaults.value
+                .filterNot { tuple -> (tuple.keyNode as? ScalarNode)?.value in excludedRootKeys }
+                .toMutableList(),
+        )
+        val changed = nodeLock.write { mergeMissingMappings(rootNode, filteredDefaults) }
         if (changed) saveStrict()
         return changed
     }

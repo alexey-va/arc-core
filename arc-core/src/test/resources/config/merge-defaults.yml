@@ -5,3 +5,5 @@ list:
   - bundled-value
 new-section:
   message: Added safely
+excluded-section:
+  value: must-not-be-added

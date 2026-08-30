@@ -15,7 +15,7 @@ CI verifier reject missing modules and high-signal local duplicates.
 
 | Need | Module and API | Contract |
 |------|----------------|----------|
-| Additive bundled config upgrade | `arc-core`: `Config.mergeMissingFromBundled` | Copy only missing mapping entries recursively, preserve operator and unknown values, persist atomically, and leave explicit type conflicts for feature validation. |
+| Additive bundled config upgrade | `arc-core`: `Config.mergeMissingFromBundled` | Copy only missing mapping entries recursively, preserve operator and unknown values, optionally exclude environment-owned root sections, persist atomically, and leave explicit type conflicts for feature validation. |
 | Player/backend identifiers at a network boundary | `arc-core`: `NetworkPlayerName`, `BackendServerId` | Validate once, then pass the typed value. Widen the explicit policy only for a verified external namespace. |
 | Reload-safe scheduled work | `arc-core`: `LifecycleTaskScope`, `whenCompleteSync` | One scope owns one lifecycle. `restart()` cancels old work and stale epoch tokens cannot schedule or execute work. |
 | Bounded crash-safe local state | `arc-core`: `AtomicFileStore` | Resolve below a trusted root, reject traversal/symlinks, validate before and after an atomic replacement, and bound bytes. |

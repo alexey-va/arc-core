@@ -180,6 +180,35 @@ class ConfigTest : FreeSpec({
             config.string("new-section.message") shouldBe "Added safely"
         }
 
+        "should exclude operator-owned root sections from an additive merge" {
+            val dir = Files.createTempDirectory("arc-core-config-merge-excluded")
+            val yaml = dir.resolve("module.yml")
+            Files.writeString(
+                yaml,
+                """
+                feature:
+                  enabled: false
+                """.trimIndent() + "\n",
+            )
+            ConfigManager.clear()
+            val config = ConfigManager.of(dir, "module.yml")
+
+            config.mergeMissingFromBundled(
+                "config/merge-defaults.yml",
+                excludedRootKeys = setOf("feature", "excluded-section"),
+            ) shouldBe true
+            config.boolean("feature.enabled", true) shouldBe false
+            config.stringOrNull("feature.title") shouldBe null
+            config.exists("excluded-section") shouldBe false
+            config.string("new-section.message") shouldBe "Added safely"
+            val afterFirstMerge = Files.readString(yaml)
+            config.mergeMissingFromBundled(
+                "config/merge-defaults.yml",
+                excludedRootKeys = setOf("feature", "excluded-section"),
+            ) shouldBe false
+            Files.readString(yaml) shouldBe afterFirstMerge
+        }
+
         "should fail without mutating the file when bundled defaults are missing" {
             val dir = Files.createTempDirectory("arc-core-config-merge-missing")
             val yaml = dir.resolve("module.yml")
