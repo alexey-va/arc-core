@@ -197,9 +197,13 @@ class PlayerNameplateRegistry(
                 .thenBy { it.key.owner }
                 .thenBy { it.key.value },
         )
-        val composed = ordered.drop(1).fold(ordered.first().content) { current, layer ->
-            current.append(Component.newline()).append(layer.content)
+        val composedChildren = buildList {
+            ordered.forEachIndexed { index, layer ->
+                if (index > 0) add(Component.newline())
+                add(layer.content)
+            }
         }
+        val composed = Component.empty().children(composedChildren)
         return PlayerNameplateSnapshot(playerId, state.revision, ordered, composed)
     }
 

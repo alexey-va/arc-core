@@ -4,6 +4,7 @@ import io.kotest.core.spec.style.FreeSpec
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.shouldBe
 import net.kyori.adventure.text.Component
+import net.kyori.adventure.text.format.TextDecoration
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
@@ -30,6 +31,20 @@ class PlayerNameplateRegistryTest : FreeSpec({
             NameplateLayerKey("arcevents", "state"),
         )
         PlainTextComponentSerializer.plainText().serialize(snapshot.content) shouldBe "Дуэлянт\n20 ❤\nВ бою"
+    }
+
+    "row styles remain isolated during composition" {
+        val registry = PlayerNameplateRegistry()
+        registry.upsert(
+            player,
+            NameplateLayer(role, 200, Component.text("Дуэлянт").decorate(TextDecoration.BOLD)),
+        )
+        registry.upsert(player, NameplateLayer(health, 100, Component.text("20 ❤")))
+
+        val content = registry.snapshot(player)!!.content
+        content.decoration(TextDecoration.BOLD) shouldBe TextDecoration.State.NOT_SET
+        content.children()[0].decoration(TextDecoration.BOLD) shouldBe TextDecoration.State.TRUE
+        content.children()[2].decoration(TextDecoration.BOLD) shouldBe TextDecoration.State.NOT_SET
     }
 
     "same row replaces in place while an identical update is unchanged" {

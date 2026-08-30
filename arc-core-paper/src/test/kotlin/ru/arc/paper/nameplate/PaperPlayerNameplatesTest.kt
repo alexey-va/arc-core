@@ -128,6 +128,8 @@ class PaperPlayerNameplatesTest : FreeSpec({
         runCatching { PaperNameplateOptions(maxDistance = Double.NaN) }.isFailure shouldBe true
         runCatching { PaperNameplateOptions(lineWidth = 0) }.isFailure shouldBe true
         runCatching { PaperNameplateOptions(viewRange = 5F) }.isFailure shouldBe true
+        runCatching { PaperNameplateOptions(scale = 0F) }.isFailure shouldBe true
+        runCatching { PaperNameplateOptions(verticalOffset = Float.NaN) }.isFailure shouldBe true
     }
 
     "native visibility policy enforces self distance world invisibility and spectator privacy" {

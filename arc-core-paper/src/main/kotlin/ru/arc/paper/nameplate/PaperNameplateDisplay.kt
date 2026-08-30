@@ -6,6 +6,9 @@ import org.bukkit.entity.Display
 import org.bukkit.entity.Player
 import org.bukkit.entity.TextDisplay
 import org.bukkit.plugin.Plugin
+import org.bukkit.util.Transformation
+import org.joml.Quaternionf
+import org.joml.Vector3f
 import java.util.UUID
 
 /** Bounded rendering and visibility policy for one player nameplate runtime. */
@@ -14,6 +17,8 @@ data class PaperNameplateOptions(
     val maxDistance: Double = 32.0,
     val lineWidth: Int = 200,
     val viewRange: Float = 0.5F,
+    val scale: Float = 1.0F,
+    val verticalOffset: Float = 0.0F,
     val shadowed: Boolean = true,
     val backgroundColor: Color = Color.fromARGB(0, 0, 0, 0),
     val hideInvisibleTargets: Boolean = true,
@@ -30,6 +35,12 @@ data class PaperNameplateOptions(
         require(lineWidth in 1..1_024) { "Nameplate line width must be between 1 and 1024" }
         require(viewRange in 0.1F..4.0F && viewRange.isFinite()) {
             "Nameplate view range must be finite and between 0.1 and 4.0"
+        }
+        require(scale in 0.25F..2.0F && scale.isFinite()) {
+            "Nameplate scale must be finite and between 0.25 and 2.0"
+        }
+        require(verticalOffset in -2.0F..4.0F && verticalOffset.isFinite()) {
+            "Nameplate vertical offset must be finite and between -2.0 and 4.0"
         }
     }
 }
@@ -78,6 +89,12 @@ class NativePaperNameplateDisplayFactory(
             entity.alignment = TextDisplay.TextAlignment.CENTER
             entity.lineWidth = options.lineWidth
             entity.viewRange = options.viewRange
+            entity.transformation = Transformation(
+                Vector3f(0.0F, options.verticalOffset, 0.0F),
+                Quaternionf(),
+                Vector3f(options.scale, options.scale, options.scale),
+                Quaternionf(),
+            )
             entity.isShadowed = options.shadowed
             entity.isSeeThrough = false
             entity.isDefaultBackground = false

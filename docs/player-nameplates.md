@@ -65,7 +65,8 @@ fun disableDuels() {
 Every contribution is exactly one visual row. Explicit plain-text newlines,
 empty rows, oversized content, too many targets, and too many rows return typed
 rejection results. Higher priority renders above lower priority; equal priority
-is sorted by stable key.
+is sorted by stable key. Composition uses a neutral root component so color and
+decorations from one row never leak into the rows below it.
 
 ## Visibility and lifecycle
 
@@ -74,6 +75,11 @@ target is offline, dead, vanished, invisible, spectating, in another world,
 beyond the configured distance, or behind blocks. The `TextDisplay` also has
 see-through rendering disabled. A consumer may inject a stricter
 `PaperNameplateVisibilityPolicy` for an arena or duel.
+
+`PaperNameplateOptions.scale` and `verticalOffset` control the complete native
+display transformation. Keep their defaults for an additive row at the normal
+passenger anchor; set explicit values only after checking the composed plate
+against the server-owned vanilla/TAB name tag.
 
 Displays are hidden by default and shown per viewer. They are non-persistent,
 removed on close, removed immediately when the target quits, dies, or changes
