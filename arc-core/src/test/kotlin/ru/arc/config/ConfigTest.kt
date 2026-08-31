@@ -167,6 +167,29 @@ class ConfigTest : FreeSpec({
             reloaded.string("new-section.message") shouldBe "Added safely"
         }
 
+        "should preserve paired MiniMessage hex tags while merging bundled defaults" {
+            val dir = Files.createTempDirectory("arc-core-config-merge-minimessage")
+            val yaml = dir.resolve("module.yml")
+            val title = "<#92bed8>Пользовательский вызов</#92bed8>"
+            Files.writeString(
+                yaml,
+                """
+                feature:
+                  enabled: false
+                  title: '$title'
+                """.trimIndent() + "\n",
+            )
+            ConfigManager.clear()
+            val config = ConfigManager.of(dir, "module.yml")
+
+            config.mergeMissingFromBundled("config/merge-defaults.yml") shouldBe true
+            config.string("feature.title") shouldBe "<color:#92bed8>Пользовательский вызов</color>"
+
+            ConfigManager.clear()
+            ConfigManager.of(dir, "module.yml").string("feature.title") shouldBe
+                "<color:#92bed8>Пользовательский вызов</color>"
+        }
+
         "should preserve an explicit type conflict for feature validation" {
             val dir = Files.createTempDirectory("arc-core-config-merge-conflict")
             val yaml = dir.resolve("module.yml")

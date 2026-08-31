@@ -1204,14 +1204,19 @@ open class Config(
 /**
  * Prepares YAML text for SnakeYAML Engine parsing.
  *
- * - Normalizes MiniMessage hex shorthand `<#RRGGBB>` → `<color:#RRGGBB>` (parser bug after UTF-8 text).
+ * - Normalizes paired MiniMessage hex shorthand to `<color:#RRGGBB>...</color>`
+ *   (parser bug after UTF-8 text).
  * - Replaces unpaired UTF-16 surrogates from truncated input with spaces.
  */
 internal fun prepareYamlContentForParsing(content: String): String {
     if (content.isEmpty()) return content
     var normalized =
         MINIMESSAGE_HEX_SHORTHAND.replace(content) { match ->
-            "<color:#${match.groupValues[1]}>"
+            if (match.groupValues[1].isEmpty()) {
+                "<color:#${match.groupValues[2]}>"
+            } else {
+                "</color>"
+            }
         }
     normalized = sanitizeUnpairedSurrogates(normalized)
     if (Character.isHighSurrogate(normalized.last())) {
@@ -1268,7 +1273,7 @@ fun sanitizeUnpairedSurrogates(content: String): String {
     return out.toString()
 }
 
-private val MINIMESSAGE_HEX_SHORTHAND = Regex("""<#([0-9A-Fa-f]{6})>""")
+private val MINIMESSAGE_HEX_SHORTHAND = Regex("""<(/?)#([0-9A-Fa-f]{6})>""")
 
 // ── CachedConfigValue ──────────────────────────────────────────────────────────
 
