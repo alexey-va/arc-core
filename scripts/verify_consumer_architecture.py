@@ -61,6 +61,7 @@ CAPABILITY_MODULES = {
     "deterministic-testing": {"arc-core-testing"},
     "integration-testing": {"arc-core-integration-testing"},
     "metrics": {"arc-core-metrics"},
+    "menu": {"arc-core-menu"},
     "one-time-use": {"arc-core-sql", "arc-core-integration-testing"},
     "paper-audience": {"arc-core-paper", "arc-core-paper-testing"},
     "paper-menu": {"arc-core-menu", "arc-core-paper-menu"},
@@ -96,6 +97,7 @@ KNOWN_CAPABILITIES = {
     "localized-text",
     "logging",
     "metrics",
+    "menu",
     "one-time-use",
     "paper-audience",
     "paper-menu",
@@ -126,6 +128,7 @@ CAPABILITY_EVIDENCE = {
     "localized-text": (("main", re.compile(r"\bLocalizedMiniMessage\b")),),
     "logging": (("main", re.compile(r"\bArcLogging\b")),),
     "metrics": (("main", re.compile(r"\bArcMetricsRuntime\b")),),
+    "menu": (("main", re.compile(r"\b(?:MenuLayoutParser|MenuCatalogRepository)\b")),),
     "one-time-use": (
         ("main", re.compile(r"\bru\.arc\.onetime\.")),
         ("main", re.compile(r"\bMySqlOneTimeUseLedger\b")),
