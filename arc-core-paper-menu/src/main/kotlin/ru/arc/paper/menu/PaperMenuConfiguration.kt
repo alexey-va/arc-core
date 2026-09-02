@@ -31,9 +31,10 @@ object PaperMenuConfigurationParser {
         templateRoot: String,
         contracts: Map<MenuId, MenuContract>,
         requiredTemplates: Set<String> = emptySet(),
+        textContracts: Map<String, PaperMenuTextContract> = emptyMap(),
     ): PaperMenuConfiguration {
         val catalog = MenuLayoutParser.require(config, layoutRoot, contracts)
-        val templates = PaperMenuItemTemplateParser.require(config, templateRoot)
+        val templates = PaperMenuItemTemplateParser.require(config, templateRoot, textContracts)
         val referenced = catalog.layouts.values.flatMap { layout ->
             listOfNotNull(layout.backgroundTemplate?.value) +
                 layout.elements.values.mapNotNull { it.template?.value }

@@ -22,6 +22,7 @@ data class PaperMenuItemTemplate(
     val glint: Boolean? = null,
     val hideTooltip: Boolean = false,
     val itemFlags: Set<ItemFlag> = emptySet(),
+    val text: PaperMenuItemTextTemplate? = null,
 ) {
     init {
         require(fallbackMaterial.isItem && !fallbackMaterial.isAir) { "Fallback material must be a non-air item" }
@@ -38,6 +39,11 @@ enum class PaperMenuItemTemplateIssueCode {
     INVALID_CUSTOM_MODEL_DATA,
     INVALID_ITEM_FLAG,
     INVALID_VALUE,
+    INVALID_TEXT_NAME,
+    INVALID_TEXT_LORE,
+    UNKNOWN_TEXT_TAG,
+    UNKNOWN_TEXT_FLAG,
+    UNKNOWN_TEXT_REPEAT,
 }
 
 data class PaperMenuItemTemplateIssue(

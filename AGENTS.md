@@ -83,8 +83,10 @@ upload.
     `scripts/verify_consumer_architecture.py` locally and through the pinned
     central GitHub action. Declare a capability before implementing it; do not
    delete the declaration to hide a verifier failure.
-13. **Configured menus:** code owns semantic actions and domain state; YAML owns
-    rows, slots, patterns, regions, background, and safe item presentation.
+13. **Configured menus:** code owns semantic actions, domain state, and the
+    declared set of safe text tags; YAML owns rows, slots, patterns, regions,
+    background, safe item presentation, name/lore composition, conditions, and
+    repeated-row templates.
     Never route arbitrary commands from menu YAML. Replace only a completely
     validated catalog generation and close `PaperMenuService` on shutdown.
 
