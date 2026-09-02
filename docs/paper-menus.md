@@ -226,6 +226,14 @@ the item still cannot move. Number-key swaps, double-click collection, drop,
 creative clone, offhand swap, outside clicks, and drag paths touching the top
 inventory remain non-dispatching.
 
+Menus whose domain is an actual container (for example, per-player dungeon
+loot) may opt one entry into `PaperMenuTransferHandler`. The handler reserves
+or removes the exact domain item first and returns `ALLOW` only on success.
+The runtime then uncancels only top-slot pickup actions; placement, cursor
+swaps, drops, hotbar/offhand swaps, creative cloning, bottom shift-clicks and
+all top-touching drags stay blocked. Ordinary menu entries never inherit this
+exception.
+
 `showFeedback(element, delayTicks, item)` temporarily replaces a fixed item.
 Only the newest token may expire. A full refresh, catalog replacement, or close
 invalidates delayed restoration, and restoration asks the content supplier for

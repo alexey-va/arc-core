@@ -231,7 +231,15 @@ class PaperMenuSession internal constructor(
                 if (!processedEvents.add(event) || event.click !in entry.acceptedClicks ||
                     event.whoClicked.uniqueId != player.uniqueId || !isCurrent()
                 ) return@Consumer
-                entry.onClick.handle(PaperMenuClickContext(this, player, target, event))
+                val context = PaperMenuClickContext(this, player, target, event)
+                val transfer = entry.transfer
+                if (transfer == null) {
+                    entry.onClick.handle(context)
+                } else if (event.action in SAFE_MENU_TRANSFER_ACTIONS &&
+                    transfer.handle(context) == PaperMenuTransferDecision.ALLOW
+                ) {
+                    event.isCancelled = false
+                }
             }
         } else {
             null

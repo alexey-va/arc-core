@@ -152,6 +152,81 @@ class PaperMenuInteractionTest : FreeSpec({
         session.refresh() shouldBe PaperMenuSessionResult.STALE_GENERATION
         service.close()
     }
+
+    "allows only an explicitly approved top-slot take and keeps placement blocked" {
+        val plugin = paper.createSimplePlugin("MenuTransfer")
+        val player = paper.addPlayer("Collector")
+        var approvals = 0
+        val service = PaperMenuService(plugin, repository(), BukkitTaskScheduler(plugin))
+        service.open(player, MENU) {
+            PaperMenuContent(
+                title = net.kyori.adventure.text.Component.text("Loot"),
+                regions = mapOf(
+                    CONTENT to listOf(
+                        PaperMenuEntry(
+                            ItemStack.of(Material.DIAMOND),
+                            transfer = PaperMenuTransferHandler {
+                                approvals++
+                                PaperMenuTransferDecision.ALLOW
+                            },
+                        ),
+                    ),
+                ),
+            )
+        }
+
+        val take = click(player.openInventory, 10, ClickType.LEFT, InventoryAction.PICKUP_ALL)
+        paper.callEvent(take)
+        take.isCancelled shouldBe false
+        approvals shouldBe 1
+
+        val place = click(player.openInventory, 10, ClickType.LEFT, InventoryAction.PLACE_ALL)
+        paper.callEvent(place)
+        place.isCancelled shouldBe true
+        approvals shouldBe 1
+
+        val bottomShift = click(
+            player.openInventory,
+            player.openInventory.topInventory.size,
+            ClickType.SHIFT_LEFT,
+            InventoryAction.MOVE_TO_OTHER_INVENTORY,
+        )
+        paper.callEvent(bottomShift)
+        bottomShift.isCancelled shouldBe true
+        approvals shouldBe 1
+        service.close()
+    }
+
+    "a transfer handler can atomically deny a stale item take" {
+        val plugin = paper.createSimplePlugin("MenuTransferDeny")
+        val player = paper.addPlayer("Collector")
+        var attempts = 0
+        val service = PaperMenuService(plugin, repository(), BukkitTaskScheduler(plugin))
+        service.open(player, MENU) {
+            PaperMenuContent(
+                title = net.kyori.adventure.text.Component.text("Loot"),
+                regions = mapOf(
+                    CONTENT to listOf(
+                        PaperMenuEntry(
+                            ItemStack.of(Material.DIAMOND),
+                            acceptedClicks = setOf(ClickType.SHIFT_LEFT),
+                            transfer = PaperMenuTransferHandler {
+                                attempts++
+                                PaperMenuTransferDecision.DENY
+                            },
+                        ),
+                    ),
+                ),
+            )
+        }
+
+        val take = click(player.openInventory, 10, ClickType.SHIFT_LEFT, InventoryAction.MOVE_TO_OTHER_INVENTORY)
+        paper.callEvent(take)
+
+        take.isCancelled shouldBe true
+        attempts shouldBe 1
+        service.close()
+    }
 })
 
 private fun click(

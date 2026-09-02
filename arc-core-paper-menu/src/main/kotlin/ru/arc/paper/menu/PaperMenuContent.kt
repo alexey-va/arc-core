@@ -2,6 +2,7 @@ package ru.arc.paper.menu
 
 import net.kyori.adventure.text.Component
 import org.bukkit.event.inventory.ClickType
+import org.bukkit.event.inventory.InventoryAction
 import org.bukkit.inventory.ItemStack
 import ru.arc.menu.MenuElementId
 import ru.arc.menu.MenuRegionId
@@ -10,11 +11,29 @@ fun interface PaperMenuClickHandler {
     fun handle(context: PaperMenuClickContext)
 }
 
+enum class PaperMenuTransferDecision {
+    ALLOW,
+    DENY,
+}
+
+/**
+ * Atomically approves taking one rendered top-inventory item.
+ *
+ * The handler runs only for pickup actions from the owning viewer. Placement,
+ * cursor swaps, drops, hotbar swaps, creative clones, bottom-inventory moves
+ * and drags remain cancelled by the menu runtime. Return [PaperMenuTransferDecision.DENY]
+ * whenever durable/domain state could not reserve the item.
+ */
+fun interface PaperMenuTransferHandler {
+    fun handle(context: PaperMenuClickContext): PaperMenuTransferDecision
+}
+
 data class PaperMenuEntry(
     val item: ItemStack,
     val enabled: Boolean = true,
     val acceptedClicks: Set<ClickType> = DEFAULT_MENU_CLICKS,
     val onClick: PaperMenuClickHandler = PaperMenuClickHandler {},
+    val transfer: PaperMenuTransferHandler? = null,
 ) {
     init {
         require(!item.type.isAir) { "Menu entries cannot render air" }
@@ -23,6 +42,14 @@ data class PaperMenuEntry(
         }
     }
 }
+
+internal val SAFE_MENU_TRANSFER_ACTIONS: Set<InventoryAction> = setOf(
+    InventoryAction.PICKUP_ALL,
+    InventoryAction.PICKUP_HALF,
+    InventoryAction.PICKUP_ONE,
+    InventoryAction.PICKUP_SOME,
+    InventoryAction.MOVE_TO_OTHER_INVENTORY,
+)
 
 data class PaperMenuContent(
     val title: Component,
