@@ -16,6 +16,11 @@ data class PlayerStateRestoreReceipt(
     val envelopeSha256: String,
 )
 
+/** Applies Paper's client-bound compass target update. */
+fun interface PaperCompassTargetRestorer {
+    fun restore(player: Player, target: Location)
+}
+
 /**
  * Captures, restores and verifies complete Paper player state on the primary
  * server thread. The owning plugin must durably commit [PaperPlayerStateEnvelope]
@@ -27,6 +32,9 @@ class PaperPlayerStateService(
     private val primaryThread: () -> Boolean = Bukkit::isPrimaryThread,
     persistPlayerData: (Player) -> Unit = Player::saveData,
     private val locationTolerance: TeleportMatchTolerance = TeleportMatchTolerance(),
+    private val compassTargetRestorer: PaperCompassTargetRestorer = PaperCompassTargetRestorer { player, target ->
+        player.compassTarget = target
+    },
 ) {
     private val playerDataPersistence = PaperPlayerDataPersistence { player -> persistPlayerData(player) }
 
@@ -36,11 +44,15 @@ class PaperPlayerStateService(
         primaryThread: () -> Boolean = Bukkit::isPrimaryThread,
         playerDataPersistence: PaperPlayerDataPersistence,
         locationTolerance: TeleportMatchTolerance = TeleportMatchTolerance(),
+        compassTargetRestorer: PaperCompassTargetRestorer = PaperCompassTargetRestorer { player, target ->
+            player.compassTarget = target
+        },
     ) : this(
         codec = codec,
         primaryThread = primaryThread,
         persistPlayerData = playerDataPersistence::persist,
         locationTolerance = locationTolerance,
+        compassTargetRestorer = compassTargetRestorer,
     )
 
     fun capture(player: Player, capturedAtMillis: Long): PaperPlayerStateSnapshot {
@@ -137,7 +149,9 @@ class PaperPlayerStateService(
         applyInventory(player, snapshot)
         applyNonInventoryState(player, snapshot, prepared)
         player.updateInventory()
-        val mismatches = inventoryMismatches(player, snapshot) + nonInventoryStateMismatches(player, snapshot, prepared.compassTarget)
+        val mismatches =
+            inventoryMismatches(player, snapshot) +
+                nonInventoryStateMismatches(player, snapshot, prepared.compassTarget, verifyCompassTarget = false)
         check(mismatches.isEmpty()) { "Player-state current-location verification failed: ${mismatches.joinToString(",")}" }
         playerDataPersistence.persist(player)
     }
@@ -150,7 +164,7 @@ class PaperPlayerStateService(
     ) {
         val prepared = prepareNonInventoryState(player, snapshot, fallbackWorld)
         applyNonInventoryState(player, snapshot, prepared)
-        val mismatches = nonInventoryStateMismatches(player, snapshot, prepared.compassTarget)
+        val mismatches = nonInventoryStateMismatches(player, snapshot, prepared.compassTarget, verifyCompassTarget = false)
         check(mismatches.isEmpty()) { "Player-state non-inventory verification failed: ${mismatches.joinToString(",")}" }
         playerDataPersistence.persist(player)
     }
@@ -166,7 +180,8 @@ class PaperPlayerStateService(
         val destination = snapshot.location.resolve(player, fallbackWorld)
         check(teleport(player, destination)) { "Player-state recovery teleport was rejected" }
         applyNonInventoryState(player, snapshot, prepared)
-        val mismatches = nonInventoryStateMismatches(player, snapshot, prepared.compassTarget).toMutableList()
+        val mismatches =
+            nonInventoryStateMismatches(player, snapshot, prepared.compassTarget, verifyCompassTarget = false).toMutableList()
         if (!sameLocation(player.location, destination)) mismatches += "location"
         check(mismatches.isEmpty()) { "Player-state non-inventory verification failed: ${mismatches.joinToString(",")}" }
         playerDataPersistence.persist(player)
@@ -199,12 +214,18 @@ class PaperPlayerStateService(
         player: Player,
         snapshot: PaperPlayerStateSnapshot,
         expectedCompassTarget: Location?,
+        verifyCompassTarget: Boolean = true,
     ): List<String> {
         return buildList {
-            val compassMatches =
-                expectedCompassTarget?.let { sameLocation(player.compassTarget, it) }
-                    ?: sameLocation(player.compassTarget, snapshot.compassTarget)
-            if (!compassMatches) add("compassTarget")
+            // CraftPlayer#setCompassTarget sends a client spawn-position packet but does not
+            // update the value returned by CraftPlayer#getCompassTarget. Apply the update on
+            // every restore, but never fail a durable recovery on that non-round-trippable API.
+            if (verifyCompassTarget) {
+                val compassMatches =
+                    expectedCompassTarget?.let { sameLocation(player.compassTarget, it) }
+                        ?: sameLocation(player.compassTarget, snapshot.compassTarget)
+                if (!compassMatches) add("compassTarget")
+            }
             if (player.gameMode != snapshot.gameMode) add("gameMode")
             if (player.allowFlight != snapshot.allowFlight || player.isFlying != (snapshot.flying && snapshot.allowFlight)) add("flight")
             if (abs(player.flySpeed - snapshot.flySpeed) > FLOAT_EPSILON || abs(player.walkSpeed - snapshot.walkSpeed) > FLOAT_EPSILON) {
@@ -252,7 +273,7 @@ class PaperPlayerStateService(
     ): List<String> = buildList {
         addAll(inventoryMismatches(player, snapshot))
         if (!sameLocation(player.location, destination)) add("location")
-        addAll(nonInventoryStateMismatches(player, snapshot, prepared.compassTarget))
+        addAll(nonInventoryStateMismatches(player, snapshot, prepared.compassTarget, verifyCompassTarget = false))
     }
 
     private fun applyInventory(player: Player, snapshot: PaperPlayerStateSnapshot) {
@@ -269,7 +290,7 @@ class PaperPlayerStateService(
         snapshot: PaperPlayerStateSnapshot,
         prepared: PreparedNonInventoryState,
     ) {
-        player.compassTarget = prepared.compassTarget
+        compassTargetRestorer.restore(player, prepared.compassTarget)
         player.gameMode = snapshot.gameMode
         player.allowFlight = snapshot.allowFlight
         player.isFlying = snapshot.flying && snapshot.allowFlight

@@ -15,6 +15,7 @@ import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 class PaperPlayerStateServiceTest : FreeSpec({
     lateinit var paper: MockBukkitTestRuntime
@@ -159,6 +160,31 @@ class PaperPlayerStateServiceTest : FreeSpec({
         val snapshot = service.capture(player, 1_787_730_000_000)
         player.inventory.setItem(0, ItemStack.of(Material.NETHERITE_SWORD))
         service.mismatches(player, snapshot).shouldContainExactly("storage")
+    }
+
+    "durable restore applies a client-bound compass target without requiring a getter round trip" {
+        val server = paper.server
+        val world = server.addSimpleWorld("client-bound-compass")
+        val player = server.addPlayer("CompassRestore")
+        player.compassTarget = Location(world, 18.0, 75.0, -6.0)
+        val persisted = AtomicInteger()
+        val restoredTarget = AtomicReference<Location?>()
+        val service =
+            PaperPlayerStateService(
+                primaryThread = { true },
+                persistPlayerData = { persisted.incrementAndGet() },
+                compassTargetRestorer = PaperCompassTargetRestorer { _, target -> restoredTarget.set(target.clone()) },
+            )
+        val snapshot = service.capture(player, 1_787_730_000_000)
+        player.compassTarget = Location(world, -30.0, 70.0, 25.0)
+
+        service.restoreNonInventoryStateAtCurrentLocationAndVerify(player, snapshot)
+
+        restoredTarget.get()?.x shouldBe 18.0
+        restoredTarget.get()?.y shouldBe 75.0
+        restoredTarget.get()?.z shouldBe -6.0
+        persisted.get() shouldBe 1
+        service.nonInventoryStateMismatches(player, snapshot).shouldContainExactly("compassTarget")
     }
 
     "partial recovery preserves live items and can resolve an unavailable origin world explicitly" {
