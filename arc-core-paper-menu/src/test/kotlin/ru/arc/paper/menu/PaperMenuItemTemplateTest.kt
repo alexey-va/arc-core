@@ -7,9 +7,15 @@ import org.bukkit.Material
 import org.bukkit.NamespacedKey
 import org.bukkit.inventory.ItemFlag
 import ru.arc.config.Config
+import ru.arc.paper.testing.MockBukkitTestRuntime
 import java.nio.file.Files
 
 class PaperMenuItemTemplateTest : FreeSpec({
+    lateinit var paper: MockBukkitTestRuntime
+
+    beforeEach { paper = MockBukkitTestRuntime.open() }
+    afterEach { paper.close() }
+
     "item template parser" - {
         "loads material and external templates with presentation flags" {
             val templates = PaperMenuItemTemplateParser.require(

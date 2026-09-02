@@ -106,6 +106,29 @@ class PaperMenuSessionTest : FreeSpec({
         service.open(firstPlayer, MENU) { content(Material.EMERALD) }.isOpen shouldBe true
         service.close()
     }
+
+    "runtime replaces layout and templates together and closes old viewers" {
+        val plugin = paper.createSimplePlugin("MenuRuntime")
+        val player = paper.addPlayer("Viewer")
+        val first = PaperMenuConfiguration(
+            repository().current(),
+            mapOf("button" to PaperMenuItemTemplate(PaperMenuItemSource.MaterialItem(Material.STONE))),
+        )
+        val runtime = PaperMenuRuntime(plugin, BukkitTaskScheduler(plugin), first)
+        val old = runtime.open(player, MENU) { content(Material.STONE) }
+        val second = first.copy(
+            catalog = first.catalog.copy(generation = 0),
+            templates = mapOf("button" to PaperMenuItemTemplate(PaperMenuItemSource.MaterialItem(Material.DIAMOND))),
+        )
+
+        runtime.replace(second)
+
+        old.isOpen shouldBe false
+        runtime.current().templates.getValue("button").source shouldBe
+            PaperMenuItemSource.MaterialItem(Material.DIAMOND)
+        runtime.open(player, MENU) { content(Material.DIAMOND) }.isOpen shouldBe true
+        runtime.close()
+    }
 })
 
 internal val MENU = MenuId.of("main")

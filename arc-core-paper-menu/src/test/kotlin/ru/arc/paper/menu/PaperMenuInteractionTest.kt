@@ -8,6 +8,7 @@ import org.bukkit.event.inventory.InventoryAction
 import org.bukkit.event.inventory.InventoryClickEvent
 import org.bukkit.event.inventory.InventoryDragEvent
 import org.bukkit.event.inventory.InventoryType
+import org.bukkit.inventory.ItemStack
 import ru.arc.core.BukkitTaskScheduler
 import ru.arc.paper.testing.MockBukkitTestRuntime
 
@@ -103,6 +104,34 @@ class PaperMenuInteractionTest : FreeSpec({
         calls shouldBe 1
         bottom.isCancelled shouldBe true
         service.session(stranger.uniqueId) shouldBe null
+        service.close()
+    }
+
+    "allows explicitly declared shift actions while still cancelling movement" {
+        val plugin = paper.createSimplePlugin("MenuShift")
+        val owner = paper.addPlayer("Owner")
+        var invoked = 0
+        val service = PaperMenuService(plugin, repository(), BukkitTaskScheduler(plugin))
+        service.open(owner, MENU) {
+            content(
+                Material.DIAMOND,
+                PaperMenuClickHandler { invoked++ },
+            ).copy(
+                elements = content(Material.DIAMOND).elements + (
+                    BUTTON to PaperMenuEntry(
+                        ItemStack.of(Material.DIAMOND),
+                        acceptedClicks = setOf(ClickType.SHIFT_LEFT, ClickType.SHIFT_RIGHT),
+                        onClick = PaperMenuClickHandler { invoked++ },
+                    )
+                ),
+            )
+        }
+
+        click(owner.openInventory, 4, ClickType.SHIFT_LEFT, InventoryAction.MOVE_TO_OTHER_INVENTORY).also {
+            paper.callEvent(it)
+            it.isCancelled shouldBe true
+        }
+        invoked shouldBe 1
         service.close()
     }
 

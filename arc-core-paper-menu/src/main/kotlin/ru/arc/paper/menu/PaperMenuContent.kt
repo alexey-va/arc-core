@@ -38,8 +38,6 @@ data class PaperMenuContent(
 val DEFAULT_MENU_CLICKS: Set<ClickType> = setOf(ClickType.LEFT, ClickType.RIGHT)
 
 private val UNSAFE_MENU_CLICKS = setOf(
-    ClickType.SHIFT_LEFT,
-    ClickType.SHIFT_RIGHT,
     ClickType.NUMBER_KEY,
     ClickType.DOUBLE_CLICK,
     ClickType.DROP,

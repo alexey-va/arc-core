@@ -15,7 +15,7 @@ messages, and every click action.
 | Required semantic IDs and which IDs may be omitted | Plugin `MenuContract` |
 | Title, final localized name/lore, enabled state and accepted clicks | Plugin `PaperMenuContent` |
 | Permission checks and domain action | Plugin `PaperMenuClickHandler` |
-| Cancellation, one-dispatch guarantee, viewer ownership, render lifecycle | `PaperMenuService` |
+| Cancellation, one-dispatch guarantee, viewer ownership, render lifecycle | `PaperMenuRuntime` |
 
 There is deliberately no `commands:` field. A typo or config edit must never
 turn an inventory file into an arbitrary command executor.
@@ -92,33 +92,32 @@ private val contract = MenuContract(
 )
 
 config.mergeMissingFromBundled("menus.yml")
-val initialLayouts = MenuLayoutParser.require(
+val initial = PaperMenuConfigurationParser.require(
     config,
     "gui.layouts",
+    "gui.templates",
     mapOf(marketId to contract),
+    requiredTemplates = setOf("feedback-error"),
 )
-var itemTemplates = PaperMenuItemTemplateParser.require(config, "gui.templates")
-val layouts = MenuCatalogRepository(initialLayouts)
+val menus = PaperMenuRuntime(plugin, BukkitTaskScheduler(plugin), initial)
 
-fun reloadMenus(): MenuCatalogReplaceResult {
-    val templateCandidate = PaperMenuItemTemplateParser.parse(config, "gui.templates")
-    val layoutCandidate = MenuLayoutParser.parse(config, "gui.layouts", mapOf(marketId to contract))
-    if (templateCandidate is PaperMenuItemTemplateLoadResult.Rejected) {
-        throw PaperMenuItemTemplateException(templateCandidate.issues)
-    }
-    if (layoutCandidate is MenuCatalogLoadResult.Rejected) {
-        return layouts.replace(layoutCandidate) // exact old generation remains active
-    }
-    itemTemplates = (templateCandidate as PaperMenuItemTemplateLoadResult.Loaded).templates
-    return layouts.replace(layoutCandidate)
+fun reloadMenus() {
+    val candidate = PaperMenuConfigurationParser.require(
+        config,
+        "gui.layouts",
+        "gui.templates",
+        mapOf(marketId to contract),
+        requiredTemplates = setOf("feedback-error"),
+    )
+    menus.replace(candidate)
 }
 ```
 
-Run reload on the Paper primary thread. Because sessions and replacement run on
-that thread, validated templates and the new layout generation become visible
-without a partial render. A session opened against an older generation keeps
-cancelling inventory mutations but stops invoking handlers until the plugin
-refreshes or reopens it.
+Parse the complete candidate before the primary-thread publication step. A
+missing referenced template rejects the whole candidate. `replace` atomically
+publishes layouts and templates, increments the catalog generation, and closes
+old viewers; a player can therefore never observe a layout from one generation
+with item templates from another.
 
 ## Rendering and semantic clicks
 
@@ -127,13 +126,12 @@ supplier is called again for refresh and delayed feedback restoration, so it
 must return the latest domain state.
 
 ```kotlin
-val menuService = PaperMenuService(plugin, layouts, BukkitTaskScheduler(plugin))
-
-fun openMarket(player: Player) = menuService.open(player, marketId) {
+fun openMarket(player: Player) = menus.open(player, marketId) {
     val factory = PaperMenuItemFactory(itemsAdderResolver, log::warn)
+    val configuration = menus.current()
     PaperMenuContent(
         title = messages.component("market.title", "<gold>Рынок"),
-        background = factory.create(itemTemplates.getValue("background"), Component.empty(), emptyList()),
+        background = factory.create(configuration.templates.getValue("background"), Component.empty(), emptyList()),
         elements = mapOf(
             MenuElementId.of("back") to PaperMenuEntry(
                 item = backItem(player),
@@ -167,12 +165,18 @@ ItemsAdder stay behind `PaperMenuExternalItemResolver`; resolved stacks are
 cloned, and provider failure produces a configured vanilla fallback plus a
 bounded diagnostic key.
 
+Every click is cancelled before dispatch. Shift-left and shift-right may be
+listed explicitly in `acceptedClicks` for controls that need modifier behavior;
+the item still cannot move. Number-key swaps, double-click collection, drop,
+creative clone, offhand swap, outside clicks, and drag paths touching the top
+inventory remain non-dispatching.
+
 `showFeedback(element, delayTicks, item)` temporarily replaces a fixed item.
 Only the newest token may expire. A full refresh, catalog replacement, or close
 invalidates delayed restoration, and restoration asks the content supplier for
 the latest normal item rather than retaining a stale `ItemStack`.
 
-Close `PaperMenuService` during plugin shutdown. Opening another menu for the
+Close `PaperMenuRuntime` during plugin shutdown. Opening another menu for the
 same player closes the old session exactly once.
 
 ## Verification
