@@ -88,6 +88,24 @@ class PaperMenuSessionTest : FreeSpec({
         service.session(player.uniqueId) shouldBe null
         service.close()
     }
+
+    "closing active sessions keeps the service reusable" {
+        val plugin = paper.createSimplePlugin("MenuReload")
+        val firstPlayer = paper.addPlayer("FirstViewer")
+        val secondPlayer = paper.addPlayer("SecondViewer")
+        val service = PaperMenuService(plugin, repository(), BukkitTaskScheduler(plugin))
+        val first = service.open(firstPlayer, MENU) { content(Material.STONE) }
+        val second = service.open(secondPlayer, MENU) { content(Material.DIAMOND) }
+
+        service.closeSessions()
+
+        first.isOpen shouldBe false
+        second.isOpen shouldBe false
+        service.session(firstPlayer.uniqueId) shouldBe null
+        service.session(secondPlayer.uniqueId) shouldBe null
+        service.open(firstPlayer, MENU) { content(Material.EMERALD) }.isOpen shouldBe true
+        service.close()
+    }
 })
 
 internal val MENU = MenuId.of("main")

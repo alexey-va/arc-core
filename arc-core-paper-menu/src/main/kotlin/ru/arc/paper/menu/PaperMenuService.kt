@@ -56,6 +56,19 @@ class PaperMenuService(
 
     fun session(playerId: UUID): PaperMenuSession? = sessions[playerId]?.takeIf(PaperMenuSession::isOpen)
 
+    /**
+     * Closes every currently open menu while keeping the service available.
+     * Consumers use this after an atomic layout generation replacement so no
+     * player is left looking at a stale, deliberately non-interactive screen.
+     */
+    fun closeSessions() {
+        requirePrimaryThread()
+        check(!closed) { "Paper menu service is closed" }
+        val active = sessions.values.toList()
+        sessions.clear()
+        active.forEach(PaperMenuSession::close)
+    }
+
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
     fun onClick(event: InventoryClickEvent) {
         val session = sessions[event.whoClicked.uniqueId] ?: return
