@@ -252,6 +252,31 @@ this also keeps mutation out of the active `InventoryClickEvent` dispatch. Use
 immediate `refresh()` only when the caller requires the new item state before
 returning.
 
+### Migrating slot-oriented renderers
+
+`PaperMenuFrame` lets an existing renderer keep its incremental `setItem`
+composition while moving inventory ownership, click safety, generation checks,
+and refreshes into `PaperMenuRuntime`. A physical frame accepts only slots that
+the current layout declares as fixed elements or content regions. A logical
+region frame addresses positions `0..region.size-1`, which is useful when YAML
+reorders a complete legacy grid. Sparse region positions are padded with a
+disabled copy of the background so later entries never shift to another slot.
+
+```kotlin
+menus.open(player, marketId) {
+    val frame = menus.physicalFrame(marketId, title(player), backgroundItem())
+    frame.setItem(layout.slot("back").index, backItem(player))
+    offers.forEachIndexed { index, offer ->
+        frame.setItem(layout.region("offers")[index].index, offerItem(offer))
+    }
+    frame.content { rawSlot, context -> handleClick(context.player, rawSlot) }
+}
+```
+
+Frames are render-local and defensively clone their items. They are not a
+reason to keep raw Bukkit listeners: the handler is attached to semantic
+runtime entries and receives only safe clicks from the owning viewer.
+
 Close `PaperMenuRuntime` during plugin shutdown. Opening another menu for the
 same player closes the old session exactly once.
 
