@@ -83,10 +83,15 @@ class PaperMenuItemFactoryTest : FreeSpec({
             },
             diagnostics = diagnostics::add,
         ).create(template, Component.empty(), emptyList())
+        val missing = PaperMenuItemFactory(
+            externalItems = PaperMenuExternalItemResolver { PaperMenuExternalItemResult.Missing },
+            diagnostics = diagnostics::add,
+        ).create(template, Component.empty(), emptyList())
 
         noResolver.type shouldBe Material.RED_STAINED_GLASS_PANE
         failed.type shouldBe Material.RED_STAINED_GLASS_PANE
-        diagnostics.shouldContainExactly("external-resolver-unavailable", "provider-timeout")
+        missing.type shouldBe Material.RED_STAINED_GLASS_PANE
+        diagnostics.shouldContainExactly("external-resolver-unavailable", "provider-timeout", "external-item-missing")
         diagnostics.all { it.length <= PaperMenuItemFactory.MAX_DIAGNOSTIC_LENGTH } shouldBe true
         noResolver.itemMeta.displayName()!!.decoration(TextDecoration.ITALIC) shouldBe TextDecoration.State.FALSE
         noResolver.itemMeta.lore()!!.single().decoration(TextDecoration.ITALIC) shouldBe TextDecoration.State.FALSE

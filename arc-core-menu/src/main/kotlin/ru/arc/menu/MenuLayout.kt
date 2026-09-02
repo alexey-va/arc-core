@@ -61,12 +61,12 @@ data class MenuLayout(
     val pagination: MenuPaginationLayout? = null,
 ) {
     fun slot(id: MenuElementId): MenuSlot =
-        requireNotNull(elements[id]) { "Menu '$this.id' has no element '$id'" }.slots.single()
+        requireNotNull(elements[id]) { "Menu '${this.id}' has no element '$id'" }.slots.single()
 
     fun slot(id: String): MenuSlot = slot(MenuElementId.of(id))
 
     fun region(id: MenuRegionId): List<MenuSlot> =
-        requireNotNull(regions[id]) { "Menu '$this.id' has no region '$id'" }.slots
+        requireNotNull(regions[id]) { "Menu '${this.id}' has no region '$id'" }.slots
 
     fun region(id: String): List<MenuSlot> = region(MenuRegionId.of(id))
 }
