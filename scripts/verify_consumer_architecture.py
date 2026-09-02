@@ -135,7 +135,12 @@ CAPABILITY_EVIDENCE = {
         ("main", re.compile(r"\bPaperAudienceEffects\b")),
         ("test", re.compile(r"\bRecordingPaperAudienceEffects\b")),
     ),
-    "paper-menu": (("main", re.compile(r"\b(?:PaperMenuService|MenuLayoutParser)\b")),),
+    "paper-menu": (
+        (
+            "main",
+            re.compile(r"\b(?:PaperMenuRuntime|PaperMenuConfigurationParser|PaperMenuService|MenuLayoutParser)\b"),
+        ),
+    ),
     "paper-teleport": (
         ("main", re.compile(r"\bPaperTeleportExecutor\b")),
         ("test", re.compile(r"\bRecordingPaperTeleportExecutor\b")),

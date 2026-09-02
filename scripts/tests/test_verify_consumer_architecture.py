@@ -302,7 +302,7 @@ fun redisTest() = RedisTestService.start().use { }
         )
         source = self.root / "src/main/kotlin/example/ExamplePlugin.kt"
         source.write_text(
-            source.read_text(encoding="utf-8") + "\nval configuredMenus: PaperMenuService = menuService()\n",
+            source.read_text(encoding="utf-8") + "\nval configuredMenus: PaperMenuRuntime = menuRuntime()\n",
             encoding="utf-8",
         )
 
