@@ -239,6 +239,19 @@ Only the newest token may expire. A full refresh, catalog replacement, or close
 invalidates delayed restoration, and restoration asks the content supplier for
 the latest normal item rather than retaining a stale `ItemStack`.
 
+`refresh()` is diff-aware: an unchanged render returns `UNCHANGED`, preserves
+the existing Inventory Framework item/handler identity and sends no inventory
+redraw. Changed items are patched only in their physical slots. The stable
+handler resolves the latest entry at click time, so an unchanged-looking button
+still receives current domain behavior. A title or background change is the
+only refresh path that requires a full render.
+
+Live menus should call `requestRefresh()` for timer, progress and click-driven
+updates. Requests within the same tick coalesce into one next-tick refresh;
+this also keeps mutation out of the active `InventoryClickEvent` dispatch. Use
+immediate `refresh()` only when the caller requires the new item state before
+returning.
+
 Close `PaperMenuRuntime` during plugin shutdown. Opening another menu for the
 same player closes the old session exactly once.
 
@@ -248,7 +261,8 @@ The platform tests use IF 0.12.0 with the shared MockBukkit runtime and cover
 layout failures, range order, collisions, catalog replacement, item metadata,
 background priority, click filtering, top/bottom cancellation, drag safety,
 viewer ownership, duplicate dispatch, rerendered handlers, pagination,
-feedback tokens, stale generations, replacement, and idempotent close.
+feedback tokens, no-op and slot-diff refresh, refresh/click races, next-tick
+coalescing, stale generations, replacement, and idempotent close.
 
 ```bash
 ./gradlew :arc-core-menu:test :arc-core-paper-menu:test

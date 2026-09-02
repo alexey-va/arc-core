@@ -71,6 +71,71 @@ class PaperMenuInteractionTest : FreeSpec({
         service.close()
     }
 
+    "no-op refresh preserves rendered slots while publishing the latest handler" {
+        val plugin = paper.createSimplePlugin("MenuNoOpRefresh")
+        val player = paper.addPlayer("Viewer")
+        var generation = 1
+        var invokedGeneration = 0
+        val service = PaperMenuService(plugin, repository(), BukkitTaskScheduler(plugin))
+        val session = service.open(player, MENU) {
+            val captured = generation
+            content(Material.DIAMOND, PaperMenuClickHandler { invokedGeneration = captured })
+        }
+
+        session.renderStats() shouldBe PaperMenuRenderStats(fullRenders = 1, slotUpdates = 0)
+        generation = 2
+        session.refresh() shouldBe PaperMenuSessionResult.UNCHANGED
+        session.renderStats() shouldBe PaperMenuRenderStats(fullRenders = 1, slotUpdates = 0)
+
+        paper.callEvent(click(player.openInventory, 4, ClickType.LEFT, InventoryAction.PICKUP_ALL))
+        invokedGeneration shouldBe 2
+        service.close()
+    }
+
+    "refresh from inside a click atomically keeps the action and patches one slot" {
+        val plugin = paper.createSimplePlugin("MenuClickRefresh")
+        val player = paper.addPlayer("Builder")
+        var paused = false
+        var calls = 0
+        lateinit var session: PaperMenuSession
+        val service = PaperMenuService(plugin, repository(), BukkitTaskScheduler(plugin))
+        session = service.open(player, MENU) {
+            content(
+                if (paused) Material.RED_DYE else Material.LIME_DYE,
+                PaperMenuClickHandler {
+                    calls++
+                    paused = true
+                    session.refresh()
+                },
+            )
+        }
+
+        paper.callEvent(click(player.openInventory, 4, ClickType.LEFT, InventoryAction.PICKUP_ALL))
+
+        calls shouldBe 1
+        player.openInventory.topInventory.getItem(4)?.type shouldBe Material.RED_DYE
+        session.renderStats() shouldBe PaperMenuRenderStats(fullRenders = 1, slotUpdates = 1)
+        service.close()
+    }
+
+    "queued refresh requests coalesce into one next-tick render" {
+        val plugin = paper.createSimplePlugin("MenuQueuedRefresh")
+        val player = paper.addPlayer("Builder")
+        var material = Material.DIAMOND
+        val service = PaperMenuService(plugin, repository(), BukkitTaskScheduler(plugin))
+        val session = service.open(player, MENU) { content(material) }
+        material = Material.EMERALD
+
+        session.requestRefresh() shouldBe PaperMenuSessionResult.QUEUED
+        session.requestRefresh() shouldBe PaperMenuSessionResult.UNCHANGED
+        session.requestRefresh() shouldBe PaperMenuSessionResult.UNCHANGED
+        paper.server.scheduler.performOneTick()
+
+        player.openInventory.topInventory.getItem(4)?.type shouldBe Material.EMERALD
+        session.renderStats() shouldBe PaperMenuRenderStats(fullRenders = 1, slotUpdates = 1)
+        service.close()
+    }
+
     "cancels bottom and unsafe click types while honoring an accepted right click" {
         val plugin = paper.createSimplePlugin("MenuSafety")
         val owner = paper.addPlayer("Owner")

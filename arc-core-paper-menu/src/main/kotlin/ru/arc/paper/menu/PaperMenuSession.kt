@@ -29,6 +29,7 @@ import java.util.function.Consumer
 
 enum class PaperMenuSessionResult {
     RENDERED,
+    QUEUED,
     UNCHANGED,
     NO_PAGINATION,
     STALE_GENERATION,
@@ -54,6 +55,13 @@ class PaperMenuSession internal constructor(
     private val processedEvents = Collections.synchronizedSet(Collections.newSetFromMap(WeakHashMap<InventoryClickEvent, Boolean>()))
     private var requestedPage = 0
     private var renderedPageState: MenuPageState? = null
+    private var renderedTitle: net.kyori.adventure.text.Component? = null
+    private var renderedBackground: ItemStack? = null
+    private var renderedSlots: Map<Int, RenderedSlot> = emptyMap()
+    private var preparedOnce = false
+    private var refreshQueued = false
+    private var fullRenderCount = 0
+    private var slotUpdateCount = 0
     private var open = true
 
     val isOpen: Boolean get() = open
@@ -82,6 +90,22 @@ class PaperMenuSession internal constructor(
     }
 
     fun refresh(): PaperMenuSessionResult = render(requireCurrent = true)
+
+    /** Coalesces frequent refresh requests and renders once on the next tick. */
+    fun requestRefresh(): PaperMenuSessionResult {
+        requirePrimaryThread()
+        if (!open) return PaperMenuSessionResult.CLOSED
+        if (!isCurrent()) return PaperMenuSessionResult.STALE_GENERATION
+        if (refreshQueued) return PaperMenuSessionResult.UNCHANGED
+        refreshQueued = true
+        tasks.runLater(1) {
+            refreshQueued = false
+            refresh()
+        }
+        return PaperMenuSessionResult.QUEUED
+    }
+
+    internal fun renderStats(): PaperMenuRenderStats = PaperMenuRenderStats(fullRenderCount, slotUpdateCount)
 
     fun pageState(): MenuPageState? = renderedPageState
 
@@ -120,8 +144,9 @@ class PaperMenuSession internal constructor(
         if (!isCurrent()) return PaperMenuSessionResult.STALE_GENERATION
         val slot = layout.slot(element)
         val token = feedback.state.show(element, delayTicks)
-        replace(slot.index, item, null, null)
-        gui.update()
+        val feedbackSlot = RenderedSlot(item.clone(), null, null)
+        renderedSlots = renderedSlots + (slot.index to feedbackSlot)
+        updateSlot(slot.index, feedbackSlot)
         tasks.runLater(delayTicks) { restoreFeedback(token) }
         return PaperMenuSessionResult.RENDERED
     }
@@ -157,30 +182,63 @@ class PaperMenuSession internal constructor(
         }
         val content = contentProvider()
         val prepared = prepareContent(content)
-        feedback.state.invalidateForRender()
-        gui.setTitle(ComponentHolder.of(content.title))
-        backgroundPane.clear()
-        contentPane.clear()
-        content.background?.let { background ->
-            backgroundPane.fillWith(background.clone(), Consumer { }, plugin)
+        val desiredSlots = desiredSlots(prepared)
+        val pageChanged = prepared.pageState != renderedPageState
+        val requiresFullRender =
+            !preparedOnce || content.title != renderedTitle || !sameItem(content.background, renderedBackground)
+        val changedSlots = if (requiresFullRender) {
+            desiredSlots.keys
+        } else {
+            (renderedSlots.keys + desiredSlots.keys).filterTo(linkedSetOf()) { index ->
+                !sameItem(renderedSlots[index]?.item, desiredSlots[index]?.item)
+            }
         }
+
+        feedback.state.invalidateForRender()
+        renderedTitle = content.title
+        renderedBackground = content.background?.clone()
+        renderedSlots = desiredSlots
+        renderedPageState = prepared.pageState
+
+        if (requiresFullRender) {
+            gui.setTitle(ComponentHolder.of(content.title))
+            backgroundPane.clear()
+            contentPane.clear()
+            content.background?.let { background ->
+                backgroundPane.fillWith(background.clone(), Consumer { }, plugin)
+            }
+            desiredSlots.forEach { (index, slot) -> addPaneItem(index, slot) }
+            gui.update()
+            preparedOnce = true
+            fullRenderCount++
+            return PaperMenuSessionResult.RENDERED
+        }
+
+        changedSlots.forEach { index -> updateSlot(index, desiredSlots[index]) }
+        slotUpdateCount += changedSlots.size
+        if (changedSlots.isEmpty() && !pageChanged) return PaperMenuSessionResult.UNCHANGED
+        return PaperMenuSessionResult.RENDERED
+    }
+
+    private fun desiredSlots(prepared: PreparedContent): Map<Int, RenderedSlot> = buildMap {
         prepared.fixed.forEach { (element, entry) ->
             layout.elements.getValue(element).slots.forEach { slot ->
-                val target = PaperMenuClickTarget.Element(element)
                 val clickable = layout.elements.getValue(element).kind == MenuElementKind.BUTTON
-                replace(slot.index, entry.item, entry.takeIf { clickable }, target)
+                put(
+                    slot.index,
+                    RenderedSlot(entry.item.clone(), entry.takeIf { clickable }, PaperMenuClickTarget.Element(element)),
+                )
             }
         }
         prepared.regions.forEach { (region, entries) ->
             val slots = layout.regions.getValue(region).slots
             entries.forEachIndexed { visibleIndex, indexed ->
-                val target = PaperMenuClickTarget.RegionEntry(region, indexed.index)
-                replace(slots[visibleIndex].index, indexed.value.item, indexed.value, target)
+                put(
+                    slots[visibleIndex].index,
+                    RenderedSlot(indexed.value.item.clone(), indexed.value, PaperMenuClickTarget.RegionEntry(region, indexed.index)),
+                )
             }
         }
-        renderedPageState = prepared.pageState
-        gui.update()
-        return PaperMenuSessionResult.RENDERED
     }
 
     private fun prepareContent(content: PaperMenuContent): PreparedContent {
@@ -220,32 +278,42 @@ class PaperMenuSession internal constructor(
         return PreparedContent(content.elements, preparedRegions, page)
     }
 
-    private fun replace(
-        index: Int,
-        item: ItemStack,
-        entry: PaperMenuEntry?,
-        target: PaperMenuClickTarget?,
-    ) {
-        val action = if (entry?.enabled == true && target != null) {
-            Consumer<InventoryClickEvent> { event ->
-                if (!processedEvents.add(event) || event.click !in entry.acceptedClicks ||
-                    event.whoClicked.uniqueId != player.uniqueId || !isCurrent()
-                ) return@Consumer
-                val context = PaperMenuClickContext(this, player, target, event)
-                val transfer = entry.transfer
-                if (transfer == null) {
-                    entry.onClick.handle(context)
-                } else if (event.action in SAFE_MENU_TRANSFER_ACTIONS &&
-                    transfer.handle(context) == PaperMenuTransferDecision.ALLOW
-                ) {
-                    event.isCancelled = false
-                }
-            }
-        } else {
-            null
-        }
-        val guiItem = if (action == null) GuiItem(item.clone(), plugin) else GuiItem(item.clone(), action, plugin)
+    private fun addPaneItem(index: Int, slot: RenderedSlot): GuiItem {
+        val action = if (slot.entry?.enabled == true && slot.target != null) {
+            Consumer<InventoryClickEvent> { event -> dispatch(index, event) }
+        } else null
+        val guiItem = if (action == null) GuiItem(slot.item.clone(), plugin) else GuiItem(slot.item.clone(), action, plugin)
         contentPane.addItem(guiItem, index % 9, index / 9)
+        return guiItem
+    }
+
+    private fun updateSlot(index: Int, slot: RenderedSlot?) {
+        contentPane.removeItem(index % 9, index / 9)
+        if (slot == null) {
+            inventory.setItem(index, renderedBackground?.clone())
+            return
+        }
+        val guiItem = addPaneItem(index, slot)
+        val renderedItem = guiItem.copy().also { it.applyUUID() }
+        inventory.setItem(index, renderedItem.item.clone())
+    }
+
+    private fun dispatch(index: Int, event: InventoryClickEvent) {
+        val slot = renderedSlots[index] ?: return
+        val entry = slot.entry ?: return
+        val target = slot.target ?: return
+        if (!entry.enabled || !processedEvents.add(event) || event.click !in entry.acceptedClicks ||
+            event.whoClicked.uniqueId != player.uniqueId || !isCurrent()
+        ) return
+        val context = PaperMenuClickContext(this, player, target, event)
+        val transfer = entry.transfer
+        if (transfer == null) {
+            entry.onClick.handle(context)
+        } else if (event.action in SAFE_MENU_TRANSFER_ACTIONS &&
+            transfer.handle(context) == PaperMenuTransferDecision.ALLOW
+        ) {
+            event.isCancelled = false
+        }
     }
 
     private fun restoreFeedback(token: MenuFeedbackToken) {
@@ -255,8 +323,14 @@ class PaperMenuSession internal constructor(
         val entry = contentProvider().elements[element] ?: return
         val layoutElement = layout.elements[element] ?: return
         if (layoutElement.slots.size != 1) return
-        replace(layoutElement.slots.single().index, entry.item, entry.takeIf { layoutElement.kind == MenuElementKind.BUTTON }, PaperMenuClickTarget.Element(element))
-        gui.update()
+        val index = layoutElement.slots.single().index
+        val restored = RenderedSlot(
+            entry.item.clone(),
+            entry.takeIf { layoutElement.kind == MenuElementKind.BUTTON },
+            PaperMenuClickTarget.Element(element),
+        )
+        renderedSlots = renderedSlots + (index to restored)
+        updateSlot(index, restored)
     }
 
     private fun isCurrent(): Boolean = catalogs.current().generation == generation
@@ -270,4 +344,18 @@ class PaperMenuSession internal constructor(
         val regions: Map<MenuRegionId, List<IndexedValue<PaperMenuEntry>>>,
         val pageState: MenuPageState?,
     )
+
+    private data class RenderedSlot(
+        val item: ItemStack,
+        val entry: PaperMenuEntry?,
+        val target: PaperMenuClickTarget?,
+    )
+
+    private fun sameItem(left: ItemStack?, right: ItemStack?): Boolean =
+        when {
+            left == null || right == null -> left == null && right == null
+            else -> left.amount == right.amount && left.isSimilar(right)
+        }
 }
+
+internal data class PaperMenuRenderStats(val fullRenders: Int, val slotUpdates: Int)
