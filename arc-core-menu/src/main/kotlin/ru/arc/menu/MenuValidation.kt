@@ -21,7 +21,7 @@ enum class MenuValidationCode {
 
 data class MenuValidationIssue(
     val code: MenuValidationCode,
-    val menu: MenuId,
+    val menu: String,
     val path: String,
     val reason: String,
 )
@@ -79,7 +79,7 @@ fun MenuLayout.validate(contract: MenuContract): List<MenuValidationIssue> = bui
                 validateSlot(this@validate, slot, path, occupied)
             }
         }
-        regions.forEach { (id, region) ->
+        regions.filterValues { it.kind == MenuRegionKind.CONTENT }.forEach { (id, region) ->
             region.slots.forEachIndexed { index, slot ->
                 validateSlot(this@validate, slot, "regions.$id.slots[$index]", occupied)
             }
@@ -118,4 +118,4 @@ private fun MutableList<MenuValidationIssue>.validateSlot(
 }
 
 private fun MenuLayout.issue(code: MenuValidationCode, path: String, reason: String): MenuValidationIssue =
-    MenuValidationIssue(code, id, path, reason)
+    MenuValidationIssue(code, id.value, path, reason)

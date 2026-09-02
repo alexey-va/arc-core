@@ -30,9 +30,15 @@ data class MenuElementLayout(
     }
 }
 
+enum class MenuRegionKind {
+    CONTENT,
+    GROUP,
+}
+
 data class MenuRegionLayout(
     val id: MenuRegionId,
     val slots: List<MenuSlot>,
+    val kind: MenuRegionKind = MenuRegionKind.CONTENT,
 ) {
     init {
         require(slots.isNotEmpty()) { "Menu region '$id' must contain at least one slot" }
@@ -57,6 +63,10 @@ data class MenuLayout(
     fun slot(id: MenuElementId): MenuSlot =
         requireNotNull(elements[id]) { "Menu '$this.id' has no element '$id'" }.slots.single()
 
+    fun slot(id: String): MenuSlot = slot(MenuElementId.of(id))
+
     fun region(id: MenuRegionId): List<MenuSlot> =
         requireNotNull(regions[id]) { "Menu '$this.id' has no region '$id'" }.slots
+
+    fun region(id: String): List<MenuSlot> = region(MenuRegionId.of(id))
 }
