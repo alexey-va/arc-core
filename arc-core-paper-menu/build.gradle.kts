@@ -3,7 +3,7 @@ plugins {
     `maven-publish`
 }
 
-description = "ARC Core Paper Menu — configurable Inventory Framework menus"
+description = "ARC Core Paper Menu — configurable inventories and native dialogs"
 
 val paperApiVersion: String by project
 

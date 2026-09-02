@@ -1,10 +1,16 @@
-# Configurable Paper menus
+# Configurable Paper menus and native dialogs
 
 `arc-core-menu` and `arc-core-paper-menu` separate screen composition from
 gameplay. Operators can move buttons, reshape content regions, change the
 background, and select safe item presentation without recompiling a plugin.
 The plugin still owns authorization, state transitions, prices, persistence,
 messages, and every click action.
+
+Native Minecraft dialogs use the same boundary: feature configuration owns the
+visible text and composition, feature code supplies current domain rows and
+typed handlers, and `PaperDialogRuntime` owns Paper event dispatch and session
+lifecycle. Dialogs are intentionally modeled in `arc-core-paper-menu` because
+their public API contains Paper and Adventure presentation types.
 
 ## Ownership
 
@@ -17,9 +23,61 @@ messages, and every click action.
 | Localized tag values, enabled state and accepted clicks | Plugin `PaperMenuContent` |
 | Permission checks and domain action | Plugin `PaperMenuClickHandler` |
 | Cancellation, one-dispatch guarantee, viewer ownership, render lifecycle | `PaperMenuRuntime` |
+| Native dialog body, inputs, columns and buttons | Consumer configuration rendered into `PaperDialogScreen` |
+| Dialog action/input identifiers and handlers | Consumer code using `PaperDialogActionId` and `PaperDialogInputId` |
+| Dialog nonce, player ownership, one-shot dispatch and listener cleanup | `PaperDialogRuntime` |
 
 There is deliberately no `commands:` field. A typo or config edit must never
 turn an inventory file into an arbitrary command executor.
+
+## Native Paper dialogs
+
+Create one runtime per plugin lifecycle and close it on disable. Visible text
+should come from the consumer's validated locale or module configuration; insert
+player and domain values as Adventure component placeholders before building the
+screen.
+
+```kotlin
+val dialogs = PaperDialogRuntime(plugin)
+val nameInput = PaperDialogInputId.of("land_name")
+
+fun openCreate(player: Player) {
+    dialogs.open(
+        player,
+        PaperDialogScreen(
+            title = messages.component("lands.create.title"),
+            body = listOf(PaperDialogBody(messages.component("lands.create.body"))),
+            inputs = listOf(
+                PaperDialogTextInput(nameInput, messages.component("lands.create.input"), maxLength = 32),
+            ),
+            buttons = listOf(
+                PaperDialogButton(
+                    id = PaperDialogActionId.of("create"),
+                    label = messages.component("common.continue"),
+                    onClick = PaperDialogClickHandler { context ->
+                        createLand(context.player, context.text(nameInput).orEmpty())
+                    },
+                ),
+            ),
+        ),
+    )
+}
+
+override fun onDisable() = dialogs.close()
+```
+
+The runtime registers one `PlayerCustomClickEvent` listener. Opening a new
+screen replaces the player's previous registration; the action key contains a
+fresh nonce, is matched to that player, and is consumed before its handler runs.
+Old, foreign, duplicate, and post-shutdown clicks therefore do nothing. The
+runtime closes the visible dialog before calling feature code, so a handler may
+safely open the next screen. Input and action IDs are bounded and validated
+before a native dialog is shown.
+
+Do not use per-button Paper callback registrations for lifecycle-owned plugin
+dialogs. Do not put raw commands into dialog YAML. Re-resolve and authorize the
+domain target inside every handler because the state may have changed after the
+screen was rendered.
 
 ## Layout schema
 
