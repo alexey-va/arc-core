@@ -10,6 +10,7 @@ plans. **Do not duplicate** — link from `AGENTS.md`.
 | [shared-primitives.md](shared-primitives.md) | Agent-oriented routing index for reusable plugin lifecycle, one-time-use, persistence, locale, Redis, network, teleport, and player-state mechanisms |
 | [player-nameplates.md](player-nameplates.md) | Layered player nameplate composition, Paper visibility and display lifecycle, consumer example, and test seam |
 | [paper-testing.md](paper-testing.md) | Canonical MockBukkit test-kit, test-layer selection, lifecycle, examples, and limitations |
+| [paper-menus.md](paper-menus.md) | Configurable menu schema, semantic contracts, safe items, reload generations, sessions, pagination, and feedback |
 | [integration-testing.md](integration-testing.md) | Canonical disposable Redis/MySQL Testcontainers services and consumer pattern |
 | [redis-networking.md](redis-networking.md) | Validated Redis topic, bounded request/reply, presence leases, ownership rules, and test contract |
 | [agentic-plugin-reference.md](agentic-plugin-reference.md) | Short composition path for lifecycle, health, recovery, MockBukkit, and storage tests |
@@ -26,6 +27,7 @@ plans. **Do not duplicate** — link from `AGENTS.md`.
 | [2026-06-24-proxyarc-modules-design.md](superpowers/specs/2026-06-24-proxyarc-modules-design.md) | ProxyARC module layout on arc-core |
 | [2026-06-24-architecture-docs-design.md](superpowers/specs/2026-06-24-architecture-docs-design.md) | Agent-oriented documentation and skills |
 | [2026-06-24-arc-core-ai-design.md](superpowers/specs/2026-06-24-arc-core-ai-design.md) | OpenRouter LLM, moderation (Paper), tool RPC, proxy config |
+| [2026-09-02-configurable-paper-menus-design.md](superpowers/specs/2026-09-02-configurable-paper-menus-design.md) | Shared configuration-driven Paper menu platform and migration boundaries |
 
 ## Plans
 
@@ -37,3 +39,4 @@ plans. **Do not duplicate** — link from `AGENTS.md`.
 | [2026-06-24-proxyarc-modules.md](superpowers/plans/2026-06-24-proxyarc-modules.md) | ProxyARC modules implementation |
 | [2026-06-24-architecture-docs.md](superpowers/plans/2026-06-24-architecture-docs.md) | Architecture docs and skills |
 | [2026-06-24-arc-core-ai.md](superpowers/plans/2026-06-24-arc-core-ai.md) | arc-core-ai implementation |
+| [2026-09-02-configurable-paper-menus.md](superpowers/plans/2026-09-02-configurable-paper-menus.md) | Core platform and in-house plugin migration plan |

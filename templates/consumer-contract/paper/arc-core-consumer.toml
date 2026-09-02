@@ -5,6 +5,7 @@ core_version = "2.1.1"
 # Keep only capabilities the plugin actually owns. Add a capability before
 # adding its infrastructure; the verifier will require the matching module and
 # canonical API evidence.
+# Add "paper-menu" when the plugin renders configured Inventory Framework menus.
 capabilities = [
   "health",
   "localized-text",

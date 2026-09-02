@@ -42,6 +42,8 @@ CI verifier reject missing modules and high-signal local duplicates.
 | Narrow teleport exception | `arc-core-paper`: `ScopedTeleportAuthorizer` | Authorize one player and one exact world/position/rotation only for the dynamic extent of one action. Nested scopes are rejected and cleanup is unconditional. |
 | Complete Paper player escrow | `arc-core-paper`: `PaperPlayerStateService`, `PaperPlayerStateCodec`, `PaperPlayerDataPersistence`; `arc-core-paper-testing`: `RecordingPaperPlayerDataPersistence` | Capture/restore on the primary thread, use versioned native item bytes plus SHA-256 and bounds, verify every restored field, then persist through the exact Paper boundary. Explicit partial APIs preserve inventory or location for cross-server recovery without weakening full restore. |
 | Paper lifecycle composition | `arc-core-paper`: `PaperPluginRuntime` | Compose rather than inherit: own reload epochs and closeable resources explicitly, close tasks first, and emit canonical bootstrap/ready events. |
+| Configurable inventory layout | `arc-core-menu`: `MenuLayoutParser`, `MenuContract`, `MenuCatalogRepository` | YAML owns placement and background; code declares required semantic IDs. Validate the complete candidate and swap one generation only on success. |
+| Paper inventory sessions | `arc-core-paper-menu`: `PaperMenuService`, `PaperMenuContent`, `PaperMenuItemFactory` | Inventory Framework is internal. Cancel inventory mutation, dispatch typed semantic targets once, reject region overflow before mutation, invalidate stale generations and delayed feedback, and close the service at shutdown. |
 | Platform-neutral test fixtures | `arc-core-testing`: `DeterministicClock`, `ControlledExecutor`, `FailureInjector` | Drive time, queued work, and named failure points without sleeps or races. Keep this artifact test-only in consumers. |
 | Paper platform test runtime | `arc-core-paper-testing`: `MockBukkitTestRuntime` | Consume the pinned Paper/MockBukkit pair as a test dependency, own one global runtime per test, drive events and ticks deterministically, and always close it. |
 | Real Redis/MySQL test services | `arc-core-integration-testing`: `RedisTestService`, `MySqlTestService` | Start one disposable Testcontainer with `use`, consume only the returned endpoint, choose an exact image only when schema/version behavior matters, and never depend on a host daemon port or binary. |
@@ -65,6 +67,8 @@ ru.arc.paper.chunk
 ru.arc.paper.teleport
 ru.arc.paper.playerstate
 ru.arc.paper.runtime
+ru.arc.menu
+ru.arc.paper.menu
 ru.arc.testing
 ru.arc.paper.testing
 ru.arc.testing.containers
@@ -192,6 +196,9 @@ inventory must be preserved.
   narrow injected seam and cover the new contract in `arc-core` tests.
 - Do not move gameplay state machines, GUI composition, or feature-specific
   repository schemas into core merely because two classes look similar.
+- Do not hardcode reusable menu slots or raw-slot action routing in a Paper
+  plugin. Declare a `MenuContract`, load a configured layout, and bind domain
+  handlers through `PaperMenuContent`. Never put arbitrary commands in YAML.
 - Do not declare MockBukkit directly in a plugin or manage its global singleton
   ad hoc. Use `arc-core-paper-testing` and follow
   [`paper-testing.md`](paper-testing.md).
@@ -215,6 +222,8 @@ Run the focused module while iterating and the complete gate before publishing:
 ./gradlew :arc-core:test
 ./gradlew :arc-core-redis:test
 ./gradlew :arc-core-paper:test
+./gradlew :arc-core-menu:test
+./gradlew :arc-core-paper-menu:test
 ./gradlew :arc-core-testing:test
 ./gradlew :arc-core-paper-testing:test
 ./gradlew :arc-core-sql:compileIntegrationTestKotlin

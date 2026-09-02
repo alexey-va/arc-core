@@ -37,6 +37,8 @@ arc-core ─────┬───── ARC (Paper: Event DSL, GUI, gameplay)
 | `arc-core-redis/` | `ru.arc:arc-core-redis` | Redis plus strict codecs, CAS, validated topics, bounded request/reply and presence leases |
 | `arc-core-sql/` | `ru.arc:arc-core-sql` | Optional MySQL/Hikari runtime, async JDBC and migrations |
 | `arc-core-paper/` | `ru.arc:arc-core-paper` | Paper scheduling, audience/teleport delivery, chunk-ticket lifecycle, player-state escrow, and transient player nameplates |
+| `arc-core-menu/` | `ru.arc:arc-core-menu` | Platform-neutral validated menu layouts, contracts, catalog generations, pagination, and feedback state |
+| `arc-core-paper-menu/` | `ru.arc:arc-core-paper-menu` | Paper item templates and lifecycle-safe Inventory Framework rendering without exposing IF types to consumers |
 | `arc-core-testing/` | `ru.arc:arc-core-testing` | Platform-neutral deterministic clocks, executors, and failure injection |
 | `arc-core-paper-testing/` | `ru.arc:arc-core-paper-testing` | Canonical published MockBukkit test runtime and fixtures |
 | `arc-core-integration-testing/` | `ru.arc:arc-core-integration-testing` | Canonical Redis/MySQL Testcontainers services for real storage seams |
@@ -80,7 +82,11 @@ upload.
 12. **New consumers:** keep `arc-core-consumer.toml` at repository root and run
     `scripts/verify_consumer_architecture.py` locally and through the pinned
     central GitHub action. Declare a capability before implementing it; do not
-    delete the declaration to hide a verifier failure.
+   delete the declaration to hide a verifier failure.
+13. **Configured menus:** code owns semantic actions and domain state; YAML owns
+    rows, slots, patterns, regions, background, and safe item presentation.
+    Never route arbitrary commands from menu YAML. Replace only a completely
+    validated catalog generation and close `PaperMenuService` on shutdown.
 
 ## Decision tree — where to put new code
 
@@ -92,6 +98,7 @@ upload.
 | Paper API only (Material, Sound)? | `arc-core-paper` |
 | Reusable layered player nameplate? | `arc-core` composer + one `arc-core-paper` display lifecycle |
 | Reusable exact Paper call/lifecycle with a stable contract? | `arc-core-paper` plus its `arc-core-paper-testing` double when needed |
+| Configurable Paper inventory menu? | `arc-core-menu` contract/layout + `arc-core-paper-menu` renderer; domain handlers remain in the plugin |
 | Platform-neutral deterministic test fixture? | `arc-core-testing` |
 | Reusable Paper test fixture or MockBukkit lifecycle? | `arc-core-paper-testing` |
 | Disposable real Redis/MySQL fixture? | `arc-core-integration-testing` |
@@ -174,6 +181,7 @@ where ordering crosses storage or platform boundaries.
 | [`docs/shared-primitives.md`](docs/shared-primitives.md) | Shared API routing, contracts, examples, verification |
 | [`docs/player-nameplates.md`](docs/player-nameplates.md) | Layer ownership, Paper visibility/lifecycle, consumer example, testing |
 | [`docs/paper-testing.md`](docs/paper-testing.md) | MockBukkit dependency, lifecycle, test layers, limitations |
+| [`docs/paper-menus.md`](docs/paper-menus.md) | Configurable layouts, templates, reload generations, IF sessions, clicks, pagination, and feedback |
 | [`docs/integration-testing.md`](docs/integration-testing.md) | Shared disposable Redis/MySQL services and integration-test contract |
 | [`docs/new-plugin-contract.md`](docs/new-plugin-contract.md) | Mandatory capability manifest, baseline modules, verifier, and CI gate for new plugins |
 | [`docs/redis-networking.md`](docs/redis-networking.md) | Validated topic, request/reply, and presence application layer |

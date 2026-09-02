@@ -275,6 +275,42 @@ fun redisTest() = RedisTestService.start().use { }
         self.assertIn("paper-audience", output)
         self.assertIn("paper-teleport", output)
 
+    def test_paper_menu_capability_requires_both_modules_and_canonical_usage(self) -> None:
+        manifest = self.root / "arc-core-consumer.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                '"runtime"]',
+                '"runtime", "paper-menu"]',
+            ),
+            encoding="utf-8",
+        )
+
+        exit_code, output = self.verify()
+
+        self.assertEqual(1, exit_code)
+        self.assertIn("arc-core-menu", output)
+        self.assertIn("arc-core-paper-menu", output)
+
+        build = self.root / "build.gradle.kts"
+        build.write_text(
+            build.read_text(encoding="utf-8").replace(
+                "dependencies {",
+                'dependencies {\n    implementation("ru.ruscrafting.arc:arc-core-menu:2.1.0")'
+                '\n    implementation("ru.ruscrafting.arc:arc-core-paper-menu:2.1.0")',
+            ),
+            encoding="utf-8",
+        )
+        source = self.root / "src/main/kotlin/example/ExamplePlugin.kt"
+        source.write_text(
+            source.read_text(encoding="utf-8") + "\nval configuredMenus: PaperMenuService = menuService()\n",
+            encoding="utf-8",
+        )
+
+        exit_code, output = self.verify()
+
+        self.assertEqual(0, exit_code)
+        self.assertIn("paper-menu", output)
+
     def test_rejects_paper_platform_capability_without_test_adapter_evidence(self) -> None:
         manifest = self.root / "arc-core-consumer.toml"
         manifest.write_text(
