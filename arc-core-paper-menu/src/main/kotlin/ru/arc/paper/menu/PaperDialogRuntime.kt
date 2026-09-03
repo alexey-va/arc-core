@@ -41,7 +41,7 @@ class PaperDialogRuntime(private val plugin: Plugin) : AutoCloseable, Listener {
 
         val actions = (screen.buttons + listOfNotNull(screen.exitButton)).associate { button ->
             button.id to {
-                player.closeDialog()
+                if (button.closeDialogBeforeAction) player.closeDialog()
                 button.onClick.handle(
                     PaperDialogClickContext(player) { input -> currentResponse.get()?.getText(input.value) },
                 )

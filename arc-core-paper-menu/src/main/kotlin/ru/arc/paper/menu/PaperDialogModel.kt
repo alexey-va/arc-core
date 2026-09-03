@@ -71,6 +71,8 @@ data class PaperDialogButton(
     val label: Component,
     val tooltip: Component = Component.empty(),
     val width: Int = 150,
+    /** Close the native screen before dispatching actions that leave the dialog flow. */
+    val closeDialogBeforeAction: Boolean = false,
     val onClick: PaperDialogClickHandler,
 ) {
     init {

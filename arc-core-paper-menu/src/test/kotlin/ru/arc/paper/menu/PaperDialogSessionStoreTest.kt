@@ -54,4 +54,16 @@ class PaperDialogSessionStoreTest : FreeSpec({
         runCatching { PaperDialogScreen(Component.text("Title"), buttons = listOf(button), columns = 6) }.isFailure shouldBe true
         runCatching { PaperDialogBody(Component.text("Body"), width = 0) }.isFailure shouldBe true
     }
+
+    "keeps navigation dialogs open unless an action explicitly requests closing" {
+        val navigate = PaperDialogButton(PaperDialogActionId.of("navigate"), Component.text("Navigate")) {}
+        val execute = PaperDialogButton(
+            PaperDialogActionId.of("execute"),
+            Component.text("Execute"),
+            closeDialogBeforeAction = true,
+        ) {}
+
+        navigate.closeDialogBeforeAction shouldBe false
+        execute.closeDialogBeforeAction shouldBe true
+    }
 })
