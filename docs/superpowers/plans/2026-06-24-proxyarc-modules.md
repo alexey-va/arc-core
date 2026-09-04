@@ -1,7 +1,5 @@
 # ProxyARC Module Migration Implementation Plan
 
-> **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Delete `CommonCore`; run ProxyARC through `ModuleRegistry` with 15 ARC-style modules and `Velocity` companion state.
 
 **Architecture:** One `PluginModule` per concern, files grouped under `ru/arc/core/modules/` + feature packages. Pretty lifecycle via `VelocityArcRuntime` in `arc-core-velocity`.

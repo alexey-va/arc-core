@@ -1,7 +1,5 @@
 # arc-core-ops Implementation Plan
 
-> **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Shared ops HTTP in arc-core with Paper/Velocity handlers, standard capabilities + 501, MCP Python client per server including velocity.
 
 **Architecture:** `arc-core-ops` provides HttpServer/auth/router; `arc-core-ops-paper` and `arc-core-ops-velocity` register platform handlers; MCP uses `OpsClient` over HTTP instead of tmux for console/reload.

@@ -1,7 +1,5 @@
 # arc-core-redis Implementation Plan
 
-> **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Shared Redis transport in `arc-core-redis` with production `RedisManager`, test `InMemoryRedis`, and both plugins migrated off duplicates.
 
 **Architecture:** New Gradle module `arc-core-redis` under `ru.arc.redis`. Port Paper `RedisManager` with `ServerIdentity` + SLF4J injection. Port `TestRedisManager` → `InMemoryRedis`. ARC keeps thin typealiases in `ru.arc.network`; ProxyARC deletes `xserver.RedisManager`.

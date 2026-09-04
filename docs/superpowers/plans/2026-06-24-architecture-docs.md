@@ -1,7 +1,5 @@
 # Architecture Documentation & Agent Skills Implementation Plan
 
-> **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Create canonical agent-oriented architecture docs across arc-core/ARC/ProxyARC/mcserver and add McFine-specific Cursor skills without duplicating content.
 
 **Architecture:** Single canon in `arc-core/AGENTS.md`; thin deltas in plugin repos; ops hub unchanged except one link; CLAUDE.md stubbed; custom skills link to AGENTS.

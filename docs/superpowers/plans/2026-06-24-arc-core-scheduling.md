@@ -1,7 +1,5 @@
 # arc-core-scheduling Implementation Plan
 
-> **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Platform-agnostic TaskScheduler + TaskDsl in `arc-core` with Paper/Velocity wiring via `Tasks.install()`; ARC feature code uses only the interface (no `BukkitTaskScheduler` references).
 
 **Architecture:** Port ARC `TaskDsl.kt` into `arc-core`, add `SubtickScheduler` + `SchedulingModuleConfig` + bundled `scheduling.yml`. Paper/Velocity install concrete schedulers once at bootstrap. Remove duplicate `Tasks` object and all direct `BukkitTaskScheduler` construction from ARC.

@@ -1,7 +1,5 @@
 # Configurable Paper Menus Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Build two reusable arc-core menu artifacts and migrate every active in-house Paper inventory to configuration-owned layout with typed Kotlin actions.
 
 **Architecture:** `arc-core-menu` parses and validates immutable layout catalogs without Bukkit. `arc-core-paper-menu` renders those layouts through Inventory Framework 0.12.0 and owns sessions, clicks, pagination, feedback, and item-template safety. Consumers retain domain state and locale rendering while deleting duplicate raw-slot routing.

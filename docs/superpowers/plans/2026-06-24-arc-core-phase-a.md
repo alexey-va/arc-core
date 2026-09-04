@@ -1,7 +1,5 @@
 # arc-core Phase A (DX Foundation) Implementation Plan
 
-> **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Multi-module arc-core framework with ported Config, module lifecycle, and platform adapters — consumed by both ProxyARC and ARC Paper.
 
 **Architecture:** Split repo into `arc-core` (agnostic), `arc-core-paper`, `arc-core-velocity`. Port ARC SnakeYAML Engine v2 Config into common module; move VelocityTaskScheduler into velocity module; add Bukkit adapters for Paper. Wire both plugins via composite build.

@@ -1,7 +1,5 @@
 # arc-core-ai Implementation Plan
 
-> **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development or superpowers:executing-plans. Steps use checkbox syntax.
-
 **Goal:** Shared OpenRouter LLM client + tool RPC in `arc-core-ai`; Paper keeps moderation; Velocity runs chat agent with remote tools.
 
 **Architecture:** New `arc-core-ai` module; mandatory optional HTTP proxy (`enabled` flag); dual LLM hosts; Redis tool v2.
