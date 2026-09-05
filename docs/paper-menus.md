@@ -352,3 +352,41 @@ coalescing, stale generations, replacement, and idempotent close.
 python3 -m unittest scripts.tests.test_verify_consumer_architecture
 ./gradlew stageRelease -PreleaseVersion=<version> -PpublicationGroup=ru.ruscrafting.arc
 ```
+
+## Cloud chest storage
+
+Use `PaperMenuRuntime.openStorage(player, menu, region, storage, content)` for a
+chest backed by domain data, such as a player store or personal dungeon loot.
+This variant uses a native Bukkit inventory and does not attach IF metadata to
+real items. Keep `PaperMenuContent` for ordinary action menus.
+
+`PaperCloudStorage.snapshot()` returns detached items, preserving each logical
+slot and using null for empty cells. `compareAndSet(expected, replacement)`
+must synchronously validate the complete expected state and atomically apply all
+replacements or change nothing. Both calls run on the Paper primary thread.
+The consumer owns access checks, item restrictions, persistence and recovery;
+this UI contract does not add cross-server locking or disk durability. A true
+result is the commit boundary, immediately followed by player slot/cursor
+updates. Backend exceptions disable the session without retrying an uncertain
+commit. A stale snapshot or rejected edit transfers nothing.
+
+Left click takes a stack to the cursor; right click takes half. With deposits
+enabled, cursor placement, merge and swap also work. Shift moves merge stacks
+before filling empty slots and preserve any remainder. Player destinations use
+vanilla reverse hotbar/main-inventory order. Bottom clicks and bottom-only drags
+remain native, allowing a player to choose a destination slot. Top drag, hotbar
+swap, drop, clone and cross-inventory double-click collection are blocked.
+
+`PaperCloudStorageContent` supplies title and `allowDeposits`, optional
+`slotOrder` (a complete permutation of the configured region), non-transferable
+padding `decorations`, and semantic navigation `buttons`. Decorations may only
+use logical offsets beyond the backing snapshot. The optional background fills
+slots outside the storage region; empty storage cells stay empty. Navigation
+runs next tick through the session task scope. Runtime replacement, close, quit
+and plugin shutdown end the session and cancel pending navigation. Paper owns
+normal cursor return on inventory close.
+
+Verification: `PaperCloudStorageTest` covers cursor, shift, metadata, rejected and
+stale edits, decorations, native bottom interactions and lifecycle. MockBukkit
+dispatches events but does not execute the vanilla client/server click algorithm;
+these tests prove the shared handler's decisions and commits, not client packets.

@@ -6,6 +6,7 @@ import org.bukkit.plugin.Plugin
 import ru.arc.core.TaskScheduler
 import ru.arc.menu.MenuCatalogRepository
 import ru.arc.menu.MenuId
+import ru.arc.menu.MenuRegionId
 
 /**
  * Owns the active validated configuration and viewer lifecycle for one plugin.
@@ -19,6 +20,7 @@ class PaperMenuRuntime(
 ) : AutoCloseable {
     private val catalogs = MenuCatalogRepository(initial.catalog)
     private val service = PaperMenuService(plugin, catalogs, scheduler)
+    private val cloudStorage = PaperCloudStorageService(plugin, catalogs, scheduler)
     private var configuration = initial
     private var closed = false
 
@@ -32,12 +34,21 @@ class PaperMenuRuntime(
 
     fun session(player: Player): PaperMenuSession? = service.session(player.uniqueId)
 
+    fun openStorage(
+        player: Player,
+        menu: MenuId,
+        region: MenuRegionId,
+        storage: PaperCloudStorage,
+        content: PaperCloudStorageContent,
+    ): PaperCloudStorageSession = cloudStorage.open(player, menu, region, storage, content)
+
     fun replace(candidate: PaperMenuConfiguration) {
         requirePrimaryThread()
         check(!closed) { "Paper menu runtime is closed" }
         val replaced = catalogs.replace(candidate.catalog)
         configuration = candidate.copy(catalog = replaced.current)
         service.closeSessions()
+        cloudStorage.closeSessions()
     }
 
     override fun close() {
@@ -45,6 +56,7 @@ class PaperMenuRuntime(
         if (closed) return
         closed = true
         service.close()
+        cloudStorage.close()
     }
 
     private fun requirePrimaryThread() {
