@@ -19,6 +19,9 @@ import org.bukkit.event.HandlerList
 import org.bukkit.event.Listener
 import org.bukkit.event.player.PlayerQuitEvent
 import org.bukkit.plugin.Plugin
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
+import java.util.UUID
 
 /**
  * Shows native Paper dialogs and dispatches their custom-click actions.
@@ -29,6 +32,7 @@ import org.bukkit.plugin.Plugin
  */
 class PaperDialogRuntime(private val plugin: Plugin) : AutoCloseable, Listener {
     private val sessions = PaperDialogSessionStore(plugin.name)
+    private val observations = mutableMapOf<UUID, DialogObservation>()
     private var closed = false
 
     init {
@@ -48,12 +52,16 @@ class PaperDialogRuntime(private val plugin: Plugin) : AutoCloseable, Listener {
             }
         }
         val registration = sessions.replace(player.uniqueId, actions)
+        val visitId = UUID.randomUUID().toString()
+        observations[player.uniqueId] = DialogObservation(visitId, screen)
 
         try {
             val dialog = createDialog(screen, registration)
             player.showDialog(dialog)
+            observe(player, "open", observations.getValue(player.uniqueId), screen)
         } catch (failure: Throwable) {
             sessions.remove(player.uniqueId)
+            observations.remove(player.uniqueId)
             throw failure
         }
     }
@@ -65,6 +73,9 @@ class PaperDialogRuntime(private val plugin: Plugin) : AutoCloseable, Listener {
         val connection = event.commonConnection as? PlayerGameConnection ?: return
         val player = connection.player
         val handler = sessions.consume(player.uniqueId, event.identifier.asString()) ?: return
+        val observation = observations.remove(player.uniqueId)
+        val action = event.identifier.asString().substringAfterLast('/')
+        observation?.let { observe(player, "click", it, button = action) }
 
         val response = event.dialogResponseView
         // The generated handler reads through this event-owned view immediately.
@@ -79,6 +90,7 @@ class PaperDialogRuntime(private val plugin: Plugin) : AutoCloseable, Listener {
     @EventHandler
     fun onQuit(event: PlayerQuitEvent) {
         sessions.remove(event.player.uniqueId)
+        observations.remove(event.player.uniqueId)
     }
 
     override fun close() {
@@ -86,6 +98,7 @@ class PaperDialogRuntime(private val plugin: Plugin) : AutoCloseable, Listener {
         if (closed) return
         closed = true
         sessions.clear()
+        observations.clear()
         HandlerList.unregisterAll(this)
     }
 
@@ -107,6 +120,29 @@ class PaperDialogRuntime(private val plugin: Plugin) : AutoCloseable, Listener {
             .apply { screen.exitButton?.let { exitAction(createButton(it, registration)) } }
             .build()
         factory.empty().base(base).type(type)
+    }
+
+    private fun observe(player: Player, phase: String, observation: DialogObservation, screen: PaperDialogScreen = observation.screen, button: String? = null) {
+        val actions = (screen.buttons + listOfNotNull(screen.exitButton)).mapIndexed { index, item -> item.id.value to index }.toMap()
+        val payload = linkedMapOf<String, Any>(
+            "protocol" to 1, "owner" to plugin.name, "surface" to screen.id,
+            "revision" to observation.revision, "visitId" to observation.visitId,
+            "playerId" to player.uniqueId.toString(), "phase" to phase,
+            "buttons" to actions,
+        )
+        button?.let { payload["button"] = it }
+        plugin.server.pluginManager.callEvent(PaperMenuObservationEvent(PaperMenuObservationEvent.Kind.fromPhase(phase), payload))
+    }
+
+    private data class DialogObservation(val visitId: String, val screen: PaperDialogScreen) {
+        val revision: String = buildString {
+            append(screen.id).append('|').append(screen.columns)
+            screen.inputs.forEach { append("|i:").append(it.id.value) }
+            (screen.buttons + listOfNotNull(screen.exitButton)).forEach { append("|b:").append(it.id.value) }
+        }.let { canonical ->
+            MessageDigest.getInstance("SHA-256").digest(canonical.toByteArray(StandardCharsets.UTF_8))
+                .take(6).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        }
     }
 
     private fun createInput(input: PaperDialogTextInput): DialogInput =

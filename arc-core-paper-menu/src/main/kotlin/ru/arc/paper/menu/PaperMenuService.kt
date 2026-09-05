@@ -9,6 +9,7 @@ import org.bukkit.event.Listener
 import org.bukkit.event.inventory.InventoryClickEvent
 import org.bukkit.event.inventory.InventoryCloseEvent
 import org.bukkit.event.inventory.InventoryDragEvent
+import org.bukkit.event.player.PlayerQuitEvent
 import org.bukkit.plugin.Plugin
 import ru.arc.core.TaskScheduler
 import ru.arc.menu.MenuCatalogRepository
@@ -48,7 +49,7 @@ class PaperMenuService(
             session.discardUnopened()
             throw failure
         }
-        sessions.remove(player.uniqueId)?.close()
+        sessions.remove(player.uniqueId)?.close(PaperMenuCloseReason.REPLACE)
         sessions[player.uniqueId] = session
         session.show()
         return session
@@ -66,7 +67,7 @@ class PaperMenuService(
         check(!closed) { "Paper menu service is closed" }
         val active = sessions.values.toList()
         sessions.clear()
-        active.forEach(PaperMenuSession::close)
+        active.forEach { it.close(PaperMenuCloseReason.REPLACE) }
     }
 
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
@@ -87,7 +88,12 @@ class PaperMenuService(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = false)
     fun onClose(event: InventoryCloseEvent) {
         val session = sessions[event.player.uniqueId] ?: return
-        if (event.view.topInventory === session.inventory) session.close()
+        if (event.view.topInventory === session.inventory) session.close(PaperMenuCloseReason.USER)
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = false)
+    fun onQuit(event: PlayerQuitEvent) {
+        sessions[event.player.uniqueId]?.close(PaperMenuCloseReason.QUIT)
     }
 
     override fun close() {
@@ -97,7 +103,7 @@ class PaperMenuService(
         HandlerList.unregisterAll(this)
         val active = sessions.values.toList()
         sessions.clear()
-        active.forEach(PaperMenuSession::close)
+        active.forEach { it.close(PaperMenuCloseReason.SHUTDOWN) }
     }
 
     private fun remove(session: PaperMenuSession) {

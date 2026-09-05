@@ -90,6 +90,8 @@ data class PaperDialogScreen(
     val columns: Int = 1,
     val canCloseWithEscape: Boolean = true,
     val pause: Boolean = false,
+    /** Stable telemetry namespace for this screen; defaults to its action namespace. */
+    val id: String = "dialog",
 ) {
     init {
         require(columns in 1..5) { "Paper dialog columns must be in 1..5" }
@@ -98,5 +100,6 @@ data class PaperDialogScreen(
         require(actionIds.size == actionIds.distinct().size) { "Paper dialog action ids must be unique" }
         val inputIds = inputs.map { it.id }
         require(inputIds.size == inputIds.distinct().size) { "Paper dialog input ids must be unique" }
+        require(id.matches(Regex("[a-z0-9][a-z0-9_.-]{0,63}"))) { "Paper dialog id must be lowercase" }
     }
 }
