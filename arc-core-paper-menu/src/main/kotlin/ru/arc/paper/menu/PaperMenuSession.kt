@@ -176,7 +176,7 @@ class PaperMenuSession internal constructor(
         feedback.state.invalidateForRender()
         tasks.close()
         onClosed(this)
-        observe(PaperMenuObservationEvent.Kind.CLOSE, mapOf("reason" to reason.wire))
+        observe("close", mapOf("reason" to reason.wire))
         if (player.openInventory.topInventory === inventory) player.closeInventory()
         return PaperMenuSessionResult.CLOSED
     }
@@ -191,6 +191,8 @@ class PaperMenuSession internal constructor(
         val content = contentProvider()
         val prepared = prepareContent(content)
         val desiredSlots = desiredSlots(prepared)
+        val actionableChanged = renderedSlots.filterValues { it.entry?.enabled == true }.keys !=
+            desiredSlots.filterValues { it.entry?.enabled == true }.keys
         val pageChanged = prepared.pageState != renderedPageState
         val requiresFullRender =
             !preparedOnce || content.title != renderedTitle || !sameItem(content.background, renderedBackground)
@@ -207,7 +209,7 @@ class PaperMenuSession internal constructor(
         renderedBackground = content.background?.clone()
         renderedSlots = desiredSlots
         renderedPageState = prepared.pageState
-        lastRevision = revision(prepared)
+        lastRevision = revision()
 
         if (requiresFullRender) {
             gui.setTitle(ComponentHolder.of(content.title))
@@ -226,7 +228,7 @@ class PaperMenuSession internal constructor(
 
         changedSlots.forEach { index -> updateSlot(index, desiredSlots[index]) }
         slotUpdateCount += changedSlots.size
-        if (changedSlots.isEmpty() && !pageChanged) return PaperMenuSessionResult.UNCHANGED
+        if (changedSlots.isEmpty() && !pageChanged && !actionableChanged) return PaperMenuSessionResult.UNCHANGED
         observe("render")
         return PaperMenuSessionResult.RENDERED
     }
@@ -321,14 +323,15 @@ class PaperMenuSession internal constructor(
         }
         val context = PaperMenuClickContext(this, player, target, event)
         val transfer = entry.transfer
-        observe("click", mapOf("button" to button))
         if (transfer == null) {
+            observe("click", mapOf("button" to button))
             entry.onClick.handle(context)
         } else if (event.action in SAFE_MENU_TRANSFER_ACTIONS &&
             transfer.handle(context) == PaperMenuTransferDecision.ALLOW
         ) {
+            observe("click", mapOf("button" to button))
             event.isCancelled = false
-        }
+        } else observe("blocked", mapOf("button" to button))
     }
 
     private fun restoreFeedback(token: MenuFeedbackToken) {
@@ -370,7 +373,7 @@ class PaperMenuSession internal constructor(
         plugin.server.pluginManager.callEvent(PaperMenuObservationEvent(PaperMenuObservationEvent.Kind.fromPhase(phase), payload))
     }
 
-    private fun revision(prepared: PreparedContent): String {
+    private fun revision(): String {
         val canonical = buildString {
             append(layout.id).append('|').append(layout.rows)
             layout.elements.toSortedMap(compareBy<MenuElementId> { it.value }).forEach { (id, element) ->
@@ -381,9 +384,6 @@ class PaperMenuSession internal constructor(
                 append("|r:").append(id).append(':').append(region.kind)
                 region.slots.forEach { append(',').append(it.index) }
             }
-            prepared.fixed.keys.filter { layout.elements.getValue(it).kind == MenuElementKind.BUTTON }
-                .sortedBy { it.value }.forEach { append("|a:").append(it) }
-            prepared.regions.keys.sortedBy { it.value }.forEach { append("|g:").append(it) }
         }
         return MessageDigest.getInstance("SHA-256").digest(canonical.toByteArray(StandardCharsets.UTF_8))
             .take(6).joinToString("") { "%02x".format(it.toInt() and 0xff) }
