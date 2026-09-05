@@ -88,7 +88,9 @@ class PaperMenuService(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = false)
     fun onClose(event: InventoryCloseEvent) {
         val session = sessions[event.player.uniqueId] ?: return
-        if (event.view.topInventory === session.inventory) session.close(PaperMenuCloseReason.USER)
+        if (event.view.topInventory === session.inventory) session.close(
+            if (event.reason == InventoryCloseEvent.Reason.PLAYER) PaperMenuCloseReason.USER else PaperMenuCloseReason.CENSORED,
+        )
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = false)

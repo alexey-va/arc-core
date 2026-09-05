@@ -8,6 +8,7 @@ import org.bukkit.event.EventHandler
 import org.bukkit.event.Listener
 import org.bukkit.event.inventory.ClickType
 import org.bukkit.event.inventory.InventoryAction
+import org.bukkit.event.inventory.InventoryCloseEvent
 import org.bukkit.event.player.PlayerQuitEvent
 import ru.arc.core.BukkitTaskScheduler
 import ru.arc.menu.MenuCatalog
@@ -92,8 +93,11 @@ class PaperMenuObservationTest : FreeSpec({
         val observed = paper.observations(plugin)
         val service = PaperMenuService(plugin, repository(), BukkitTaskScheduler(plugin))
         service.open(user, MENU) { content(Material.STONE) }
-        user.closeInventory()
+        paper.callEvent(InventoryCloseEvent(user.openInventory, InventoryCloseEvent.Reason.PLAYER))
         observed.last().getPayload()["reason"] shouldBe "user"
+        service.open(user, MENU) { content(Material.STONE) }
+        paper.callEvent(InventoryCloseEvent(user.openInventory, InventoryCloseEvent.Reason.OPEN_NEW))
+        observed.last().getPayload()["reason"] shouldBe "censored"
         service.open(quit, MENU) { content(Material.STONE) }
         paper.callEvent(PlayerQuitEvent(quit, net.kyori.adventure.text.Component.empty()))
         observed.last().getPayload()["reason"] shouldBe "quit"
