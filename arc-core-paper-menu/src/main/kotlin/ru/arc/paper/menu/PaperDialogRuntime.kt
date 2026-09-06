@@ -32,10 +32,14 @@ import java.util.UUID
  * This deliberately uses one Bukkit event listener instead of Paper callback
  * registrations, whose lifecycle is independent from the dialog on screen.
  */
-class PaperDialogRuntime(private val plugin: Plugin) : AutoCloseable, Listener {
+class PaperDialogRuntime internal constructor(
+    private val plugin: Plugin,
+    private val presenter: ((Player, PaperDialogScreen, PaperDialogSessionRegistration) -> Unit)?,
+) : AutoCloseable, Listener {
+    constructor(plugin: Plugin) : this(plugin, null)
     private val sessions = PaperDialogSessionStore(plugin.name)
     private val observations = mutableMapOf<UUID, DialogObservation>()
-    private data class Visit(val screen: PaperDialogScreen, val reopen: (() -> Unit)?, val onDismiss: () -> Unit)
+    private data class Visit(val screen: PaperDialogScreen, val reopen: (() -> Unit)?, val onDismiss: () -> Unit, val closeOnEscape: Boolean)
     private val history = PaperDialogHistory<Visit>()
     private var dispatching: UUID? = null
     private var closed = false
@@ -52,16 +56,21 @@ class PaperDialogRuntime(private val plugin: Plugin) : AutoCloseable, Listener {
      * A callback transition records a child; an asynchronous completion replaces
      * the current visit. [reopen] refreshes a restored screen's domain state.
      * [onDismiss] must invalidate pending work on both Back and Close.
-     * Escape uses actual history by default; an explicitly closing footer still
+     * Escape uses actual history by default; the explicit closeOnEscape override
      * closes the complete flow. Vanilla Escape itself closes on the client, so
      * unlike ordinary buttons it cannot guarantee mouse-position preservation.
      */
     fun open(player: Player, screen: PaperDialogScreen, reopen: (() -> Unit)?, onDismiss: () -> Unit) {
+        open(player, screen, reopen, onDismiss, false)
+    }
+
+    /** [closeOnEscape] is an explicit user override, independent of a screen's old footer handler. */
+    fun open(player: Player, screen: PaperDialogScreen, reopen: (() -> Unit)?, onDismiss: () -> Unit, closeOnEscape: Boolean) {
         requirePrimaryThread()
         check(!closed) { "Paper dialog runtime is closed" }
 
         val key = if (screen.id == "dialog") screen.title else screen.id
-        history.show(player.uniqueId, key, Visit(screen, reopen, onDismiss), dispatching == player.uniqueId)
+        history.show(player.uniqueId, key, Visit(screen, reopen, onDismiss, closeOnEscape), dispatching == player.uniqueId)
         render(player, screen)
     }
 
@@ -78,8 +87,10 @@ class PaperDialogRuntime(private val plugin: Plugin) : AutoCloseable, Listener {
     private fun render(player: Player, original: PaperDialogScreen) {
         val exit = original.exitButton
         val back = PaperDialogButton(
-            id = exit?.id ?: PaperDialogActionId.of("arc_history_exit"),
-            label = exit?.label ?: Component.translatable("gui.back"),
+            id = exit?.id ?: (0..original.buttons.size).asSequence()
+                .map { PaperDialogActionId.of("arc_history_exit_$it") }
+                .first { candidate -> original.buttons.none { it.id == candidate } },
+            label = if (exit == null || exit.closeDialogBeforeAction) Component.translatable("gui.back") else exit.label,
             tooltip = exit?.tooltip ?: Component.empty(),
             width = exit?.width ?: 200,
             onClick = {
@@ -98,7 +109,9 @@ class PaperDialogRuntime(private val plugin: Plugin) : AutoCloseable, Listener {
                 }
             },
         )
-        val screen = original.copy(exitButton = if (exit?.closeDialogBeforeAction == true) exit else back)
+        val screen = original.copy(exitButton = if (history.current(player.uniqueId)?.closeOnEscape == true) {
+            back.copy(closeDialogBeforeAction = true, label = exit?.label ?: back.label, onClick = {})
+        } else back)
 
         val actions = (screen.buttons + listOfNotNull(screen.exitButton)).associate { button ->
             button.id to {
@@ -117,8 +130,8 @@ class PaperDialogRuntime(private val plugin: Plugin) : AutoCloseable, Listener {
         observations[player.uniqueId] = DialogObservation(visitId, screen)
 
         try {
-            val dialog = createDialog(screen, registration)
-            player.showDialog(dialog)
+            if (presenter != null) presenter.invoke(player, screen, registration)
+            else player.showDialog(createDialog(screen, registration))
             observe(player, "open", observations.getValue(player.uniqueId), screen)
         } catch (failure: Throwable) {
             sessions.remove(player.uniqueId)
@@ -140,6 +153,9 @@ class PaperDialogRuntime(private val plugin: Plugin) : AutoCloseable, Listener {
         observation?.let { observe(player, "click", it, button = action) }
 
         val response = event.dialogResponseView
+        history.updateCurrent(player.uniqueId) { visit ->
+            visit.copy(screen = visit.screen.captureTextInputs { input -> response?.getText(input.value) })
+        }
         // The generated handler reads through this event-owned view immediately.
         currentResponse.set(response)
         val previousDispatch = dispatching
@@ -154,6 +170,7 @@ class PaperDialogRuntime(private val plugin: Plugin) : AutoCloseable, Listener {
 
     @EventHandler
     fun onQuit(event: PlayerQuitEvent) {
+        history.current(event.player.uniqueId)?.onDismiss?.invoke()
         sessions.remove(event.player.uniqueId)
         observations.remove(event.player.uniqueId)
         history.remove(event.player.uniqueId)
@@ -245,3 +262,9 @@ class PaperDialogRuntime(private val plugin: Plugin) : AutoCloseable, Listener {
         val currentResponse = ThreadLocal<DialogResponseView>()
     }
 }
+
+/** Keep typed form values when Back restores an immutable screen snapshot. */
+internal fun PaperDialogScreen.captureTextInputs(read: (PaperDialogInputId) -> String?): PaperDialogScreen =
+    copy(inputs = inputs.map { input ->
+        input.copy(initial = read(input.id)?.take(input.maxLength) ?: input.initial)
+    })

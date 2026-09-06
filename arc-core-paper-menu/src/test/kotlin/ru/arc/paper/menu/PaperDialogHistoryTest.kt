@@ -3,8 +3,24 @@ package ru.arc.paper.menu
 import io.kotest.core.spec.style.FreeSpec
 import io.kotest.matchers.shouldBe
 import java.util.UUID
+import net.kyori.adventure.text.Component
 
 class PaperDialogHistoryTest : FreeSpec({
+    "returning from a preview preserves submitted text rather than the original form value" {
+        val player = UUID.randomUUID()
+        val input = PaperDialogInputId.of("message")
+        val form = PaperDialogScreen(Component.text("Editor"),
+            inputs = listOf(PaperDialogTextInput(input, Component.text("Text"), initial = "Old", maxLength = 12)),
+            buttons = listOf(PaperDialogButton(PaperDialogActionId.of("preview"), Component.text("Preview")) {}))
+        val history = PaperDialogHistory<PaperDialogScreen>()
+        history.show(player, "form", form, false)
+        history.updateCurrent(player) { it.captureTextInputs { "New message" } }
+        history.show(player, "preview", form.copy(title = Component.text("Preview")), true)
+        history.back(player)!!.inputs.single().initial shouldBe "New message"
+        form.captureTextInputs { null }.inputs.single().initial shouldBe "Old"
+        form.captureTextInputs { "x".repeat(100) }.inputs.single().initial shouldBe "x".repeat(12)
+    }
+
     "command entry closes without inventing a semantic parent" {
         val player = UUID.randomUUID()
         val history = PaperDialogHistory<String>()

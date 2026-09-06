@@ -14,6 +14,7 @@ dependencies {
     implementation("commons-lang:commons-lang:2.6")
 
     testImplementation(project(":arc-core-paper-testing"))
+    testImplementation("io.mockk:mockk:1.14.7")
 }
 
 tasks.withType<Test>().configureEach {

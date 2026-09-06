@@ -16,6 +16,12 @@ internal class PaperDialogHistory<T>(private val limit: Int = 64) {
 
     fun current(player: UUID): T? = visits[player]?.lastOrNull()?.value
 
+    fun updateCurrent(player: UUID, update: (T) -> T) {
+        val flow = visits[player] ?: return
+        val current = flow.lastOrNull() ?: return
+        flow[flow.lastIndex] = current.copy(value = update(current.value))
+    }
+
     fun back(player: UUID): T? {
         val flow = visits[player] ?: return null
         flow.removeLastOrNull()

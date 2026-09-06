@@ -81,7 +81,10 @@ and asynchronous replacements do not add history steps; history is bounded to
 `beginFlow(player)` for programmatic command/hotkey roots (calls from an existing
 dialog action deliberately preserve the flow). The four-argument `open` accepts
 a reopener for fresh domain data and an `onDismiss` callback to invalidate async
-work on Back and Close. An explicitly closing footer closes the complete flow.
+work on Back and Close. Pass `closeOnEscape = true` only for an explicit Close preference; a legacy
+footer that closes is not evidence of that preference. Keep non-navigation
+footer actions in the normal button grid. Submitted text inputs are captured
+before dispatch so restoring a form retains the typed values.
 
 Minecraft 1.21.11's `DialogScreen.onClose()` forces `CLOSE`, even when
 `after_action=none`: unlike normal buttons, Escape followed by a server reply
