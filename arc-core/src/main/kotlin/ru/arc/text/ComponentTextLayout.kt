@@ -26,14 +26,17 @@ sealed interface TextLayoutResult {
  * interaction. No player state, IO or client-font guessing. Unsupported content
  * produces a typed failure, never a partially rendered result.
  *
- * The pack must define U+E000..U+E009 in [spacerFont] with advances 1,2,..512.
+ * [spacing] selects existing pack glyphs; the engine creates no font resources.
  * Consumers subtract widget padding from their width and handle unsupported text
  * explicitly (for example, show its original centered component).
  */
 class ComponentTextLayout(
     private val widths: GlyphWidths,
-    private val spacerFont: Key,
+    private val spacing: PixelSpacing,
 ) {
+    /** Binary-compatible 2.7.0 entry point; new consumers should select [PixelSpacing] explicitly. */
+    constructor(widths: GlyphWidths, spacerFont: Key) : this(widths, PixelSpacing(spacerFont, 0xE000))
+
     private data class Glyph(val point: Int, val style: Style, val width: Int)
 
     fun layout(text: Component, width: Int, alignment: TextAlignment): TextLayoutResult {
@@ -113,7 +116,7 @@ class ComponentTextLayout(
                 TextAlignment.CENTER -> remainder / 2
                 TextAlignment.RIGHT -> remainder
             }
-            output.append(spaces(left))
+            output.append(spacing.padding(left))
             var runStyle: Style? = null
             val run = StringBuilder()
             fun flush() {
@@ -125,17 +128,8 @@ class ComponentTextLayout(
                 run.appendCodePoint(glyph.point)
             }
             flush()
-            output.append(spaces(remainder - left))
+            output.append(spacing.padding(remainder - left))
         }
         return TextLayoutResult.Aligned(output.build(), lines.size, width)
-    }
-
-    private fun spaces(width: Int): Component {
-        if (width == 0) return Component.empty()
-        val text = buildString {
-            for (bit in 9 downTo 0) if ((width and (1 shl bit)) != 0) append((0xE000 + bit).toChar())
-        }
-        return Component.text(text).font(spacerFont)
-            .decorations(TextDecoration.values().associateWith { TextDecoration.State.FALSE })
     }
 }
