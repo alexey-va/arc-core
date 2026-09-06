@@ -12,12 +12,14 @@ import io.papermc.paper.registry.data.dialog.input.DialogInput
 import io.papermc.paper.registry.data.dialog.type.DialogType
 import net.kyori.adventure.key.Key
 import net.kyori.adventure.nbt.api.BinaryTagHolder
+import net.kyori.adventure.text.Component
 import org.bukkit.Bukkit
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
 import org.bukkit.event.HandlerList
 import org.bukkit.event.Listener
 import org.bukkit.event.player.PlayerQuitEvent
+import org.bukkit.event.player.PlayerCommandPreprocessEvent
 import org.bukkit.plugin.Plugin
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
@@ -33,6 +35,9 @@ import java.util.UUID
 class PaperDialogRuntime(private val plugin: Plugin) : AutoCloseable, Listener {
     private val sessions = PaperDialogSessionStore(plugin.name)
     private val observations = mutableMapOf<UUID, DialogObservation>()
+    private data class Visit(val screen: PaperDialogScreen, val reopen: (() -> Unit)?, val onDismiss: () -> Unit)
+    private val history = PaperDialogHistory<Visit>()
+    private var dispatching: UUID? = null
     private var closed = false
 
     init {
@@ -40,12 +45,68 @@ class PaperDialogRuntime(private val plugin: Plugin) : AutoCloseable, Listener {
     }
 
     fun open(player: Player, screen: PaperDialogScreen) {
+        open(player, screen, null, {})
+    }
+
+    /**
+     * A callback transition records a child; an asynchronous completion replaces
+     * the current visit. [reopen] refreshes a restored screen's domain state.
+     * [onDismiss] must invalidate pending work on both Back and Close.
+     * Escape uses actual history by default; an explicitly closing footer still
+     * closes the complete flow. Vanilla Escape itself closes on the client, so
+     * unlike ordinary buttons it cannot guarantee mouse-position preservation.
+     */
+    fun open(player: Player, screen: PaperDialogScreen, reopen: (() -> Unit)?, onDismiss: () -> Unit) {
         requirePrimaryThread()
         check(!closed) { "Paper dialog runtime is closed" }
 
+        val key = if (screen.id == "dialog") screen.title else screen.id
+        history.show(player.uniqueId, key, Visit(screen, reopen, onDismiss), dispatching == player.uniqueId)
+        render(player, screen)
+    }
+
+    /** Start a command/hotkey entry with no invented ancestors; internal actions keep their flow. */
+    fun beginFlow(player: Player) {
+        requirePrimaryThread()
+        if (dispatching == player.uniqueId) return
+        history.current(player.uniqueId)?.onDismiss?.invoke()
+        history.remove(player.uniqueId)
+        sessions.remove(player.uniqueId)
+        observations.remove(player.uniqueId)
+    }
+
+    private fun render(player: Player, original: PaperDialogScreen) {
+        val exit = original.exitButton
+        val back = PaperDialogButton(
+            id = exit?.id ?: PaperDialogActionId.of("arc_history_exit"),
+            label = exit?.label ?: Component.translatable("gui.back"),
+            tooltip = exit?.tooltip ?: Component.empty(),
+            width = exit?.width ?: 200,
+            onClick = {
+                history.current(player.uniqueId)?.onDismiss?.invoke()
+                val previous = history.back(player.uniqueId)
+                if (previous == null) {
+                    player.closeDialog()
+                } else {
+                    // A return is a replacement, never another forward visit.
+                    val actionOwner = dispatching
+                    dispatching = null
+                    try {
+                        if (previous.reopen != null) previous.reopen.invoke()
+                        else render(player, previous.screen)
+                    } finally { dispatching = actionOwner }
+                }
+            },
+        )
+        val screen = original.copy(exitButton = if (exit?.closeDialogBeforeAction == true) exit else back)
+
         val actions = (screen.buttons + listOfNotNull(screen.exitButton)).associate { button ->
             button.id to {
-                if (button.closeDialogBeforeAction) player.closeDialog()
+                if (button.closeDialogBeforeAction) {
+                    history.current(player.uniqueId)?.onDismiss?.invoke()
+                    history.remove(player.uniqueId)
+                    player.closeDialog()
+                }
                 button.onClick.handle(
                     PaperDialogClickContext(player) { input -> currentResponse.get()?.getText(input.value) },
                 )
@@ -62,6 +123,7 @@ class PaperDialogRuntime(private val plugin: Plugin) : AutoCloseable, Listener {
         } catch (failure: Throwable) {
             sessions.remove(player.uniqueId)
             observations.remove(player.uniqueId)
+            history.remove(player.uniqueId)
             throw failure
         }
     }
@@ -80,9 +142,12 @@ class PaperDialogRuntime(private val plugin: Plugin) : AutoCloseable, Listener {
         val response = event.dialogResponseView
         // The generated handler reads through this event-owned view immediately.
         currentResponse.set(response)
+        val previousDispatch = dispatching
+        dispatching = player.uniqueId
         try {
             handler()
         } finally {
+            dispatching = previousDispatch
             currentResponse.remove()
         }
     }
@@ -91,7 +156,11 @@ class PaperDialogRuntime(private val plugin: Plugin) : AutoCloseable, Listener {
     fun onQuit(event: PlayerQuitEvent) {
         sessions.remove(event.player.uniqueId)
         observations.remove(event.player.uniqueId)
+        history.remove(event.player.uniqueId)
     }
+
+    @EventHandler(ignoreCancelled = true)
+    fun onCommand(event: PlayerCommandPreprocessEvent) { beginFlow(event.player) }
 
     override fun close() {
         requirePrimaryThread()
@@ -99,6 +168,7 @@ class PaperDialogRuntime(private val plugin: Plugin) : AutoCloseable, Listener {
         closed = true
         sessions.clear()
         observations.clear()
+        history.clear()
         HandlerList.unregisterAll(this)
     }
 

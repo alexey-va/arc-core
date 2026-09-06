@@ -70,9 +70,25 @@ The runtime registers one `PlayerCustomClickEvent` listener. Opening a new
 screen replaces the player's previous registration; the action key contains a
 fresh nonce, is matched to that player, and is consumed before its handler runs.
 Old, foreign, duplicate, and post-shutdown clicks therefore do nothing. The
-runtime closes the visible dialog before calling feature code, so a handler may
-safely open the next screen. Input and action IDs are bounded and validated
+runtime keeps the visible dialog open for normal navigation (`afterAction=NONE`)
+and closes it only for `closeDialogBeforeAction`. Input and action IDs are bounded and validated
 before a native dialog is shown.
+
+Escape and the native Back footer follow actual visits, not the consumer's
+hard-coded hierarchy. A root with no previous visit closes. Same-page refreshes
+and asynchronous replacements do not add history steps; history is bounded to
+64 visits per player. Direct player commands clear the old flow. Call
+`beginFlow(player)` for programmatic command/hotkey roots (calls from an existing
+dialog action deliberately preserve the flow). The four-argument `open` accepts
+a reopener for fresh domain data and an `onDismiss` callback to invalidate async
+work on Back and Close. An explicitly closing footer closes the complete flow.
+
+Minecraft 1.21.11's `DialogScreen.onClose()` forces `CLOSE`, even when
+`after_action=none`: unlike normal buttons, Escape followed by a server reply
+can recenter the cursor. This is a client limitation, not a server cursor API.
+An inline client `show_dialog` avoids that close but does not acknowledge the
+navigation to the server and is not a safe replacement for dynamic menus with
+pending updates. Do not claim physical cursor preservation from server tests.
 
 Do not use per-button Paper callback registrations for lifecycle-owned plugin
 dialogs. Do not put raw commands into dialog YAML. Re-resolve and authorize the
