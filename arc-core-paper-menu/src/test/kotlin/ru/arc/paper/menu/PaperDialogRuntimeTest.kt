@@ -5,20 +5,54 @@ import io.kotest.matchers.shouldBe
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import io.mockk.spyk
+import io.mockk.just
+import io.mockk.Runs
 import io.papermc.paper.connection.PlayerGameConnection
 import io.papermc.paper.event.player.PlayerCustomClickEvent
 import net.kyori.adventure.key.Key
 import net.kyori.adventure.text.Component
-import org.bukkit.entity.Player
 import org.bukkit.event.player.PlayerCommandPreprocessEvent
 import ru.arc.paper.testing.MockBukkitTestRuntime
-import java.util.UUID
 
 class PaperDialogRuntimeTest : FreeSpec({
+    "information screens have only a working history footer and no invented grid action" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val player = spyk(paper.addPlayer("InfoTester"))
+            every { player.closeDialog() } just Runs
+            lateinit var displayed: PaperDialogScreen
+            lateinit var registration: PaperDialogSessionRegistration
+            PaperDialogRuntime(paper.createSimplePlugin("DialogInfo")) { _, screen, registered ->
+                displayed = screen
+                registration = registered
+            }.use { runtime ->
+                for (customFooter in listOf(false, true)) {
+                    runtime.beginFlow(player)
+                    runtime.open(player, PaperDialogScreen(Component.text("Information"), buttons = emptyList(),
+                        exitButton = if (customFooter) PaperDialogButton(PaperDialogActionId.of("back"), Component.text("Back")) {
+                            error("Semantic footer must be replaced by actual history")
+                        } else null))
+                    displayed.buttons shouldBe emptyList()
+                    val footer = requireNotNull(displayed.exitButton)
+                    registration.actions.size shouldBe 1
+                    val connection = mockk<PlayerGameConnection> { every { this@mockk.player } returns player }
+                    runtime.onCustomClick(mockk {
+                        every { commonConnection } returns connection
+                        every { identifier } returns Key.key(registration.key(footer.id))
+                        every { dialogResponseView } returns null
+                    })
+                }
+                verify(exactly = 2) { player.closeDialog() }
+                runtime.close(player)
+                verify(exactly = 2) { player.closeDialog() }
+            }
+        }
+    }
+
     "actual history refreshes its parent, invalidates pending work and ends at the command entry" {
         MockBukkitTestRuntime.open().use { paper ->
-            val player = mockk<Player>(relaxed = true)
-            every { player.uniqueId } returns UUID.randomUUID()
+            val player = spyk(paper.addPlayer("DialogTester"))
+            every { player.closeDialog() } just Runs
             val connection = mockk<PlayerGameConnection> { every { this@mockk.player } returns player }
             lateinit var displayed: PaperDialogScreen
             lateinit var registration: PaperDialogSessionRegistration
@@ -51,6 +85,7 @@ class PaperDialogRuntimeTest : FreeSpec({
                         }), exitButton = button("back") { semanticParentCalls++ }),
                         ::root, { dismissed++ })
                 }
+                runtime.beginFlow(player)
                 root()
                 click("settings")
                 value = 60
@@ -62,6 +97,7 @@ class PaperDialogRuntimeTest : FreeSpec({
                 verify(exactly = 1) { player.closeDialog() }
                 dismissed shouldBe 2
 
+                runtime.beginFlow(player)
                 root()
                 click("settings")
                 runtime.onCommand(PlayerCommandPreprocessEvent(player, "/settings"))
@@ -71,6 +107,7 @@ class PaperDialogRuntimeTest : FreeSpec({
                 verify(exactly = 2) { player.closeDialog() }
                 semanticParentCalls shouldBe 0
 
+                runtime.beginFlow(player)
                 root()
                 click("settings")
                 runtime.open(player, displayed, null, {}, true)

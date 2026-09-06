@@ -21,6 +21,8 @@ import org.bukkit.event.Listener
 import org.bukkit.event.player.PlayerQuitEvent
 import org.bukkit.event.player.PlayerCommandPreprocessEvent
 import org.bukkit.plugin.Plugin
+import org.bukkit.event.server.PluginDisableEvent
+import org.bukkit.metadata.FixedMetadataValue
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.UUID
@@ -39,9 +41,12 @@ class PaperDialogRuntime internal constructor(
     constructor(plugin: Plugin) : this(plugin, null)
     private val sessions = PaperDialogSessionStore(plugin.name)
     private val observations = mutableMapOf<UUID, DialogObservation>()
-    private data class Visit(val screen: PaperDialogScreen, val reopen: (() -> Unit)?, val onDismiss: () -> Unit, val closeOnEscape: Boolean)
-    private val history = PaperDialogHistory<Visit>()
-    private var dispatching: UUID? = null
+    private class Visit(var screen: PaperDialogScreen, val reopen: (() -> Unit)?, val onDismiss: () -> Unit, val closeOnEscape: Boolean) {
+        var dismissed = false
+    }
+    private val owner = UUID.randomUUID().toString()
+    private val currentVisits = mutableMapOf<UUID, Visit>()
+    private val players = mutableMapOf<UUID, Player>()
     private var closed = false
 
     init {
@@ -55,7 +60,10 @@ class PaperDialogRuntime internal constructor(
     /**
      * A callback transition records a child; an asynchronous completion replaces
      * the current visit. [reopen] refreshes a restored screen's domain state.
-     * [onDismiss] must invalidate pending work on both Back and Close.
+     * [onDismiss] must invalidate pending work on Back, Close and root reset.
+     * It is not called on forward navigation or same-page refresh. Async opens
+     * cannot replace a foreign owner's screen or resurrect a closed flow; the
+     * consumer must still guard stale generations within its own domain.
      * Escape uses actual history by default; the explicit closeOnEscape override
      * closes the complete flow. Vanilla Escape itself closes on the client, so
      * unlike ordinary buttons it cannot guarantee mouse-position preservation.
@@ -67,21 +75,77 @@ class PaperDialogRuntime internal constructor(
     /** [closeOnEscape] is an explicit user override, independent of a screen's old footer handler. */
     fun open(player: Player, screen: PaperDialogScreen, reopen: (() -> Unit)?, onDismiss: () -> Unit, closeOnEscape: Boolean) {
         requirePrimaryThread()
-        check(!closed) { "Paper dialog runtime is closed" }
-
-        val key = if (screen.id == "dialog") screen.title else screen.id
-        history.show(player.uniqueId, key, Visit(screen, reopen, onDismiss, closeOnEscape), dispatching == player.uniqueId)
+        if (closed || !player.isOnline) return // Ignore late completions after shutdown or quit.
+        val history = history(player)!!
+        val visit = Visit(screen, reopen, onDismiss, closeOnEscape)
+        val key = if (screen.id == "dialog") screen.title.toString() else screen.id
+        if (!history.show(owner, key,
+                Runnable { deactivate(player, visit) },
+                Runnable { dismiss(player, visit) },
+                Runnable {
+                    if (!closed) {
+                        currentVisits[player.uniqueId] = visit
+                        if (visit.reopen != null) visit.reopen.invoke() else render(player, visit.screen)
+                    }
+                })) return
+        currentVisits[player.uniqueId] = visit
         render(player, screen)
     }
 
-    /** Start a command/hotkey entry with no invented ancestors; internal actions keep their flow. */
+    /**
+     * Start a command/hotkey entry with no invented ancestors. Calls made inside
+     * any participating plugin's dialog action or Back restoration keep the flow.
+     * Call this before asynchronous root loading; a closed flow rejects late open.
+     */
     fun beginFlow(player: Player) {
         requirePrimaryThread()
-        if (dispatching == player.uniqueId) return
-        history.current(player.uniqueId)?.onDismiss?.invoke()
-        history.remove(player.uniqueId)
+        if (!closed && player.isOnline) history(player)!!.beginFlow(owner)
+    }
+
+    /**
+     * Close the player's complete flow if this runtime owns the visible screen.
+     * An inactive owner only discards its own ancestors and cannot close a
+     * different plugin's screen. Main thread only; safe to call repeatedly.
+     */
+    fun close(player: Player) {
+        requirePrimaryThread()
+        val history = history(player, create = false) ?: return
+        if (history.entryOwner == owner) {
+            history.clear()
+            player.closeDialog()
+        } else history.removeOwner(owner)
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun history(player: Player, create: Boolean = true): PaperDialogHistory? {
+        val existing = player.getMetadata(HISTORY_METADATA_KEY).asSequence()
+            .mapNotNull { it.value() as? MutableMap<*, *> }
+            .firstOrNull { it["schema"] == 1 } as? MutableMap<String, Any>
+        val state = existing ?: if (create) java.util.HashMap<String, Any>().apply { put("schema", 1) } else return null
+        if (create) {
+            // Every participant keeps a metadata handle under its own plugin,
+            // so removal of the first owner's value does not lose foreign visits.
+            player.setMetadata(HISTORY_METADATA_KEY, FixedMetadataValue(plugin, state))
+            players[player.uniqueId] = player
+        }
+        return PaperDialogHistory(state)
+    }
+
+    private fun deactivate(player: Player, visit: Visit) {
+        if (currentVisits[player.uniqueId] !== visit) return
+        currentVisits.remove(player.uniqueId)
         sessions.remove(player.uniqueId)
         observations.remove(player.uniqueId)
+    }
+
+    private fun dismiss(player: Player, visit: Visit) {
+        deactivate(player, visit)
+        if (visit.dismissed) return
+        visit.dismissed = true
+        try { visit.onDismiss() }
+        catch (failure: Exception) {
+            plugin.logger.log(java.util.logging.Level.WARNING, "Dialog dismissal failed for ${visit.screen.id}", failure)
+        }
     }
 
     private fun render(player: Player, original: PaperDialogScreen) {
@@ -94,31 +158,17 @@ class PaperDialogRuntime internal constructor(
             tooltip = exit?.tooltip ?: Component.empty(),
             width = exit?.width ?: 200,
             onClick = {
-                history.current(player.uniqueId)?.onDismiss?.invoke()
-                val previous = history.back(player.uniqueId)
-                if (previous == null) {
-                    player.closeDialog()
-                } else {
-                    // A return is a replacement, never another forward visit.
-                    val actionOwner = dispatching
-                    dispatching = null
-                    try {
-                        if (previous.reopen != null) previous.reopen.invoke()
-                        else render(player, previous.screen)
-                    } finally { dispatching = actionOwner }
-                }
+                if (history(player, create = false)?.back() != true) player.closeDialog()
             },
         )
-        val screen = original.copy(exitButton = if (history.current(player.uniqueId)?.closeOnEscape == true) {
+        val screen = original.copy(exitButton = if (currentVisits[player.uniqueId]?.closeOnEscape == true) {
             back.copy(closeDialogBeforeAction = true, label = exit?.label ?: back.label, onClick = {})
         } else back)
 
         val actions = (screen.buttons + listOfNotNull(screen.exitButton)).associate { button ->
             button.id to {
                 if (button.closeDialogBeforeAction) {
-                    history.current(player.uniqueId)?.onDismiss?.invoke()
-                    history.remove(player.uniqueId)
-                    player.closeDialog()
+                    close(player)
                 }
                 button.onClick.handle(
                     PaperDialogClickContext(player) { input -> currentResponse.get()?.getText(input.value) },
@@ -136,7 +186,7 @@ class PaperDialogRuntime internal constructor(
         } catch (failure: Throwable) {
             sessions.remove(player.uniqueId)
             observations.remove(player.uniqueId)
-            history.remove(player.uniqueId)
+            history(player, create = false)?.clear()
             throw failure
         }
     }
@@ -147,45 +197,58 @@ class PaperDialogRuntime internal constructor(
         if (closed) return
         val connection = event.commonConnection as? PlayerGameConnection ?: return
         val player = connection.player
+        val history = history(player, create = false) ?: return
+        if (history.owner != owner) return
         val handler = sessions.consume(player.uniqueId, event.identifier.asString()) ?: return
         val observation = observations.remove(player.uniqueId)
         val action = event.identifier.asString().substringAfterLast('/')
         observation?.let { observe(player, "click", it, button = action) }
 
         val response = event.dialogResponseView
-        history.updateCurrent(player.uniqueId) { visit ->
-            visit.copy(screen = visit.screen.captureTextInputs { input -> response?.getText(input.value) })
+        currentVisits[player.uniqueId]?.let { visit ->
+            visit.screen = visit.screen.captureTextInputs { input -> response?.getText(input.value) }
         }
         // The generated handler reads through this event-owned view immediately.
+        val previousResponse = currentResponse.get()
         currentResponse.set(response)
-        val previousDispatch = dispatching
-        dispatching = player.uniqueId
-        try {
-            handler()
-        } finally {
-            dispatching = previousDispatch
-            currentResponse.remove()
+        try { history.dispatch(handler) }
+        finally {
+            if (previousResponse == null) currentResponse.remove() else currentResponse.set(previousResponse)
         }
     }
 
     @EventHandler
     fun onQuit(event: PlayerQuitEvent) {
-        history.current(event.player.uniqueId)?.onDismiss?.invoke()
+        history(event.player, create = false)?.clear()
         sessions.remove(event.player.uniqueId)
         observations.remove(event.player.uniqueId)
-        history.remove(event.player.uniqueId)
+        currentVisits.remove(event.player.uniqueId)
+        players.remove(event.player.uniqueId)
+        event.player.removeMetadata(HISTORY_METADATA_KEY, plugin)
     }
 
     @EventHandler(ignoreCancelled = true)
-    fun onCommand(event: PlayerCommandPreprocessEvent) { beginFlow(event.player) }
+    fun onCommand(event: PlayerCommandPreprocessEvent) {
+        if (!closed) history(event.player, create = false)?.beginFlow()
+    }
+
+    @EventHandler
+    fun onPluginDisable(event: PluginDisableEvent) {
+        if (event.plugin === plugin) close()
+    }
 
     override fun close() {
         requirePrimaryThread()
         if (closed) return
         closed = true
+        players.values.toList().forEach { player ->
+            close(player)
+            player.removeMetadata(HISTORY_METADATA_KEY, plugin)
+        }
+        players.clear()
+        currentVisits.clear()
         sessions.clear()
         observations.clear()
-        history.clear()
         HandlerList.unregisterAll(this)
     }
 
@@ -202,7 +265,11 @@ class PaperDialogRuntime internal constructor(
             .inputs(screen.inputs.map(::createInput))
             .build()
         val buttons = screen.buttons.map { createButton(it, registration) }
-        val type = DialogType.multiAction(buttons)
+        // Paper 1.21.11 rejects an empty multiAction grid. Informational and
+        // loading screens use a native notice with the same history footer.
+        val type = if (buttons.isEmpty()) {
+            DialogType.notice(createButton(requireNotNull(screen.exitButton), registration))
+        } else DialogType.multiAction(buttons)
             .columns(screen.columns)
             .apply { screen.exitButton?.let { exitAction(createButton(it, registration)) } }
             .build()
@@ -259,6 +326,7 @@ class PaperDialogRuntime internal constructor(
     }
 
     private companion object {
+        const val HISTORY_METADATA_KEY = "arc:paper_dialog_history:v1"
         val currentResponse = ThreadLocal<DialogResponseView>()
     }
 }

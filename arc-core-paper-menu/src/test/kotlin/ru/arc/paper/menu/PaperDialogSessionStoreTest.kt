@@ -38,6 +38,16 @@ class PaperDialogSessionStoreTest : FreeSpec({
         store.size shouldBe 1
     }
 
+    "a new runtime instance never accepts an old nonce in the same namespace" {
+        val player = UUID.randomUUID()
+        val action = PaperDialogActionId.of("open")
+        val first = PaperDialogSessionStore("arc").replace(player, mapOf(action to {}))
+        val replacement = PaperDialogSessionStore("arc")
+        val current = replacement.replace(player, mapOf(action to {}))
+        replacement.consume(player, first.key(action)) shouldBe null
+        (replacement.consume(player, current.key(action)) != null) shouldBe true
+    }
+
     "validates identifiers used in native dialog keys" {
         PaperDialogActionId.of("member_add").value shouldBe "member_add"
         PaperDialogInputId.of("player_name").value shouldBe "player_name"

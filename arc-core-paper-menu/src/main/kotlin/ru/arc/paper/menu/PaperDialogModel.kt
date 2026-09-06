@@ -95,7 +95,6 @@ data class PaperDialogScreen(
 ) {
     init {
         require(columns in 1..5) { "Paper dialog columns must be in 1..5" }
-        require(buttons.isNotEmpty()) { "Paper dialog must contain at least one action button" }
         val actionIds = (buttons + listOfNotNull(exitButton)).map { it.id }
         require(actionIds.size == actionIds.distinct().size) { "Paper dialog action ids must be unique" }
         val inputIds = inputs.map { it.id }

@@ -5,6 +5,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 internal class PaperDialogSessionStore(namespace: String) {
     private val namespace = namespace.lowercase().replace(Regex("[^a-z0-9_.-]"), "_")
+    private val instance = UUID.randomUUID().toString()
     private val sequence = AtomicLong()
     private val sessions = mutableMapOf<UUID, PaperDialogSessionRegistration>()
 
@@ -20,7 +21,7 @@ internal class PaperDialogSessionStore(namespace: String) {
         playerId: UUID,
         actions: Map<PaperDialogActionId, () -> Unit>,
     ): PaperDialogSessionRegistration {
-        val nonce = sequence.incrementAndGet().toString(36)
+        val nonce = "$instance-${sequence.incrementAndGet().toString(36)}"
         return PaperDialogSessionRegistration(namespace, nonce, actions).also { sessions[playerId] = it }
     }
 

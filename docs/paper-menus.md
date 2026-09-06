@@ -42,6 +42,7 @@ val dialogs = PaperDialogRuntime(plugin)
 val nameInput = PaperDialogInputId.of("land_name")
 
 fun openCreate(player: Player) {
+    dialogs.beginFlow(player)
     dialogs.open(
         player,
         PaperDialogScreen(
@@ -77,16 +78,42 @@ before a native dialog is shown.
 Escape and the native Back footer follow actual visits, not the consumer's
 hard-coded hierarchy. A root with no previous visit closes. Same-page refreshes
 and asynchronous replacements do not add history steps; history is bounded to
-64 visits per player. Direct player commands clear the old flow. Call
+64 visits per player. Since core 2.7.4 the route is shared across participating
+plugins, including independently shaded core classloaders. Player metadata uses
+a versioned JDK-only collection/Runnable boundary; screen DTOs stay in the owning
+plugin. Every participant holds its own metadata handle so unloading an inactive
+parent cannot discard another plugin's active screen.
+
+Direct player commands clear the old flow. Call
 `beginFlow(player)` for programmatic command/hotkey roots (calls from an existing
-dialog action deliberately preserve the flow). The four-argument `open` accepts
+dialog action or a Back reopener deliberately preserve the flow). Call it before
+starting asynchronous root loading, and show a loading screen synchronously for
+child navigation. Later completions replace that visit. Async `open` cannot
+replace a foreign owner's screen or resurrect a closed flow. Consumers still
+must reject obsolete domain generations within their own runtime.
+
+The four-argument `open` accepts
 a reopener for fresh domain data and an `onDismiss` callback to invalidate async
-work on Back and Close. Pass `closeOnEscape = true` only for an explicit Close preference; a legacy
+work on Back, Close and root reset. Forward transitions and same-page refreshes
+only deactivate the old click session; they do not call `onDismiss`, because the
+consumer may already have started the new domain generation. Pass `closeOnEscape = true` only for an explicit Close preference; a legacy
 footer that closes is not evidence of that preference. Keep non-navigation
 footer actions in the normal button grid. Submitted text inputs are captured
 before dispatch so restoring a form retains the typed values.
 
-Minecraft 1.21.11's `DialogScreen.onClose()` forces `CLOSE`, even when
+`close(player)` closes the whole flow when this runtime owns the current screen
+(or pending root). An inactive runtime only removes its own ancestors. Quit and
+plugin disable dispose owned callbacks and metadata; late opens on a closed
+runtime are ignored. Create one runtime per plugin lifecycle and always call
+`close()` on shutdown; the runtime also listens for its own plugin-disable event.
+
+Informational and loading screens may use `buttons = emptyList()`. The runtime
+always adds a history footer. Paper 1.21.11's
+[`MultiActionTypeImpl.BuilderImpl`](https://github.com/PaperMC/Paper/blob/ver/1.21.11/paper-server/src/main/java/io/papermc/paper/registry/data/dialog/type/MultiActionTypeImpl.java)
+rejects an empty grid, so the runtime renders these screens as a native
+`DialogType.notice(footer)`, without an invented grid action.
+
+Minecraft 1.21.11 and 26.2's `DialogScreen.onClose()` forces `CLOSE`, even when
 `after_action=none`: unlike normal buttons, Escape followed by a server reply
 can recenter the cursor. This is a client limitation, not a server cursor API.
 An inline client `show_dialog` avoids that close but does not acknowledge the
