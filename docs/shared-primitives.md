@@ -15,6 +15,7 @@ CI verifier reject missing modules and high-signal local duplicates.
 
 | Need | Module and API | Contract |
 |------|----------------|----------|
+| Measured component alignment | `arc-core`: `ComponentTextLayout`, `GlyphWidths`, `TextAlignment` | [Contract and example](component-text-layout.md). Verified font advances, bounded wrapping, preserved text events and inert spacer glyphs. Handle typed unsupported results; subtract widget padding and verify the loaded pack and client pixels. |
 | Additive bundled config upgrade | `arc-core`: `Config.mergeMissingFromBundled` | Copy only missing mapping entries recursively, preserve operator and unknown values, optionally exclude environment-owned root sections, persist atomically, and leave explicit type conflicts for feature validation. |
 | Player/backend identifiers at a network boundary | `arc-core`: `NetworkPlayerName`, `BackendServerId` | Validate once, then pass the typed value. Widen the explicit policy only for a verified external namespace. |
 | Reload-safe scheduled work | `arc-core`: `LifecycleTaskScope`, `whenCompleteSync` | One scope owns one lifecycle. `restart()` cancels old work and stale epoch tokens cannot schedule or execute work. |
