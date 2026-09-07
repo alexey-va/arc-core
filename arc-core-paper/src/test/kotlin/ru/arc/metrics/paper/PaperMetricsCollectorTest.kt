@@ -4,6 +4,7 @@ import io.kotest.core.spec.style.FreeSpec
 import io.kotest.matchers.doubles.shouldBeExactly
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import org.bukkit.Server
 import org.bukkit.World
 import org.bukkit.entity.SpawnCategory
@@ -64,6 +65,10 @@ class PaperMetricsCollectorTest :
             heavy.point("arc_paper_world_entities", "world", "survival") shouldBeExactly 321.0
             heavy.point("arc_paper_world_loaded_chunks", "world", "survival") shouldBeExactly 44.0
             heavy.point("arc_loaded_chunks_total") shouldBeExactly 44.0
+            verify(exactly = 1) { world.chunkCount }
+            verify(exactly = 1) { world.entityCount }
+            verify(exactly = 1) { world.tileEntityCount }
+            verify(exactly = 1) { world.tickableTileEntityCount }
         }
     })
 

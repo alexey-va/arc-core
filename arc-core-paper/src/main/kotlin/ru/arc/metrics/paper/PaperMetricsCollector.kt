@@ -59,21 +59,29 @@ class PaperMetricsCollector(
 
             for (world in server.worlds) {
                 val tags = mapOf("world" to world.name)
-                chunks += world.chunkCount
-                entities += world.entityCount
-                tileEntities += world.tileEntityCount
-                tickableTileEntities += world.tickableTileEntityCount
+                // These Bukkit counters can walk Paper's chunk system. Read each
+                // once and reuse it for both the per-world and aggregate gauges.
+                val worldChunks = world.chunkCount
+                val worldEntities = world.entityCount
+                val worldTileEntities = world.tileEntityCount
+                val worldTickableTileEntities = world.tickableTileEntityCount
+                val worldPlayers = world.players.size
+                val worldForceLoadedChunks = world.forceLoadedChunks.size
+                chunks += worldChunks
+                entities += worldEntities
+                tileEntities += worldTileEntities
+                tickableTileEntities += worldTickableTileEntities
 
                 add(point("arc_paper_world_info", "Loaded Paper world", 1.0, tags + ("environment" to world.environment.name.lowercase())))
-                add(point("arc_paper_world_players", "Players in a world", world.players.size.toDouble(), tags))
-                add(point("arc_paper_world_entities", "Entities in a world", world.entityCount.toDouble(), tags))
-                add(point("arc_paper_world_loaded_chunks", "Loaded chunks in a world", world.chunkCount.toDouble(), tags))
-                add(point("arc_paper_world_tile_entities", "Block entities in a world", world.tileEntityCount.toDouble(), tags))
+                add(point("arc_paper_world_players", "Players in a world", worldPlayers.toDouble(), tags))
+                add(point("arc_paper_world_entities", "Entities in a world", worldEntities.toDouble(), tags))
+                add(point("arc_paper_world_loaded_chunks", "Loaded chunks in a world", worldChunks.toDouble(), tags))
+                add(point("arc_paper_world_tile_entities", "Block entities in a world", worldTileEntities.toDouble(), tags))
                 add(
                     point(
                         "arc_paper_world_tickable_tile_entities",
                         "Ticking block entities in a world",
-                        world.tickableTileEntityCount.toDouble(),
+                        worldTickableTileEntities.toDouble(),
                         tags,
                     ),
                 )
@@ -81,7 +89,7 @@ class PaperMetricsCollector(
                     point(
                         "arc_paper_world_force_loaded_chunks",
                         "Force-loaded chunks in a world",
-                        world.forceLoadedChunks.size.toDouble(),
+                        worldForceLoadedChunks.toDouble(),
                         tags,
                     ),
                 )

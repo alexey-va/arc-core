@@ -10,6 +10,7 @@ import ru.arc.core.repeatingAsync
 import java.nio.file.Path
 import java.time.Clock
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -29,11 +30,15 @@ class ArcMetricsRuntime(
     private val coreCollector = JvmSystemMetricsCollector(dataPath)
     private val moduleCollector = ModuleMetricsCollector()
     private val failures = ConcurrentHashMap<String, Counter>()
+    private val registeredMeters = AtomicInteger()
     private var httpServer: MetricsHttpServer? = null
     private var fastTask: ScheduledTask? = null
     private var heavyTask: ScheduledTask? = null
 
     init {
+        registry.config()
+            .onMeterAdded { registeredMeters.incrementAndGet() }
+            .onMeterRemoved { registeredMeters.decrementAndGet() }
         registry.config().commonTags(
             Tags.of(
                 "application",
@@ -152,7 +157,7 @@ class ArcMetricsRuntime(
                 MetricPoint(
                     "arc_metrics_registered_meters",
                     "Meters registered in the application registry",
-                    registry.meters.size.toDouble(),
+                    registeredMeters.get().toDouble(),
                 ),
                 MetricPoint(
                     "arc_metrics_snapshot_sources",

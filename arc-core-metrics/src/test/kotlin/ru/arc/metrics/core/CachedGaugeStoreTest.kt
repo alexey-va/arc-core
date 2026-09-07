@@ -40,4 +40,26 @@ class CachedGaugeStoreTest :
                 store.applySnapshot("bad", listOf(MetricPoint("bad metric", "bad", 1.0)))
             }
         }
+
+        "keeps shared series active until every source drops it" {
+            val registry = PrometheusMeterRegistry(PrometheusConfig.DEFAULT)
+            val store = CachedGaugeStore(registry)
+            val point = MetricPoint("arc_test_entities", "test entities", 42.0)
+
+            store.applySnapshot("paper", listOf(point))
+            store.applySnapshot("proxy", listOf(point.copy(value = 7.0)))
+            store.applySnapshot("paper", emptyList())
+
+            store.value(point.name) shouldBe 7.0
+            store.stats() shouldBe
+                CachedGaugeStore.Stats(
+                    totalSeries = 1,
+                    activeSeries = 1,
+                    staleSeries = 0,
+                    sources = 2,
+                )
+
+            store.clearSource("proxy")
+            store.stats() shouldBe CachedGaugeStore.Stats(totalSeries = 1, activeSeries = 0, staleSeries = 1, sources = 1)
+        }
     })

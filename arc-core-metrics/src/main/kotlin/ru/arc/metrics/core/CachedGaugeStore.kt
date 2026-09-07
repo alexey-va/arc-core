@@ -27,6 +27,9 @@ class CachedGaugeStore(
 
     private val values = ConcurrentHashMap<Key, AtomicReference<Double>>()
     private val sourceKeys = ConcurrentHashMap<String, Set<Key>>()
+    /** Guarded by this instance monitor, like [sourceKeys] mutations. */
+    private val activeKeys = HashSet<Key>()
+    private val activeKeyOwners = HashMap<Key, Int>()
 
     data class Stats(
         val totalSeries: Int,
@@ -59,14 +62,39 @@ class CachedGaugeStore(
             nextKeys += key
         }
 
-        sourceKeys.put(source, nextKeys)?.minus(nextKeys)?.forEach { stale ->
-            values[stale]?.set(0.0)
+        val previousKeys = sourceKeys.put(source, nextKeys).orEmpty()
+        previousKeys.forEach { key ->
+            if (key !in nextKeys) {
+                removeActiveKey(key)
+                if (key !in activeKeys) values[key]?.set(0.0)
+            }
+        }
+        nextKeys.forEach { key ->
+            if (key !in previousKeys) addActiveKey(key)
+        }
+    }
+
+    private fun addActiveKey(key: Key) {
+        activeKeyOwners[key] = (activeKeyOwners[key] ?: 0) + 1
+        activeKeys += key
+    }
+
+    private fun removeActiveKey(key: Key) {
+        val owners = (activeKeyOwners[key] ?: return) - 1
+        if (owners == 0) {
+            activeKeyOwners.remove(key)
+            activeKeys.remove(key)
+        } else {
+            activeKeyOwners[key] = owners
         }
     }
 
     @Synchronized
     fun clearSource(source: String) {
-        sourceKeys.remove(source)?.forEach { key -> values[key]?.set(0.0) }
+        sourceKeys.remove(source)?.forEach { key ->
+            removeActiveKey(key)
+            if (key !in activeKeys) values[key]?.set(0.0)
+        }
     }
 
     fun value(
@@ -77,12 +105,12 @@ class CachedGaugeStore(
         return values[key]?.get()
     }
 
+    @Synchronized
     fun stats(): Stats {
-        val active = sourceKeys.values.asSequence().flatten().toSet().size
         return Stats(
             totalSeries = values.size,
-            activeSeries = active,
-            staleSeries = (values.size - active).coerceAtLeast(0),
+            activeSeries = activeKeys.size,
+            staleSeries = (values.size - activeKeys.size).coerceAtLeast(0),
             sources = sourceKeys.size,
         )
     }
