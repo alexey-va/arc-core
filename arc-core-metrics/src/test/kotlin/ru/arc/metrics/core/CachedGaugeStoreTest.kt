@@ -6,9 +6,45 @@ import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import io.micrometer.prometheusmetrics.PrometheusConfig
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class CachedGaugeStoreTest :
     FreeSpec({
+        "slow registration does not block existing snapshots or stats" {
+            val registry = PrometheusMeterRegistry(PrometheusConfig.DEFAULT)
+            val store = CachedGaugeStore(registry)
+            val fastPoint = MetricPoint("arc_fast", "fast", 1.0)
+            store.applySnapshot("fast", listOf(fastPoint))
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            registry.config().onMeterAdded { meter ->
+                if (meter.id.name == "arc_slow") {
+                    entered.countDown()
+                    check(release.await(5, TimeUnit.SECONDS))
+                }
+            }
+            val executor = Executors.newFixedThreadPool(2)
+            try {
+                val slow = executor.submit { store.applySnapshot("slow", listOf(MetricPoint("arc_slow", "slow", 3.0))) }
+                entered.await(2, TimeUnit.SECONDS) shouldBe true
+                val fast = executor.submit {
+                    store.applySnapshot("fast", listOf(fastPoint.copy(value = 2.0)))
+                    store.stats()
+                }
+                fast.get(500, TimeUnit.MILLISECONDS)
+                store.value("arc_fast") shouldBe 2.0
+                release.countDown()
+                slow.get(2, TimeUnit.SECONDS)
+                store.stats().activeSeries shouldBe 2
+            } finally {
+                release.countDown()
+                executor.shutdownNow()
+                registry.close()
+            }
+        }
+
         "scrapes cached values and zeroes labels missing from the next snapshot" {
             val registry = PrometheusMeterRegistry(PrometheusConfig.DEFAULT)
             val store = CachedGaugeStore(registry)

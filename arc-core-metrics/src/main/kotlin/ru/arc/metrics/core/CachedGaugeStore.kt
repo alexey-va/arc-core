@@ -38,19 +38,19 @@ class CachedGaugeStore(
         val sources: Int,
     )
 
-    @Synchronized
     fun applySnapshot(
         source: String,
         points: Collection<MetricPoint>,
     ) {
         val nextKeys = LinkedHashSet<Key>(points.size)
+        val updates = ArrayList<Pair<AtomicReference<Double>, Double>>(points.size)
         for (point in points) {
             require(METRIC_NAME.matches(point.name)) { "Invalid metric name: ${point.name}" }
             val sortedTags = point.tags.entries.sortedBy { it.key }.map { it.key to it.value }
             val key = Key(point.name, sortedTags)
             val state =
                 values.computeIfAbsent(key) {
-                    val newState = AtomicReference(point.value)
+                    val newState = AtomicReference(0.0)
                     Gauge
                         .builder(point.name, newState) { it.get() }
                         .description(point.description)
@@ -58,19 +58,24 @@ class CachedGaugeStore(
                         .register(registry)
                     newState
                 }
-            state.set(point.value)
+            updates += state to point.value
             nextKeys += key
         }
 
-        val previousKeys = sourceKeys.put(source, nextKeys).orEmpty()
-        previousKeys.forEach { key ->
-            if (key !in nextKeys) {
-                removeActiveKey(key)
-                if (key !in activeKeys) values[key]?.set(0.0)
+        // Registering new series can be expensive. Keep it outside the lock
+        // shared by fast snapshots and stats; publish values and ownership together.
+        synchronized(this) {
+            updates.forEach { (state, value) -> state.set(value) }
+            val previousKeys = sourceKeys.put(source, nextKeys).orEmpty()
+            previousKeys.forEach { key ->
+                if (key !in nextKeys) {
+                    removeActiveKey(key)
+                    if (key !in activeKeys) values[key]?.set(0.0)
+                }
             }
-        }
-        nextKeys.forEach { key ->
-            if (key !in previousKeys) addActiveKey(key)
+            nextKeys.forEach { key ->
+                if (key !in previousKeys) addActiveKey(key)
+            }
         }
     }
 
