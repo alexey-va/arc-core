@@ -31,6 +31,7 @@ CORE_MODULES = {
     "arc-core-ops-paper",
     "arc-core-ops-velocity",
     "arc-core-paper",
+    "arc-core-paper-api",
     "arc-core-paper-menu",
     "arc-core-paper-testing",
     "arc-core-redis",
@@ -174,6 +175,8 @@ PLATFORM_RUNTIME_EVIDENCE = {
     ),
 }
 
+DIRECT_PROJECT_REFLECTION = re.compile(r"(?:Class\.forName|\.loadClass)\s*\(\s*[\"']ru\.arc\.")
+
 
 @dataclass(frozen=True)
 class Violation:
@@ -251,7 +254,7 @@ FORBIDDEN_RULES = (
     ForbiddenRule(
         "project-owned-reflection",
         frozenset({"main"}),
-        re.compile(r"(?:Class\.forName|\.loadClass)\s*\(\s*[\"']ru\.arc\."),
+        DIRECT_PROJECT_REFLECTION,
         "move the shared contract to arc-core/an API module and use a typed dependency",
     ),
     ForbiddenRule(

@@ -296,7 +296,7 @@ class PaperDialogRuntime internal constructor(
             "buttons" to actions,
         )
         button?.let { payload["button"] = it }
-        plugin.server.pluginManager.callEvent(PaperMenuObservationEvent(PaperMenuObservationEvent.Kind.fromPhase(phase), payload))
+        PaperMenuObservationPublisher.publish(plugin, payload)
     }
 
     private data class DialogObservation(val visitId: String, val screen: PaperDialogScreen) {

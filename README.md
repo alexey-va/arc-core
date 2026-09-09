@@ -33,6 +33,7 @@ Gradle root project: **`ArcCore`** (имя важно для composite build —
 | `arc-core-redis/` | `ru.arc:arc-core-redis` | Redis manager/storage plus strict codecs, CAS, validated topics, request/reply and presence |
 | `arc-core-sql/` | `ru.arc:arc-core-sql` | Optional MySQL/Hikari runtime, async JDBC and migrations |
 | `arc-core-paper/` | `ru.arc:arc-core-paper` | Paper scheduling, audience/teleport delivery, chunk-ticket lifecycle, complete player-state escrow, and transient player nameplates |
+| `arc-core-paper-api/` | `ru.arc:arc-core-paper-api` | Dependency-free optional Paper service contracts, including `ArcTelemetryProvider` |
 | `arc-core-menu/` | `ru.arc:arc-core-menu` | Validated YAML layout contracts, slot expressions, atomic catalog generations, pagination and feedback state |
 | `arc-core-paper-menu/` | `ru.arc:arc-core-paper-menu` | Inventory Framework menus plus native Paper dialogs, safe templates, protected clicks and lifecycle-owned sessions |
 | `arc-core-paper-testing/` | `ru.arc:arc-core-paper-testing` | Published MockBukkit runtime and fixtures for Paper plugin tests |
@@ -91,6 +92,7 @@ repositories {
 dependencies {
     implementation("ru.ruscrafting.arc:arc-core:<release>")
     implementation("ru.ruscrafting.arc:arc-core-menu:<release>")
+    compileOnly("ru.ruscrafting.arc:arc-core-paper-api:<release>")
     implementation("ru.ruscrafting.arc:arc-core-paper-menu:<release>")
     testImplementation("ru.ruscrafting.arc:arc-core-paper-testing:<release>")
 }

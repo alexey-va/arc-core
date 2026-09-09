@@ -370,7 +370,7 @@ class PaperMenuSession internal constructor(
         }
         payload["buttons"] = buttons
         payload.putAll(extra)
-        plugin.server.pluginManager.callEvent(PaperMenuObservationEvent(PaperMenuObservationEvent.Kind.fromPhase(phase), payload))
+        PaperMenuObservationPublisher.publish(plugin, payload)
     }
 
     private fun revision(): String {

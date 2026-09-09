@@ -9,12 +9,14 @@ val paperApiVersion: String by project
 
 dependencies {
     api(project(":arc-core-menu"))
+    compileOnlyApi(project(":arc-core-paper-api"))
     compileOnlyApi("io.papermc.paper:paper-api:$paperApiVersion")
     implementation("com.github.stefvanschie.inventoryframework:IF:0.12.0")
     implementation("commons-lang:commons-lang:2.6")
     implementation("com.google.code.gson:gson:2.11.0")
 
     testImplementation(project(":arc-core-paper-testing"))
+    testImplementation(project(":arc-core-paper-api"))
     testImplementation("io.mockk:mockk:1.14.7")
 }
 
