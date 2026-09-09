@@ -2,6 +2,7 @@ package ru.arc.text
 
 import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.minimessage.MiniMessage
+import net.kyori.adventure.text.minimessage.tag.Tag
 import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder
 import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver
 import ru.arc.config.Config
@@ -80,6 +81,43 @@ class LocalizedMiniMessage(
         return raw.map { deserialize(it, localeTag, values) }
     }
 
+    /**
+     * Resolves only placeholders used by the selected message. Suppliers run on
+     * the caller's thread, at most once per successful render, and return literal
+     * components (never reparsed markup). Failures propagate to the caller.
+     * No values are cached across renders or players; suppliers must not block.
+     */
+    fun renderLazy(
+        path: String,
+        localeTag: String? = null,
+        values: Map<String, () -> Component> = emptyMap(),
+    ): Component = withLazyValues(values) { resolver ->
+        deserialize(rawScalar(path, localeTag), localeTag, resolver)
+    }
+
+    /** Like [renderOptional], without evaluating values for a disabled surface. */
+    fun renderOptionalLazy(
+        path: String,
+        localeTag: String? = null,
+        values: Map<String, () -> Component> = emptyMap(),
+    ): Component? = withLazyValues(values) { resolver ->
+        require(path.isNotBlank()) { "Locale message path must not be blank" }
+        val raw = select(localeTag).scalar(path) ?: fallback().scalar(path) ?: missingMessage(path)
+        raw.takeIf(String::isNotBlank)?.let { deserialize(it, localeTag, resolver) }
+    }
+
+    /** Shares one lazy value snapshot across all lines, then discards it. */
+    fun renderLinesLazy(
+        path: String,
+        localeTag: String? = null,
+        values: Map<String, () -> Component> = emptyMap(),
+    ): List<Component> = withLazyValues(values) { resolver ->
+        val raw = select(localeTag).lines(path)?.takeIf { it.isNotEmpty() }
+            ?: fallback().lines(path)?.takeIf { it.isNotEmpty() }
+            ?: emptyList()
+        raw.map { deserialize(it, localeTag, resolver) }
+    }
+
     fun validate(requirements: LocaleRequirements) {
         catalogs.forEach { (locale, catalog) ->
             requirements.scalarPaths.forEach { path ->
@@ -103,16 +141,42 @@ class LocalizedMiniMessage(
     }
 
     private fun deserialize(raw: String, localeTag: String?, values: Map<String, Component>): Component {
+        val builder = TagResolver.builder()
+        values.forEach { (name, component) ->
+            validatePlaceholderName(name)
+            builder.resolver(Placeholder.component(name, component))
+        }
+        return deserialize(raw, localeTag, builder.build())
+    }
+
+    private fun <T> withLazyValues(values: Map<String, () -> Component>, render: (TagResolver) -> T): T {
+        val resolved = values.mapValues { (_, supplier) ->
+            lazy(LazyThreadSafetyMode.NONE) { runCatching(supplier) }
+        }
+        val builder = TagResolver.builder()
+        resolved.forEach { (name, value) ->
+            validatePlaceholderName(name)
+            builder.resolver(TagResolver.resolver(name) { _, _ -> Tag.inserting(value.value.getOrThrow()) })
+        }
+        val result = render(builder.build())
+        // MiniMessage can treat a resolver exception as an unknown tag. Preserve
+        // the supplier failure instead of returning a partially rendered message.
+        resolved.values.filter { it.isInitialized() }.forEach { it.value.getOrThrow() }
+        return result
+    }
+
+    private fun validatePlaceholderName(name: String) {
+        require(name.matches(PLACEHOLDER_NAME)) { "Unsafe MiniMessage placeholder name: $name" }
+        require(name != "prefix") { "The prefix placeholder is owned by LocalizedMiniMessage" }
+    }
+
+    private fun deserialize(raw: String, localeTag: String?, values: TagResolver): Component {
         val prefixRaw = select(localeTag).scalar(prefixPath)?.takeIf(String::isNotBlank)
             ?: fallback().scalar(prefixPath)?.takeIf(String::isNotBlank)
             ?: ""
         val builder = TagResolver.builder()
             .resolver(Placeholder.component("prefix", miniMessage.deserialize(prefixRaw)))
-        values.forEach { (name, component) ->
-            require(name.matches(PLACEHOLDER_NAME)) { "Unsafe MiniMessage placeholder name: $name" }
-            require(name != "prefix") { "The prefix placeholder is owned by LocalizedMiniMessage" }
-            builder.resolver(Placeholder.component(name, component))
-        }
+            .resolver(values)
         return miniMessage.deserialize(raw, builder.build())
     }
 
