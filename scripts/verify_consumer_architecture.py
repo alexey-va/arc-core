@@ -249,6 +249,12 @@ FORBIDDEN_RULES = (
         "use LocalizedMiniMessage and non-parsing Component placeholders",
     ),
     ForbiddenRule(
+        "project-owned-reflection",
+        frozenset({"main"}),
+        re.compile(r"(?:Class\.forName|\.loadClass)\s*\(\s*[\"']ru\.arc\."),
+        "move the shared contract to arc-core/an API module and use a typed dependency",
+    ),
+    ForbiddenRule(
         "raw-redis-pubsub",
         frozenset({"main"}),
         re.compile(r"\bJedisPubSub\b"),

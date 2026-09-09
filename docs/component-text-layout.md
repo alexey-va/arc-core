@@ -50,9 +50,10 @@ when editing a consumer's text renderer; publishing core does not automatically
 rewrite independent third-party plugin menus or their native layout rules.
 
 Paper 1.21.11 plain-message widgets subtract 4px of internal padding on each
-side: pass `bodyWidth - 8`. There is no native left/right body property. ARC's
-`ru.arc.gui.DialogTextLayout` owns this Paper adapter and a generated server-pack
-metric snapshot; its `/arc dialogdemo alignment` page compares all three modes.
+side: pass `bodyWidth - 8`. There is no native left/right body property.
+`arc-core-paper-menu` owns the typed `ru.arc.paper.menu.DialogTextLayout` adapter
+and generated server-pack metric snapshot; ARC's `/arc dialogdemo alignment` page
+is a consumer that compares all three modes.
 Fonts replaced by a client-side resource pack or forced Unicode settings need
 their own verified metrics. Packet-level checks do not establish native visual
 alignment at different GUI scales.

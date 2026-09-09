@@ -175,6 +175,17 @@ fun testRuntime() = MockBukkitTestRuntime.open().use { }
         self.assertEqual(1, exit_code)
         self.assertIn("rule=direct-mockbukkit", output)
 
+    def test_rejects_reflective_access_to_project_owned_arc_code(self) -> None:
+        source = self.root / "src/main/kotlin/example/ExamplePlugin.kt"
+        source.write_text(
+            source.read_text(encoding="utf-8")
+            + '\nfun badBridge() = Class.forName("ru.arc.gui.DialogTables")\n',
+            encoding="utf-8",
+        )
+        exit_code, output = self.verify()
+        self.assertEqual(1, exit_code)
+        self.assertIn("rule=project-owned-reflection", output)
+
     def test_redis_requires_core_api_and_shared_container(self) -> None:
         manifest = self.root / "arc-core-consumer.toml"
         manifest.write_text(
