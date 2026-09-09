@@ -46,6 +46,28 @@ class PaperDialogHistoryTest : FreeSpec({
         first.back() shouldBe false
     }
 
+    "three purchases return to one shop visit without replaying confirmations" {
+        val history = PaperDialogHistory(java.util.HashMap())
+        val restored = mutableListOf<String>()
+        val dismissed = mutableListOf<String>()
+        fun show(key: String) = history.show("shop-owner", key, Runnable {},
+            Runnable { dismissed += key }, Runnable { restored += key })
+        show("panel")
+        history.dispatch { show("shop") }
+        repeat(3) {
+            history.dispatch { show("confirm") }
+            history.dispatch {
+                history.back() shouldBe true
+                show("shop")
+            }
+        }
+        restored.clear()
+        dismissed shouldBe listOf("confirm", "confirm", "confirm")
+        history.back() shouldBe true
+        restored shouldBe listOf("panel")
+        history.back() shouldBe false
+    }
+
     "foreign late completion cannot replace the current screen and inactive unload keeps it" {
         val history = PaperDialogHistory(java.util.HashMap())
         fun show(owner: String, key: String) = history.show(owner, key, Runnable {}, Runnable {}, Runnable {})

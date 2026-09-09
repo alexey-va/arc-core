@@ -102,6 +102,17 @@ class PaperDialogRuntime internal constructor(
         if (!closed && player.isOnline) history(player)!!.beginFlow(owner)
     }
 
+    /** Return after a completed child action without adding the parent to history again. */
+    fun back(player: Player): Boolean {
+        requirePrimaryThread()
+        if (closed || !player.isOnline) return false
+        val history = history(player, create = false) ?: return false
+        if (history.owner != owner) return false
+        val restored = history.back()
+        if (!restored) player.closeDialog()
+        return restored
+    }
+
     /**
      * Close the player's complete flow if this runtime owns the visible screen.
      * An inactive owner only discards its own ancestors and cannot close a
@@ -158,7 +169,7 @@ class PaperDialogRuntime internal constructor(
             tooltip = exit?.tooltip ?: Component.empty(),
             width = exit?.width ?: 200,
             onClick = {
-                if (history(player, create = false)?.back() != true) player.closeDialog()
+                back(player)
             },
         )
         val screen = original.copy(exitButton = if (currentVisits[player.uniqueId]?.closeOnEscape == true) {
