@@ -26,9 +26,24 @@ internal class PaperDialogHistory(private val state: MutableMap<String, Any>, pr
         val navigate = callbackDepth > 0 && !restoring &&
             previous != null && (previous["owner"] != owner || previous["key"] != key)
         previous?.run("deactivate")
-        // A refresh has already established the new domain generation. Calling
-        // the old onDismiss here would invalidate that generation in consumers.
-        if (previous != null && !navigate) visits.removeAt(visits.lastIndex)
+        // Returning to an existing screen is a refresh of that visit, not a
+        // new child. The consumer has already built its new domain generation,
+        // so same-owner entries use refresh cleanup rather than onDismiss.
+        val ancestor = visits.indexOfLast { it["owner"] == owner && it["key"] == key }
+        if (ancestor >= 0 && ancestor < visits.lastIndex) {
+            val retired = visits.subList(ancestor, visits.size).toList()
+            visits.subList(ancestor, visits.size).clear()
+            state["clearing"] = true
+            try {
+                retired.asReversed().forEach {
+                    if (it["owner"] != owner) it.run("dismiss")
+                    else if (it !== previous) it.run("deactivate")
+                }
+            } finally { state["clearing"] = false }
+        } else if (previous != null && !navigate) {
+            // A refresh must not invalidate the newly established generation.
+            visits.removeAt(visits.lastIndex)
+        }
         visits.add(java.util.HashMap<String, Any>().apply {
             put("owner", owner)
             put("key", key)

@@ -53,6 +53,23 @@ runs `scripts/publish-release.sh`, which discovers every Maven publication,
 stages complete Gradle metadata and rejects conflicting remote files before
 upload.
 
+## Native dialog defaults
+
+Use `PaperDialogRuntime` for native menus. Give every logical screen a stable
+ID, including loading/form/error refreshes. Child navigation must run directly
+inside the shared button callback with `closeDialogBeforeAction=false` (default)
+and `after_action=NONE`; do not close the client window or schedule an extra tick
+between native screens. Core reuses existing ancestor IDs automatically instead
+of accumulating confirmations and duplicate parent menus. Same-owner return
+uses refresh invalidation because the new domain generation already exists;
+foreign discarded owners receive dismissal. Preserve real `reopen` callbacks
+and guard asynchronous completions against stale domain generations.
+
+For navigation changes verify three repeated confirm/return cycles, one Back
+to the actual ancestor, and zero closeDialog calls between native screens.
+Escape is client-forced CLOSE on supported vanilla clients; never promise mouse
+position retention for Escape or disable it merely to hide the cursor reset.
+
 ## Boundary rules (non-negotiable)
 
 1. **No platform imports in `arc-core`** — no Bukkit, no Velocity API in `arc-core` / `arc-core-redis` / `arc-core-logging`.

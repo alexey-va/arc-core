@@ -16,6 +16,53 @@ import org.bukkit.event.player.PlayerCommandPreprocessEvent
 import ru.arc.paper.testing.MockBukkitTestRuntime
 
 class PaperDialogRuntimeTest : FreeSpec({
+    "default child transitions and repeated purchases reuse history without closing the native window" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val player = spyk(paper.addPlayer("RepeatedBuyer"))
+            every { player.closeDialog() } just Runs
+            val connection = mockk<PlayerGameConnection> { every { this@mockk.player } returns player }
+            lateinit var screen: PaperDialogScreen
+            lateinit var registration: PaperDialogSessionRegistration
+            PaperDialogRuntime(paper.createSimplePlugin("RepeatShop")) { _, shown, registered ->
+                screen = shown
+                registration = registered
+            }.use { runtime ->
+                fun button(id: String, action: () -> Unit) = PaperDialogButton(
+                    PaperDialogActionId.of(id), Component.text(id), onClick = { action() })
+                fun shop() {
+                    runtime.open(player, PaperDialogScreen(Component.text("Shop"), id = "shop", buttons = listOf(
+                        button("confirm") {
+                            runtime.open(player, PaperDialogScreen(Component.text("Confirm"), id = "confirm", buttons = listOf(
+                                button("buy") { shop() },
+                            )))
+                        },
+                    )))
+                }
+                fun click(id: PaperDialogActionId) {
+                    val key = registration.key(id)
+                    runtime.onCustomClick(mockk {
+                        every { commonConnection } returns connection
+                        every { identifier } returns Key.key(key)
+                        every { dialogResponseView } returns null
+                    })
+                }
+                runtime.beginFlow(player)
+                runtime.open(player, PaperDialogScreen(Component.text("Panel"), id = "panel", buttons = listOf(button("shop") { shop() })))
+                click(PaperDialogActionId.of("shop"))
+                repeat(3) {
+                    click(PaperDialogActionId.of("confirm"))
+                    click(PaperDialogActionId.of("buy"))
+                    screen.id shouldBe "shop"
+                }
+                click(requireNotNull(screen.exitButton).id)
+                screen.id shouldBe "panel"
+                verify(exactly = 0) { player.closeDialog() }
+                click(requireNotNull(screen.exitButton).id)
+                verify(exactly = 1) { player.closeDialog() }
+            }
+        }
+    }
+
     "information screens have only a working history footer and no invented grid action" {
         MockBukkitTestRuntime.open().use { paper ->
             val player = spyk(paper.addPlayer("InfoTester"))

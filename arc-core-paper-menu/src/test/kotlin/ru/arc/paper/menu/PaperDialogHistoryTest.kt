@@ -68,6 +68,41 @@ class PaperDialogHistoryTest : FreeSpec({
         history.back() shouldBe false
     }
 
+    "ordinary parent opens automatically collapse repeated purchases without invalidating new state" {
+        val history = PaperDialogHistory(java.util.HashMap())
+        val restored = mutableListOf<String>()
+        var invalidated = 0
+        fun show(key: String) = history.show("owner", key, Runnable {},
+            Runnable { invalidated++ }, Runnable { restored += key })
+        show("root")
+        history.dispatch { show("shop") }
+        repeat(3) {
+            history.dispatch { show("confirmation") }
+            // Existing consumers simply open the parent after an action.
+            history.dispatch { show("shop") }
+        }
+        invalidated shouldBe 0
+        history.back() shouldBe true
+        restored shouldBe listOf("root")
+        history.back() shouldBe false
+    }
+
+    "async parent returns preserve the new owner generation and discard foreign descendants" {
+        val history = PaperDialogHistory(java.util.HashMap())
+        val retired = mutableListOf<String>()
+        val restored = mutableListOf<String>()
+        fun show(owner: String, key: String) = history.show(owner, key, Runnable {},
+            Runnable { retired += owner }, Runnable { restored += key })
+        show("a", "root")
+        history.dispatch { show("a", "list") }
+        history.dispatch { show("b", "detail") }
+        history.dispatch { show("a", "confirmation") }
+        show("a", "list") shouldBe true
+        retired shouldBe listOf("b")
+        history.back() shouldBe true
+        restored shouldBe listOf("root")
+    }
+
     "foreign late completion cannot replace the current screen and inactive unload keeps it" {
         val history = PaperDialogHistory(java.util.HashMap())
         fun show(owner: String, key: String) = history.show(owner, key, Runnable {}, Runnable {}, Runnable {})
