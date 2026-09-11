@@ -12,12 +12,15 @@ DRY_RUN=false
 
 usage() {
   cat <<'EOF'
-Usage: publish-release.sh VERSION [--dry-run]
+Usage: publish-release.sh VERSION [--dry-run] [--skip-tests]
 
-Builds and tests every arc-core module, stages complete Maven publications,
-then immutably uploads them to RusCrafting Reposilite. Existing identical
-files are skipped so an interrupted release can resume; conflicting files
-fail closed before any upload.
+Options may be supplied in either order; --skip-tests stages the release
+without running clean or testAll.
+
+By default, builds and tests every arc-core module, stages complete Maven
+publications, then immutably uploads them to RusCrafting Reposilite. Existing
+identical files are skipped so an interrupted release can resume; conflicting
+files fail closed before any upload.
 
 Credentials:
   REPOSILITE_PUBLISH_USERNAME  Defaults to arc-publisher
@@ -34,12 +37,26 @@ die() {
   exit 1
 }
 
-[[ $# -ge 1 && $# -le 2 ]] || { usage >&2; exit 2; }
-VERSION="$1"
-if [[ $# -eq 2 ]]; then
-  [[ "$2" == "--dry-run" ]] || { usage >&2; exit 2; }
-  DRY_RUN=true
-fi
+SKIP_TESTS=false
+VERSION=""
+[[ $# -ge 1 && $# -le 3 ]] || { usage >&2; exit 2; }
+for argument in "$@"; do
+  case "$argument" in
+    --dry-run)
+      [[ "$DRY_RUN" == false ]] || { usage >&2; exit 2; }
+      DRY_RUN=true
+      ;;
+    --skip-tests)
+      [[ "$SKIP_TESTS" == false ]] || { usage >&2; exit 2; }
+      SKIP_TESTS=true
+      ;;
+    *)
+      [[ -z "$VERSION" ]] || { usage >&2; exit 2; }
+      VERSION="$argument"
+      ;;
+  esac
+done
+[[ -n "$VERSION" ]] || { usage >&2; exit 2; }
 
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] ||
   die "VERSION must be semantic and must not include the leading v"
@@ -50,10 +67,17 @@ STAGING_ROOT="$ROOT_DIR/build/release-repository"
 GROUP_PATH="${PUBLICATION_GROUP//.//}"
 
 cd "$ROOT_DIR"
-./gradlew clean testAll stageRelease \
-  -PreleaseVersion="$VERSION" \
-  -PpublicationGroup="$PUBLICATION_GROUP" \
-  --no-daemon
+if $SKIP_TESTS; then
+  ./gradlew stageRelease \
+    -PreleaseVersion="$VERSION" \
+    -PpublicationGroup="$PUBLICATION_GROUP" \
+    --no-daemon
+else
+  ./gradlew clean testAll stageRelease \
+    -PreleaseVersion="$VERSION" \
+    -PpublicationGroup="$PUBLICATION_GROUP" \
+    --no-daemon
+fi
 
 module_dirs=("$STAGING_ROOT/$GROUP_PATH"/*)
 [[ -d "${module_dirs[0]}" ]] || die "Release staging did not produce any Maven modules"

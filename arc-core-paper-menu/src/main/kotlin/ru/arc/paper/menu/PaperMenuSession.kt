@@ -169,7 +169,15 @@ class PaperMenuSession internal constructor(
 
     fun close(): PaperMenuSessionResult = close(PaperMenuCloseReason.CENSORED)
 
-    internal fun close(reason: PaperMenuCloseReason): PaperMenuSessionResult {
+    internal fun close(reason: PaperMenuCloseReason): PaperMenuSessionResult = finish(reason, closeInventory = true)
+
+    /**
+     * Ends logical ownership when Paper is already closing or replacing the view.
+     * Sending another client close would interrupt GUI navigation and grab the mouse.
+     */
+    internal fun retire(reason: PaperMenuCloseReason): PaperMenuSessionResult = finish(reason, closeInventory = false)
+
+    private fun finish(reason: PaperMenuCloseReason, closeInventory: Boolean): PaperMenuSessionResult {
         requirePrimaryThread()
         if (!open) return PaperMenuSessionResult.CLOSED
         open = false
@@ -177,7 +185,7 @@ class PaperMenuSession internal constructor(
         tasks.close()
         onClosed(this)
         observe("close", mapOf("reason" to reason.wire))
-        if (player.openInventory.topInventory === inventory) player.closeInventory()
+        if (closeInventory && player.openInventory.topInventory === inventory) player.closeInventory()
         return PaperMenuSessionResult.CLOSED
     }
 
@@ -315,7 +323,7 @@ class PaperMenuSession internal constructor(
         val slot = renderedSlots[index] ?: return
         val entry = slot.entry ?: return
         val target = slot.target ?: return
-        if (event.whoClicked.uniqueId != player.uniqueId || !isCurrent() || !processedEvents.add(event)) return
+        if (!open || event.whoClicked.uniqueId != player.uniqueId || !isCurrent() || !processedEvents.add(event)) return
         val button = targetKey(target)
         if (!entry.enabled || event.click !in entry.acceptedClicks) {
             observe("blocked", mapOf("button" to button))

@@ -28,6 +28,7 @@ class PaperMenuService(
         plugin.server.pluginManager.registerEvents(this, plugin)
     }
 
+    /** Replaces a logical session without an intermediate client window close. */
     fun open(player: Player, menu: MenuId, content: () -> PaperMenuContent): PaperMenuSession {
         requirePrimaryThread()
         check(!closed) { "Paper menu service is closed" }
@@ -49,7 +50,7 @@ class PaperMenuService(
             session.discardUnopened()
             throw failure
         }
-        sessions.remove(player.uniqueId)?.close(PaperMenuCloseReason.REPLACE)
+        sessions.remove(player.uniqueId)?.retire(PaperMenuCloseReason.REPLACE)
         sessions[player.uniqueId] = session
         session.show()
         return session
@@ -88,7 +89,7 @@ class PaperMenuService(
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = false)
     fun onClose(event: InventoryCloseEvent) {
         val session = sessions[event.player.uniqueId] ?: return
-        if (event.view.topInventory === session.inventory) session.close(
+        if (event.view.topInventory === session.inventory) session.retire(
             if (event.reason == InventoryCloseEvent.Reason.PLAYER) PaperMenuCloseReason.USER else PaperMenuCloseReason.CENSORED,
         )
     }

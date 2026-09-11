@@ -2,8 +2,16 @@ package ru.arc.paper.menu
 
 import io.kotest.core.spec.style.FreeSpec
 import io.kotest.matchers.shouldBe
+import io.mockk.clearMocks
+import io.mockk.spyk
+import io.mockk.verify
 import net.kyori.adventure.text.Component
 import org.bukkit.Material
+import org.bukkit.event.inventory.ClickType
+import org.bukkit.event.inventory.InventoryAction
+import org.bukkit.event.inventory.InventoryCloseEvent
+import org.bukkit.event.inventory.InventoryClickEvent
+import org.bukkit.event.inventory.InventoryType
 import org.bukkit.inventory.ItemStack
 import ru.arc.core.BukkitTaskScheduler
 import ru.arc.menu.MenuCatalog
@@ -86,6 +94,79 @@ class PaperMenuSessionTest : FreeSpec({
         second.close() shouldBe PaperMenuSessionResult.CLOSED
         second.close() shouldBe PaperMenuSessionResult.CLOSED
         service.session(player.uniqueId) shouldBe null
+        service.close()
+    }
+
+    "retires replaced sessions without closing the physical window" {
+        val plugin = paper.createSimplePlugin("MenuTransition")
+        val player = spyk(paper.addPlayer("Viewer"))
+        val scheduler = BukkitTaskScheduler(plugin)
+        val service = PaperMenuService(plugin, repository(), scheduler)
+        val handlers = mutableListOf<String>()
+
+        fun screen(label: String, material: Material) = PaperMenuContent(
+            title = Component.text(label),
+            elements = mapOf(
+                BUTTON to PaperMenuEntry(
+                    ItemStack.of(material),
+                    onClick = PaperMenuClickHandler { handlers += label },
+                ),
+                DECORATION to PaperMenuEntry(ItemStack.of(Material.GRAY_STAINED_GLASS_PANE), enabled = false),
+            ),
+            regions = mapOf(CONTENT to emptyList()),
+        )
+
+        val first = service.open(player, MENU) { screen("first", Material.STONE) }
+        player.openInventory.title shouldBe "first"
+        val firstView = player.openInventory
+
+        // OPEN_NEW means the platform is already transitioning away from this view.
+        // Calling session.close() here would re-enter the platform close path.
+        clearMocks(player, recordedCalls = true)
+        paper.callEvent(InventoryCloseEvent(firstView, InventoryCloseEvent.Reason.OPEN_NEW))
+        first.isOpen shouldBe false
+        service.session(player.uniqueId) shouldBe null
+        verify(exactly = 0) { player.closeInventory() }
+
+        clearMocks(player, recordedCalls = true)
+        val second = service.open(player, MENU) { screen("second", Material.DIAMOND) }
+        player.openInventory.title shouldBe "second"
+        player.openInventory.topInventory.getItem(4)?.type shouldBe Material.DIAMOND
+        verify(exactly = 1) { player.closeInventory() }
+
+        second.showFeedback(BUTTON, delayTicks = 1, ItemStack.of(Material.EMERALD))
+        clearMocks(player, recordedCalls = true)
+        val third = service.open(player, MENU) { screen("third", Material.GOLD_INGOT) }
+        second.isOpen shouldBe false
+        third.isOpen shouldBe true
+        player.openInventory.title shouldBe "third"
+        player.openInventory.topInventory.getItem(4)?.type shouldBe Material.GOLD_INGOT
+        // MockBukkit's openInventory contributes one close; a retired session must not add another.
+        verify(exactly = 1) { player.closeInventory() }
+
+        paper.performTicks(2)
+        player.openInventory.topInventory.getItem(4)?.type shouldBe Material.GOLD_INGOT
+
+        paper.callEvent(
+            InventoryClickEvent(
+                player.openInventory,
+                InventoryType.SlotType.CONTAINER,
+                4,
+                ClickType.LEFT,
+                InventoryAction.PICKUP_ALL,
+            ),
+        )
+        handlers shouldBe listOf("third")
+
+        clearMocks(player, recordedCalls = true)
+        third.close()
+        verify(exactly = 1) { player.closeInventory() }
+
+        val reloaded = service.open(player, MENU) { screen("reloaded", Material.IRON_INGOT) }
+        clearMocks(player, recordedCalls = true)
+        service.closeSessions()
+        reloaded.isOpen shouldBe false
+        verify(exactly = 1) { player.closeInventory() }
         service.close()
     }
 

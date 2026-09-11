@@ -105,6 +105,12 @@ validates the publisher through Reposilite's read-only auth endpoint before any
 write. It then publicly reads every uploaded POM, Gradle module, binary JAR,
 and sources JAR back by SHA-256.
 
+When the full test suite is intentionally deferred, pass `--skip-tests`; Gradle
+then runs only `stageRelease`, while staging, metadata/license, bytecode,
+credential, immutable-conflict, and public readback guards remain active. Combine
+`--skip-tests` with `--dry-run` in either order to skip credential lookup and
+upload as well; `--skip-tests` alone keeps the normal publish path.
+
 ## Use in Gradle (composite build)
 
 ```kotlin

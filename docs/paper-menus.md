@@ -382,7 +382,18 @@ reason to keep raw Bukkit listeners: the handler is attached to semantic
 runtime entries and receives only safe clicks from the owning viewer.
 
 Close `PaperMenuRuntime` during plugin shutdown. Opening another menu for the
-same player closes the old session exactly once.
+same player retires the old logical session exactly once and opens the next
+screen directly. The transition must not send an intermediate client inventory
+close: vanilla Minecraft briefly returns to gameplay, grabs the mouse, and
+centres the cursor. This is the default of `PaperMenuRuntime.open`; consumers
+must not call `player.closeInventory()` before opening another menu or insert a
+close/reopen tick between pages. Titles, rows and actions can change normally.
+Refreshing or paginating an existing session uses its existing render path.
+
+An `InventoryCloseEvent` only retires session state; Paper already owns that
+window transition. Explicit close, configuration replacement and shutdown still
+close the visible inventory. Retired sessions cancel queued refresh and feedback
+tasks and cannot dispatch stale actions.
 
 ## Verification
 
