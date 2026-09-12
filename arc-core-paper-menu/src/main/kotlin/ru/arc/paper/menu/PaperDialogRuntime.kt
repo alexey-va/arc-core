@@ -182,7 +182,11 @@ class PaperDialogRuntime internal constructor(
                     close(player)
                 }
                 button.onClick.handle(
-                    PaperDialogClickContext(player) { input -> currentResponse.get()?.getText(input.value) },
+                    PaperDialogClickContext(
+                        player,
+                        { input -> currentResponse.get()?.getText(input.value) },
+                        { input -> currentResponse.get()?.getFloat(input.value) },
+                    ),
                 )
             }
         }
@@ -217,7 +221,10 @@ class PaperDialogRuntime internal constructor(
 
         val response = event.dialogResponseView
         currentVisits[player.uniqueId]?.let { visit ->
-            visit.screen = visit.screen.captureTextInputs { input -> response?.getText(input.value) }
+            visit.screen = visit.screen.captureInputs(
+                readText = { input -> response?.getText(input.value) },
+                readNumber = { input -> response?.getFloat(input.value) },
+            )
         }
         // The generated handler reads through this event-owned view immediately.
         val previousResponse = currentResponse.get()
@@ -273,7 +280,7 @@ class PaperDialogRuntime internal constructor(
             .pause(screen.pause)
             .afterAction(DialogBase.DialogAfterAction.NONE)
             .body(screen.body.map { DialogBody.plainMessage(it.text, it.width) })
-            .inputs(screen.inputs.map(::createInput))
+            .inputs(screen.inputs.map(::createInput) + screen.numberInputs.map(::createInput))
             .build()
         val buttons = screen.buttons.map { createButton(it, registration) }
         // Paper 1.21.11 rejects an empty multiAction grid. Informational and
@@ -302,7 +309,8 @@ class PaperDialogRuntime internal constructor(
     private data class DialogObservation(val visitId: String, val screen: PaperDialogScreen) {
         val revision: String = buildString {
             append(screen.id).append('|').append(screen.columns)
-            screen.inputs.forEach { append("|i:").append(it.id.value) }
+            screen.inputs.forEach { append("|it:").append(it.id.value) }
+            screen.numberInputs.forEach { append("|in:").append(it.id.value) }
             (screen.buttons + listOfNotNull(screen.exitButton)).forEach { append("|b:").append(it.id.value) }
         }.let { canonical ->
             MessageDigest.getInstance("SHA-256").digest(canonical.toByteArray(StandardCharsets.UTF_8))
@@ -316,6 +324,16 @@ class PaperDialogRuntime internal constructor(
             .labelVisible(input.labelVisible)
             .initial(input.initial)
             .maxLength(input.maxLength)
+            .build()
+
+    private fun createInput(input: PaperDialogNumberRangeInput): DialogInput =
+        DialogInput.numberRange(input.id.value, input.label, input.start, input.end)
+            .width(input.width)
+            .labelFormat(input.labelFormat)
+            .apply {
+                input.initial?.let(::initial)
+                input.step?.let(::step)
+            }
             .build()
 
     private fun createButton(
@@ -344,6 +362,18 @@ class PaperDialogRuntime internal constructor(
 
 /** Keep typed form values when Back restores an immutable screen snapshot. */
 internal fun PaperDialogScreen.captureTextInputs(read: (PaperDialogInputId) -> String?): PaperDialogScreen =
-    copy(inputs = inputs.map { input ->
-        input.copy(initial = read(input.id)?.take(input.maxLength) ?: input.initial)
-    })
+    captureInputs(readText = read, readNumber = { null })
+
+/** Keep every typed form value when Back restores an immutable screen snapshot. */
+internal fun PaperDialogScreen.captureInputs(
+    readText: (PaperDialogInputId) -> String?,
+    readNumber: (PaperDialogInputId) -> Float?,
+): PaperDialogScreen = copy(
+    inputs = inputs.map { input ->
+        input.copy(initial = readText(input.id)?.take(input.maxLength) ?: input.initial)
+    },
+    numberInputs = numberInputs.map { input ->
+        val value = readNumber(input.id)?.takeIf(Float::isFinite)?.coerceIn(input.start, input.end)
+        input.copy(initial = value ?: input.initial)
+    },
+)

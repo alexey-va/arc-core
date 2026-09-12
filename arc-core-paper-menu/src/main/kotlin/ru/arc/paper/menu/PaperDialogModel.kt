@@ -55,6 +55,31 @@ data class PaperDialogTextInput(
     }
 }
 
+data class PaperDialogNumberRangeInput(
+    val id: PaperDialogInputId,
+    val label: Component,
+    val start: Float,
+    val end: Float,
+    val initial: Float? = null,
+    val step: Float? = null,
+    val width: Int = 300,
+    val labelFormat: String = "options.generic_value",
+) {
+    init {
+        require(width in 1..1024) { "Paper dialog number input width must be in 1..1024" }
+        require(start.isFinite() && end.isFinite() && start <= end) {
+            "Paper dialog number input range must be finite and ordered"
+        }
+        require(initial == null || initial.isFinite() && initial in start..end) {
+            "Paper dialog number input initial value must be finite and inside its range"
+        }
+        require(step == null || step.isFinite() && step > 0f) {
+            "Paper dialog number input step must be finite and positive"
+        }
+        require(labelFormat.isNotBlank()) { "Paper dialog number input labelFormat must not be blank" }
+    }
+}
+
 fun interface PaperDialogClickHandler {
     fun handle(context: PaperDialogClickContext)
 }
@@ -62,8 +87,11 @@ fun interface PaperDialogClickHandler {
 class PaperDialogClickContext internal constructor(
     val player: Player,
     private val textInputs: (PaperDialogInputId) -> String?,
+    private val numberInputs: (PaperDialogInputId) -> Float?,
 ) {
     fun text(id: PaperDialogInputId): String? = textInputs(id)
+
+    fun number(id: PaperDialogInputId): Float? = numberInputs(id)
 }
 
 data class PaperDialogButton(
@@ -85,6 +113,7 @@ data class PaperDialogScreen(
     val externalTitle: Component = title,
     val body: List<PaperDialogBody> = emptyList(),
     val inputs: List<PaperDialogTextInput> = emptyList(),
+    val numberInputs: List<PaperDialogNumberRangeInput> = emptyList(),
     val buttons: List<PaperDialogButton>,
     val exitButton: PaperDialogButton? = null,
     val columns: Int = 1,
@@ -97,7 +126,7 @@ data class PaperDialogScreen(
         require(columns in 1..5) { "Paper dialog columns must be in 1..5" }
         val actionIds = (buttons + listOfNotNull(exitButton)).map { it.id }
         require(actionIds.size == actionIds.distinct().size) { "Paper dialog action ids must be unique" }
-        val inputIds = inputs.map { it.id }
+        val inputIds = inputs.map { it.id } + numberInputs.map { it.id }
         require(inputIds.size == inputIds.distinct().size) { "Paper dialog input ids must be unique" }
         require(id.matches(Regex("[a-z0-9][a-z0-9_.-]{0,63}"))) { "Paper dialog id must be lowercase" }
     }

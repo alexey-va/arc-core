@@ -40,6 +40,7 @@ screen.
 ```kotlin
 val dialogs = PaperDialogRuntime(plugin)
 val nameInput = PaperDialogInputId.of("land_name")
+val quantityInput = PaperDialogInputId.of("quantity")
 
 fun openCreate(player: Player) {
     dialogs.beginFlow(player)
@@ -51,12 +52,27 @@ fun openCreate(player: Player) {
             inputs = listOf(
                 PaperDialogTextInput(nameInput, messages.component("lands.create.input"), maxLength = 32),
             ),
+            numberInputs = listOf(
+                PaperDialogNumberRangeInput(
+                    quantityInput,
+                    messages.component("lands.create.quantity"),
+                    start = 1f,
+                    end = 64f,
+                    initial = 1f,
+                    step = 1f,
+                ),
+            ),
             buttons = listOf(
                 PaperDialogButton(
                     id = PaperDialogActionId.of("create"),
                     label = messages.component("common.continue"),
                     onClick = PaperDialogClickHandler { context ->
-                        createLand(context.player, context.text(nameInput).orEmpty())
+                        val rawQuantity = context.number(quantityInput) ?: return@PaperDialogClickHandler
+                        if (!rawQuantity.isFinite() || rawQuantity % 1f != 0f || rawQuantity !in 1f..64f) {
+                            return@PaperDialogClickHandler
+                        }
+                        val quantity = rawQuantity.toInt()
+                        createLand(context.player, context.text(nameInput).orEmpty(), quantity)
                     },
                 ),
             ),
@@ -98,8 +114,9 @@ work on Back, Close and root reset. Forward transitions and same-page refreshes
 only deactivate the old click session; they do not call `onDismiss`, because the
 consumer may already have started the new domain generation. Pass `closeOnEscape = true` only for an explicit Close preference; a legacy
 footer that closes is not evidence of that preference. Keep non-navigation
-footer actions in the normal button grid. Submitted text inputs are captured
-before dispatch so restoring a form retains the typed values.
+footer actions in the normal button grid. Submitted text and number-range inputs
+are captured before dispatch so restoring a form retains the typed values.
+Consumers must still validate every response against current domain state.
 
 `close(player)` closes the whole flow when this runtime owns the current screen
 (or pending root). An inactive runtime only removes its own ancestors. Quit and

@@ -15,6 +15,38 @@ class PaperDialogHistoryTest : FreeSpec({
         form.captureTextInputs { "x".repeat(100) }.inputs.single().initial shouldBe "x".repeat(12)
     }
 
+    "submitted number is retained and bounded when restoring the form snapshot" {
+        val input = PaperDialogInputId.of("amount")
+        val form = PaperDialogScreen(Component.text("Editor"),
+            numberInputs = listOf(PaperDialogNumberRangeInput(
+                input, Component.text("Amount"), start = 32f, end = 300f, initial = 64f, step = 1f,
+            )),
+            buttons = emptyList())
+
+        form.captureInputs({ null }, { 128f }).numberInputs.single().initial shouldBe 128f
+        form.captureInputs({ null }, { 500f }).numberInputs.single().initial shouldBe 300f
+        form.captureInputs({ null }, { Float.NaN }).numberInputs.single().initial shouldBe 64f
+        form.captureInputs({ null }, { null }).numberInputs.single().initial shouldBe 64f
+    }
+
+    "number ranges reject unsafe model values and duplicate ids across input kinds" {
+        val id = PaperDialogInputId.of("amount")
+        runCatching {
+            PaperDialogNumberRangeInput(id, Component.text("Amount"), Float.NaN, 10f)
+        }.isFailure shouldBe true
+        runCatching {
+            PaperDialogNumberRangeInput(id, Component.text("Amount"), 1f, 10f, step = 0f)
+        }.isFailure shouldBe true
+        runCatching {
+            PaperDialogScreen(
+                Component.text("Editor"),
+                inputs = listOf(PaperDialogTextInput(id, Component.text("Text"))),
+                numberInputs = listOf(PaperDialogNumberRangeInput(id, Component.text("Amount"), 1f, 10f)),
+                buttons = emptyList(),
+            )
+        }.isFailure shouldBe true
+    }
+
     "shared wrappers follow actual visits and refresh without extra steps or dismissals" {
         val state = java.util.HashMap<String, Any>()
         val first = PaperDialogHistory(state)

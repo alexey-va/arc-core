@@ -9,6 +9,7 @@ import io.mockk.spyk
 import io.mockk.just
 import io.mockk.Runs
 import io.papermc.paper.connection.PlayerGameConnection
+import io.papermc.paper.dialog.DialogResponseView
 import io.papermc.paper.event.player.PlayerCustomClickEvent
 import net.kyori.adventure.key.Key
 import net.kyori.adventure.text.Component
@@ -16,6 +17,40 @@ import org.bukkit.event.player.PlayerCommandPreprocessEvent
 import ru.arc.paper.testing.MockBukkitTestRuntime
 
 class PaperDialogRuntimeTest : FreeSpec({
+    "number-range responses are exposed through the typed click context" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val player = paper.addPlayer("SliderTester")
+            val connection = mockk<PlayerGameConnection> { every { this@mockk.player } returns player }
+            val quantity = PaperDialogInputId.of("quantity")
+            lateinit var registration: PaperDialogSessionRegistration
+            var submitted: Float? = null
+            PaperDialogRuntime(paper.createSimplePlugin("DialogSlider")) { _, _, registered ->
+                registration = registered
+            }.use { runtime ->
+                runtime.beginFlow(player)
+                runtime.open(player, PaperDialogScreen(
+                    Component.text("Slider"),
+                    numberInputs = listOf(PaperDialogNumberRangeInput(
+                        quantity, Component.text("Quantity"), 1f, 64f, initial = 1f, step = 1f,
+                    )),
+                    buttons = listOf(PaperDialogButton(
+                        PaperDialogActionId.of("submit"), Component.text("Submit"),
+                    ) { submitted = it.number(quantity) }),
+                ))
+                val response = mockk<DialogResponseView> {
+                    every { getFloat("quantity") } returns 17f
+                }
+                runtime.onCustomClick(mockk {
+                    every { commonConnection } returns connection
+                    every { identifier } returns Key.key(registration.key(PaperDialogActionId.of("submit")))
+                    every { dialogResponseView } returns response
+                })
+
+                submitted shouldBe 17f
+            }
+        }
+    }
+
     "default child transitions and repeated purchases reuse history without closing the native window" {
         MockBukkitTestRuntime.open().use { paper ->
             val player = spyk(paper.addPlayer("RepeatedBuyer"))
