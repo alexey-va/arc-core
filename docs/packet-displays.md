@@ -1,0 +1,63 @@
+# Client-only Display scenes
+
+`ru.arc.paper.display.PaperPacketDisplays` owns ephemeral BlockDisplay,
+ItemDisplay and TextDisplay visuals for one plugin/module lifecycle. Use it for
+bulk previews, idle item animations, roulettes and anchor markers. Keep reward
+selection, access, targeting, durable anchors and gameplay state in the plugin.
+
+The host supplies PacketEvents **2.12.1** and Paper **1.21.11**. Declare
+`packetevents` as a plugin dependency and compile it only; do not shade it.
+Other consumers of `arc-core-paper` need no PacketEvents dependency unless they
+construct this service. Install core scheduling before construction.
+
+```kotlin
+val displays = PaperPacketDisplays(plugin)
+val marker = displays.spawnBlock(location, blockData).apply {
+    isVisibleByDefault = false
+    showTo(player)
+    brightness = Display.Brightness(15, 15)
+    isGlowing = true
+    interpolationDuration = 1
+    teleportDuration = 1
+}
+// Later, on the server thread: stable ID, position/metadata delta only.
+marker.teleport(nextLocation)
+marker.transformation = nextTransformation
+marker.remove()
+// At owner shutdown, after animations stop:
+displays.close()
+```
+
+Factories and all handle access belong on the server thread. Inputs and mutable
+outputs (locations, item stacks, block data and transformations) are copied.
+The service captures one frame per tick. It reads players, world IDs and received
+chunks on that thread, then submits only protocol values to each connection's
+Netty event loop. Encoding, delta calculation and packet writes happen there.
+The queue coalesces pending animation frames while retaining replay requests.
+An unchanged frame sends nothing; transform changes restart interpolation,
+position changes teleport the existing ID, and item changes retain the ID.
+
+By default, every online player in the same world and within `viewRange * 64`
+blocks can see the visual, provided the client has received its chunk. Set
+`isVisibleByDefault = false` and use `showTo` for an explicit audience, or
+`hideFrom` to exclude one player from a public animation. Chunk unload/reload,
+respawn, world changes and new/failed connections replay the current scene.
+Cleanup is ordered before replacement spawns and remains eligible after a failed
+batch. Entity IDs use the server's global allocator without entity construction.
+
+No visual is written to the world, so new scenes cannot leave native orphan
+entities. A migrating plugin may remove old native entities only through its
+existing exact owner tags, including in chunks loaded after startup. Core does
+not scan or delete world entities, and cannot identify an old untagged item as
+belonging to a particular feature.
+
+Focused checks:
+
+```sh
+./gradlew :arc-core-paper:test --tests 'ru.arc.paper.display.*'
+```
+
+The tests cover immutable capture, audience/chunk/connection lifecycle, delta
+and coalescing behavior, ordered cleanup and write failure recovery. They do not
+prove client appearance or wire compatibility on a running Minecraft client;
+those remain separate deployment checks.
