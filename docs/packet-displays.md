@@ -43,7 +43,8 @@ blocks can see the visual, provided the client has received its chunk. Set
 `hideFrom` to exclude one player from a public animation. Chunk unload/reload,
 respawn, world changes and new/failed connections replay the current scene.
 Cleanup is ordered before replacement spawns and remains eligible after a failed
-batch. Entity IDs use the server's global allocator without entity construction.
+batch. Entity IDs use Paper's `UnsafeValues.nextEntityId()` global allocator directly,
+without entity construction or per-ID reflection.
 
 No visual is written to the world, so new scenes cannot leave native orphan
 entities. A migrating plugin may remove old native entities only through its

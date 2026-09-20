@@ -11,12 +11,12 @@ import com.github.retrooper.packetevents.util.Quaternion4f
 import com.github.retrooper.packetevents.util.Vector3d
 import com.github.retrooper.packetevents.util.Vector3f
 import io.github.retrooper.packetevents.util.SpigotConversionUtil
-import io.github.retrooper.packetevents.util.SpigotReflectionUtil
 import com.github.retrooper.packetevents.wrapper.PacketWrapper
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerDestroyEntities
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityMetadata
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityTeleport
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnEntity
+import org.bukkit.Bukkit
 import org.bukkit.block.data.BlockData
 import org.bukkit.entity.Player
 import org.bukkit.inventory.ItemStack
@@ -90,7 +90,8 @@ internal class PacketEventsDisplayTransport(
     override fun itemSnapshot(item: ItemStack): PacketItemStack =
         SpigotConversionUtil.fromBukkitItemStack(item).copy()
 
-    override fun nextEntityId(): Int = SpigotReflectionUtil.generateEntityId()
+    @Suppress("DEPRECATION")
+    override fun nextEntityId(): Int = Bukkit.getUnsafe().nextEntityId()
 
     override fun connection(player: Player): PacketDisplayConnection? {
         val channel = runCatching { PacketEvents.getAPI().playerManager.getChannel(player) }.getOrNull()
