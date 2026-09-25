@@ -53,6 +53,44 @@ class DialogTablesTest : FreeSpec({
             node.children().sumOf(::count) + node.let { (it as TextComponent).content().codePoints().filter { point -> point == codePoint }.count().toInt() }
         return count(component)
     }
+    fun textWithoutPackGlyphs(component: Component): String = buildString {
+        fun appendText(node: Component) {
+            if (node is TextComponent) node.content().codePoints().forEach { point ->
+                if (point !in 0xE540..0xE59E && point !in 0xF0F01..0xF0F0A && point != 0xF0F11) {
+                    appendCodePoint(point)
+                }
+            }
+            node.children().forEach(::appendText)
+        }
+        appendText(component)
+    }
+    fun textRuns(component: Component): List<Pair<String, Style>> = buildList {
+        fun visit(node: Component, parent: Style) {
+            val style = node.style().merge(parent, Style.Merge.Strategy.IF_ABSENT_ON_TARGET)
+            if (node is TextComponent && node.content().isNotEmpty()) add(node.content() to style)
+            node.children().forEach { visit(it, style) }
+        }
+        visit(component, Style.empty())
+    }
+    fun topFrameGeometry(component: Component, frame: DialogTables.Frame): Pair<Int, Int> {
+        val firstLine = buildList {
+            fun visit(node: Component) {
+                if (node is TextComponent) node.content().codePoints().forEach(::add)
+                node.children().forEach(::visit)
+            }
+            visit(component)
+        }.takeWhile { it != '\n'.code }
+        val left = firstLine.indexOf(frame.base)
+        val right = firstLine.indexOf(frame.base + 3)
+        require(left >= 0 && right > left)
+        fun padding(points: List<Int>) = points.sumOf { point ->
+            if (point in 0xF0F01..0xF0F0A) 1 shl (point - 0xF0F01) else 0
+        }
+        val border = firstLine.subList(left, right + 1)
+        val tiles = border.count { it in frame.base..frame.base + 14 }
+        val joins = border.count { it == 0xF0F11 }
+        return padding(firstLine.take(left)) to (tiles * 10 - joins)
+    }
 
     "all frame joins remain aligned with wrapped values, blank cells and different dialog widths" {
         val rows = listOf(
@@ -66,6 +104,60 @@ class DialogTablesTest : FreeSpec({
             require(result is DialogTables.Result.Framed)
             lineWidths(result.component).forEach { it shouldBe width - 8 }
         }
+    }
+
+    "single framed text keeps one outer border, explicit blank lines and inline colors" {
+        val frame = DialogTables.Frame.EPIC
+        val content = Component.text("Красная строка\n\n", NamedTextColor.RED)
+            .append(Component.text("Зелёная строка", NamedTextColor.GREEN))
+        val body = DialogTables.framedBody(content, frame, 320)
+
+        body.width shouldBe 320
+        countCodePoint(body.text, frame.base + 0) shouldBe 1
+        countCodePoint(body.text, frame.base + 3) shouldBe 1
+        countCodePoint(body.text, frame.base + 11) shouldBe 1
+        countCodePoint(body.text, frame.base + 14) shouldBe 1
+        countCodePoint(body.text, frame.base + 4) shouldBe 3
+        countCodePoint(body.text, frame.base + 6) shouldBe 3
+        listOf(2, 5, 7, 8, 9, 10, 13).forEach { offset ->
+            countCodePoint(body.text, frame.base + offset) shouldBe 0
+        }
+        lineWidths(body.text).forEach { it shouldBe 312 }
+        textWithoutPackGlyphs(body.text).contains("Красная строка\n\nЗелёная строка") shouldBe true
+        textRuns(body.text).first { it.first.contains("Красная строка") }.second.color() shouldBe NamedTextColor.RED
+        textRuns(body.text).first { it.first.contains("Зелёная строка") }.second.color() shouldBe NamedTextColor.GREEN
+    }
+
+    "single framed text aligns its outer inset and border width with same-width tables" {
+        val frame = DialogTables.Frame.EPIC
+        val width = 320
+        val table = DialogTables.body(
+            listOf(Component.text("Описание") to Component.text("Содержимое")),
+            frame = frame,
+            width = width,
+        )
+        val framed = DialogTables.framedBody(Component.text("Содержимое"), frame, width)
+
+        topFrameGeometry(table.text, frame) shouldBe (11 to 289)
+        topFrameGeometry(framed.text, frame) shouldBe topFrameGeometry(table.text, frame)
+        lineWidths(table.text).forEach { it shouldBe width - 8 }
+        lineWidths(framed.text).forEach { it shouldBe width - 8 }
+    }
+
+    "single framed text wraps measured content and safely falls back when framing is unsupported" {
+        val words = (1..80).joinToString(" ") { "длинное-$it" }
+        val body = DialogTables.framedBody(Component.text(words), width = 320)
+        lineWidths(body.text).forEach { it shouldBe 312 }
+        words.split(' ').forEach { word ->
+            textWithoutPackGlyphs(body.text).contains(word) shouldBe true
+        }
+
+        val unsupported = Component.translatable("block.minecraft.stone")
+        val fallback = DialogTables.framedBody(unsupported, width = 320)
+        fallback.text shouldBe unsupported
+
+        val narrow = DialogTables.framedBody(Component.text("short"), width = 24)
+        narrow.text shouldBe Component.text("short")
     }
 
     "compact sibling tables keep the same edges and column divider" {

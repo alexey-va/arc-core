@@ -71,6 +71,47 @@ object DialogTables {
         columns: Columns = Columns.AUTO,
     ): PaperDialogBody = PaperDialogBody(render(rows, headers, frame, width, columns, spec).component, width)
 
+    /**
+     * One text block inside a single pack frame. [width] includes the native
+     * dialog widget's 4px padding on both sides, like [body]. Text is wrapped
+     * with the loaded pack metrics and retains its Adventure styles. Components
+     * the metric adapter cannot measure, or widths too narrow for a frame, are
+     * returned unchanged as a readable unframed body.
+     */
+    fun framedBody(
+        content: Component,
+        frame: Frame = Frame.EPIC,
+        width: Int = 320,
+    ): PaperDialogBody {
+        require(width in 9..1024) { "Dialog frame width must be in 9..1024 GUI pixels" }
+        val innerWidth = width - 8
+        val tileCount = (innerWidth - MIN_OUTER_INSET * 2 - 1) / TILE
+        val borderWidth = tileCount * TILE + 1
+        val textWidth = borderWidth - TEXT_START * 2
+        if (tileCount < 3 || textWidth < 1) return PaperDialogBody(content, width)
+        val contentLines = cellLines(content, textWidth) ?: return PaperDialogBody(content, width)
+        if (contentLines.size > 192) return PaperDialogBody(content, width)
+
+        val outsideWidth = innerWidth - borderWidth
+        val outerLeft = outsideWidth / 2
+        val outerRight = outsideWidth - outerLeft
+        fun outside(part: Component) = join(listOf(gap(outerLeft), part, gap(outerRight)))
+        fun border(start: Int, horizontal: Int, end: Int) = outside(
+            glued(frame, listOf(start) + List(tileCount - 2) { horizontal } + end)
+        )
+        fun contentLine(line: Component) = outside(join(listOf(
+            glyph(frame.base + 4), gap(TEXT_START - frame.leftAdvance), line,
+            glyph(frame.base + 6), gap(TEXT_START - frame.rightAdvance),
+        )))
+
+        val renderedLines = buildList {
+            add(border(0, 1, 3))
+            contentLines.forEach { add(contentLine(it)) }
+            add(border(11, 12, 14))
+        }
+        return PaperDialogBody(lines(renderedLines), width)
+    }
+
     /** Width includes the native widget's 4px padding on both sides. */
     fun render(
         rows: List<Pair<Component, Component>>,
