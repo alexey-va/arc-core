@@ -3,6 +3,7 @@ package ru.arc.paper.api
 import net.kyori.adventure.text.Component
 import org.bukkit.entity.Player
 import org.bukkit.plugin.Plugin
+import java.util.UUID
 
 /**
  * One candidate source for the shared per-viewer inspection card.
@@ -20,11 +21,32 @@ fun interface ArcInspectionProvider {
 /** Content for the two presentation modes supported by the shared inspector. */
 data class ArcInspectionFrame(
     val hologram: Component,
-    val bossbar: Component = hologram,
+    val bossbar: Component,
+    val hologramAnchor: InspectionHologramAnchor?,
 ) {
+    // Retain the original JVM constructor, including Kotlin's default-argument
+    // bridge, for independently loaded providers compiled against older core.
+    constructor(hologram: Component, bossbar: Component = hologram) : this(hologram, bossbar, null)
+
+    /** Preserve the original copy bridge while retaining an existing anchor. */
+    fun copy(hologram: Component = this.hologram, bossbar: Component = this.bossbar): ArcInspectionFrame =
+        ArcInspectionFrame(hologram, bossbar, hologramAnchor)
+
     /** Both empty components mean "occupied, but intentionally show no card". */
     val suppressesLowerSources: Boolean
         get() = hologram == Component.empty() && bossbar == Component.empty()
+}
+
+/**
+ * Immutable world position of a hologram's bottom edge. Providers resolve this
+ * on the primary thread; no entity or mutable Location is retained. Anchored
+ * cards stay upright, retain the viewer's scale, and ignore viewer-relative
+ * layout offsets. A frame anchored in another world is hidden.
+ */
+data class InspectionHologramAnchor(val worldId: UUID, val x: Double, val y: Double, val z: Double) {
+    init {
+        require(x.isFinite() && y.isFinite() && z.isFinite()) { "Inspection anchor coordinates must be finite" }
+    }
 }
 
 enum class InspectionViewMode {

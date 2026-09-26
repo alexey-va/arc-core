@@ -24,6 +24,7 @@ import org.joml.Vector3f
 import ru.arc.paper.api.ArcInspectionFrame
 import ru.arc.paper.api.ArcInspectionProvider
 import ru.arc.paper.api.ArcInspectionService
+import ru.arc.paper.api.InspectionHologramAnchor
 import ru.arc.paper.api.InspectionViewMode
 import ru.arc.paper.api.InspectionViewPreferences
 import ru.arc.paper.audience.NativePaperAudienceEffects
@@ -67,6 +68,7 @@ class PaperArcInspectionService internal constructor(
         var text: PacketTextDisplay? = null
         var bossBar: BossBar? = null
         var shownComponent: Component? = null
+        var anchor: InspectionHologramAnchor? = null
     }
 
     private val registrations = linkedMapOf<SourceKey, Source>()
@@ -123,6 +125,12 @@ class PaperArcInspectionService internal constructor(
             clearVisual(viewer, player)
             return
         }
+        val anchor = frame.hologramAnchor
+        if (anchor != null && anchor.worldId != player.world.uid) {
+            clearVisual(viewer, player)
+            return
+        }
+        viewer.anchor = anchor
 
         val component = when (preferences.mode) {
             InspectionViewMode.HOLOGRAM -> frame.hologram
@@ -141,7 +149,7 @@ class PaperArcInspectionService internal constructor(
         }
     }
 
-    /** Move the existing hologram with the viewer; source resolution remains in [update]. */
+    /** Follow viewer-relative cards; anchored cards retain the position resolved in [update]. */
     fun follow(player: Player) {
         requireOpen()
         checkThread("Inspection views must follow on the Paper primary thread")
@@ -157,7 +165,7 @@ class PaperArcInspectionService internal constructor(
             viewer.shownComponent = null
             return
         }
-        moveDisplay(display, player, viewer.preferences)
+        if (viewer.anchor == null) moveDisplay(display, player, viewer.preferences, null)
     }
 
     /** Clear this viewer's visual and cached state. */
@@ -224,10 +232,10 @@ class PaperArcInspectionService internal constructor(
         var display = viewer.text
         if (display == null || !display.isValid || display.location.world != player.world) {
             display?.remove()
-            val location = inspectionLocation(player, viewer.preferences)
+            val location = inspectionLocation(player, viewer.preferences, viewer.anchor)
             display = displays.spawnText(location, component).apply {
                 isVisibleByDefault = false
-                billboard = Display.Billboard.CENTER
+                billboard = if (viewer.anchor == null) Display.Billboard.CENTER else Display.Billboard.VERTICAL
                 brightness = Display.Brightness(15, 15)
                 viewRange = 2.5f
                 isSeeThrough = true
@@ -245,7 +253,8 @@ class PaperArcInspectionService internal constructor(
                 viewer.shownComponent = component
             }
             applyScale(display, viewer.preferences.scale)
-            moveDisplay(display, player, viewer.preferences)
+            display.billboard = if (viewer.anchor == null) Display.Billboard.CENTER else Display.Billboard.VERTICAL
+            moveDisplay(display, player, viewer.preferences, viewer.anchor)
         }
     }
 
@@ -265,16 +274,22 @@ class PaperArcInspectionService internal constructor(
         display: PacketTextDisplay,
         player: Player,
         preferences: InspectionViewPreferences,
+        anchor: InspectionHologramAnchor?,
     ) {
-        val target = inspectionLocation(player, preferences)
+        val target = inspectionLocation(player, preferences, anchor)
         val previous = display.location
-        val snap = previous.world != target.world ||
+        val snap = anchor != null || previous.world != target.world ||
             previous.distanceSquared(target) > MAX_INTERPOLATED_DISTANCE_SQUARED
         display.teleportDuration = if (snap) 0 else INTERPOLATION_TICKS
         display.teleport(target)
     }
 
-    private fun inspectionLocation(player: Player, preferences: InspectionViewPreferences): Location {
+    private fun inspectionLocation(
+        player: Player,
+        preferences: InspectionViewPreferences,
+        anchor: InspectionHologramAnchor?,
+    ): Location {
+        if (anchor != null) return Location(player.world, anchor.x, anchor.y, anchor.z)
         val eye = player.eyeLocation
         val location = eye.clone().add(eye.direction.multiply(RENDER_DISTANCE))
             .add(0.0, BASE_VERTICAL_OFFSET + preferences.verticalOffset, 0.0)
@@ -299,6 +314,7 @@ class PaperArcInspectionService internal constructor(
         clearText(viewer)
         clearBossBar(viewer, player)
         viewer.shownComponent = null
+        viewer.anchor = null
     }
 
     private fun clearText(viewer: Viewer) {

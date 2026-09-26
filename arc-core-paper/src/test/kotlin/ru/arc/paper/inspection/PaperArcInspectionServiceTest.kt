@@ -2,6 +2,7 @@ package ru.arc.paper.inspection
 
 import com.github.retrooper.packetevents.protocol.item.ItemStack as PacketItemStack
 import io.kotest.core.spec.style.FreeSpec
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
 import net.kyori.adventure.bossbar.BossBar
@@ -9,12 +10,14 @@ import net.kyori.adventure.text.Component
 import net.kyori.adventure.title.Title
 import org.bukkit.block.data.BlockData
 import org.bukkit.entity.Player
+import org.bukkit.entity.Display
 import org.bukkit.event.player.PlayerChangedWorldEvent
 import org.bukkit.event.player.PlayerQuitEvent
 import org.bukkit.inventory.ItemStack
 import ru.arc.core.LifecycleTaskScope
 import ru.arc.core.TestTaskScheduler
 import ru.arc.paper.api.ArcInspectionFrame
+import ru.arc.paper.api.InspectionHologramAnchor
 import ru.arc.paper.api.InspectionViewMode
 import ru.arc.paper.api.InspectionViewPreferences
 import ru.arc.paper.audience.PaperAudienceEffects
@@ -32,6 +35,67 @@ import ru.arc.paper.testing.loadPlugin
 import java.util.UUID
 
 class PaperArcInspectionServiceTest : FreeSpec({
+    "anchored cards stay above the target through follow, scaling and target changes" {
+        failOnUnsupportedMockBukkitOperation {
+            MockBukkitTestRuntime.open().use { paper ->
+                val plugin = paper.loadPlugin<TestPaperPlugin>()
+                val player = paper.addPlayer("Viewer")
+                val transport = RecordingTransport()
+                val displays = packetDisplays(plugin, player, transport)
+                val service = PaperArcInspectionService(plugin, displays, RecordingEffects())
+                var anchor: InspectionHologramAnchor? = InspectionHologramAnchor(player.world.uid, 2.0, 66.15, 3.0)
+                service.register(plugin, "furniture", 0) {
+                    ArcInspectionFrame(Component.text("Table\n100 coins"), Component.text("Table"), anchor)
+                }
+                val preferences = InspectionViewPreferences(scale = 2f, verticalOffset = -1.5, horizontalOffset = 2.0)
+                service.update(player, preferences)
+                displays.refresh()
+                val initial = transport.forPlayer(player).last().frames.single()
+                listOf(initial.x, initial.y, initial.z) shouldBe listOf(2.0, 66.15, 3.0)
+                initial.metadata.billboard shouldBe Display.Billboard.VERTICAL.ordinal.toByte()
+                initial.metadata.transform.scale.y shouldBe 2f
+
+                service.follow(player)
+                displays.refresh()
+                transport.forPlayer(player).last().frames.single().y shouldBe 66.15
+
+                anchor = InspectionHologramAnchor(player.world.uid, 4.0, 68.15, 3.0)
+                service.update(player, preferences)
+                displays.refresh()
+                val tall = transport.forPlayer(player).last().frames.single()
+                tall.entityId shouldBe initial.entityId
+                listOf(tall.x, tall.y, tall.z) shouldBe listOf(4.0, 68.15, 3.0)
+                tall.metadata.teleportDuration shouldBe 0
+
+                anchor = null
+                service.update(player, InspectionViewPreferences())
+                displays.refresh()
+                transport.forPlayer(player).last().frames.single().metadata.billboard shouldBe
+                    Display.Billboard.CENTER.ordinal.toByte()
+
+                anchor = InspectionHologramAnchor(UUID.randomUUID(), 2.0, 66.15, 3.0)
+                service.update(player, preferences)
+                displays.refresh()
+                transport.forPlayer(player).last().frames shouldBe emptyList()
+                service.close()
+            }
+        }
+    }
+
+    "anchors reject nonfinite coordinates and the legacy frame constructor remains available" {
+        listOf(Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY).forEach { invalid ->
+            shouldThrow<IllegalArgumentException> { InspectionHologramAnchor(UUID.randomUUID(), invalid, 0.0, 0.0) }
+            shouldThrow<IllegalArgumentException> { InspectionHologramAnchor(UUID.randomUUID(), 0.0, invalid, 0.0) }
+            shouldThrow<IllegalArgumentException> { InspectionHologramAnchor(UUID.randomUUID(), 0.0, 0.0, invalid) }
+        }
+        ArcInspectionFrame(Component.text("Legacy")).hologramAnchor shouldBe null
+        ArcInspectionFrame::class.java.getConstructor(Component::class.java, Component::class.java)
+        ArcInspectionFrame::class.java.getMethod("copy", Component::class.java, Component::class.java)
+        val anchor = InspectionHologramAnchor(UUID.randomUUID(), 0.0, 1.15, 0.0)
+        ArcInspectionFrame(Component.text("Furniture"), Component.text("Price"), anchor)
+            .copy(hologram = Component.text("New price")).hologramAnchor shouldBe anchor
+    }
+
     "priority falls through null, empty frames suppress, and closing the winner restores the next source" {
         failOnUnsupportedMockBukkitOperation {
             MockBukkitTestRuntime.open().use { paper ->
