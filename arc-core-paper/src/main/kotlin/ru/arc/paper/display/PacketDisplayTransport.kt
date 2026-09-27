@@ -22,6 +22,7 @@ import org.bukkit.entity.Player
 import org.bukkit.inventory.ItemStack
 import java.lang.ref.WeakReference
 import java.util.Optional
+import java.util.UUID
 import java.util.WeakHashMap
 import java.util.logging.Level
 import java.util.logging.Logger
@@ -32,8 +33,8 @@ import java.util.logging.Logger
  * Captures Bukkit values on the server thread and queues only immutable frame
  * snapshots to Netty. The returned attachment never retains the Player and its
  * channel is weakly referenced. One attachment keeps a bounded latest frame and
- * one queued event-loop drain; replay requests are merged while that drain is
- * pending.
+ * one queued event-loop drain; replay requests and pending snap boundaries are
+ * merged while that drain is pending.
  */
 internal interface PacketDisplayTransport : AutoCloseable {
     fun blockStateId(block: BlockData): Int
@@ -120,6 +121,10 @@ internal class PacketEventsDisplayTransport(
 /**
  * One channel attachment. This class is internal to keep the pure queue seam
  * testable without Bukkit or a live PacketEvents channel.
+ * A pending zero-duration transform edge survives replacement by a newer frame
+ * only while that same entity ID, UUID, and display-content kind remain present.
+ * The latest frame is sent with the edge; its effective metadata becomes the
+ * next submitted baseline so a later normal-duration frame restores animation.
  */
 internal class PacketDisplayAttachment internal constructor(
     channel: Any,
@@ -133,6 +138,7 @@ internal class PacketDisplayAttachment internal constructor(
     private var scheduled = false
     private var pending: Pending? = null
     private var submitted: Map<Int, PacketDisplayFrame> = emptyMap()
+    private var inFlightFrames: Map<Int, PacketDisplayFrame>? = null
     private var cleanupIds: Set<Int> = emptySet()
     private var failureLogged = false
 
@@ -147,10 +153,20 @@ internal class PacketDisplayAttachment internal constructor(
         resetChunks: Set<Long>,
         resetAll: Boolean,
     ) {
-        val next = Pending(captureFrames(desired), resetChunks.toSet(), resetAll).bounded()
+        val resetSnapshot = resetChunks.toSet()
         var schedule = false
         synchronized(lock) {
             val previous = pending
+            val frames = captureFrames(desired)
+            val snapTargets = frames.mapNotNull { (id, current) ->
+                val prior = previous?.frames?.let { queued ->
+                    if (id in queued) queued[id] else inFlightFrames?.get(id) ?: submitted[id]
+                } ?: inFlightFrames?.get(id) ?: submitted[id]
+                if (prior != null && sameGeneration(prior, current) &&
+                    current.metadata.interpolationDuration == 0 && visualStateChanged(prior, current)
+                ) generation(current) else null
+            }.toSet()
+            val next = Pending(frames, resetSnapshot, resetAll, snapTargets).bounded()
             if (valid && !scheduled && previous == null && next.resetChunks.isEmpty() && !next.resetAll && submitted == next.frames) {
                 return
             }
@@ -184,18 +200,33 @@ internal class PacketDisplayAttachment internal constructor(
 
     private fun drain() {
         while (true) {
-            val work = synchronized(lock) {
+            val batch = synchronized(lock) {
                 val value = pending ?: run {
                     scheduled = false
                     return
                 }
                 pending = null
-                value
+                val previous = submitted
+                val desired = value.frames.mapValues { (_, frame) ->
+                    val old = previous[frame.entityId]
+                    if (generation(frame) in value.snapTargets && old != null &&
+                        sameGeneration(old, frame) && frame.metadata.interpolationDuration != 0 &&
+                        visualStateChanged(old, frame)
+                    ) {
+                        frame.copy(metadata = frame.metadata.copy(interpolationDuration = 0))
+                    } else {
+                        frame
+                    }
+                }
+                inFlightFrames = desired
+                DeliveryBatch(value, previous, desired)
             }
             try {
-                process(work)
+                process(batch)
             } catch (failure: Throwable) {
                 fail(failure)
+            } finally {
+                synchronized(lock) { inFlightFrames = null }
             }
             synchronized(lock) {
                 if (pending == null) {
@@ -206,8 +237,9 @@ internal class PacketDisplayAttachment internal constructor(
         }
     }
 
-    private fun process(work: Pending) {
-        val previous = synchronized(lock) { submitted }
+    private fun process(batch: DeliveryBatch) {
+        val work = batch.pending
+        val previous = batch.previous
         val channel = channelRef.get()
         val open = channel?.let { runCatching { backend.isOpen(it) }.getOrElse { failure ->
             fail(failure)
@@ -226,7 +258,7 @@ internal class PacketDisplayAttachment internal constructor(
             return
         }
 
-        val desired = work.frames
+        val desired = batch.desired
         val destroys = linkedSetOf<Int>().apply { addAll(synchronized(lock) { cleanupIds }) }
         val spawns = mutableListOf<PacketDisplayFrame>()
         val spawnIds = hashSetOf<Int>()
@@ -238,10 +270,10 @@ internal class PacketDisplayAttachment internal constructor(
             val current = desiredById[id]
             val forceReplay = work.resetAll || old.chunkKey in work.resetChunks ||
                 (current != null && current.chunkKey in work.resetChunks)
-            if (current == null || forceReplay || displayKind(old) != displayKind(current)) {
+            if (current == null || forceReplay || !sameGeneration(old, current)) {
                 destroys += id
             }
-            if (current != null && (forceReplay || displayKind(old) != displayKind(current))) {
+            if (current != null && (forceReplay || !sameGeneration(old, current))) {
                 if (spawnIds.add(id)) spawns += current
             }
         }
@@ -249,7 +281,7 @@ internal class PacketDisplayAttachment internal constructor(
             val old = previous[id]
             val forceReplay = work.resetAll || current.chunkKey in work.resetChunks ||
                 (old != null && old.chunkKey in work.resetChunks)
-            if (old == null || forceReplay || displayKind(old) != displayKind(current)) {
+            if (old == null || forceReplay || !sameGeneration(old, current)) {
                 if (spawnIds.add(id)) spawns += current
             } else {
                 val changed = metadataDelta(old, current)
@@ -416,13 +448,16 @@ internal class PacketDisplayAttachment internal constructor(
         val frames: Map<Int, PacketDisplayFrame>,
         val resetChunks: Set<Long>,
         val resetAll: Boolean,
+        val snapTargets: Set<DisplayGeneration> = emptySet(),
     ) {
         fun merge(next: Pending): Pending {
             val mergedChunks = resetChunks + next.resetChunks
+            val generations = next.frames.values.map(::generation).toSet()
+            val snaps = (snapTargets + next.snapTargets).intersect(generations)
             return if (resetAll || next.resetAll || mergedChunks.size > MAX_RESET_CHUNKS) {
-                Pending(next.frames, emptySet(), true)
+                Pending(next.frames, emptySet(), true, snaps)
             } else {
-                Pending(next.frames, mergedChunks, false)
+                Pending(next.frames, mergedChunks, false, snaps)
             }
         }
 
@@ -433,6 +468,18 @@ internal class PacketDisplayAttachment internal constructor(
         }
     }
 
+    private data class DeliveryBatch(
+        val pending: Pending,
+        val previous: Map<Int, PacketDisplayFrame>,
+        val desired: Map<Int, PacketDisplayFrame>,
+    )
+
+    private data class DisplayGeneration(
+        val entityId: Int,
+        val uuid: UUID,
+        val kind: Class<*>,
+    )
+
     private companion object {
         const val MAX_RESET_CHUNKS = 256
 
@@ -440,6 +487,15 @@ internal class PacketDisplayAttachment internal constructor(
             frames.associateBy(PacketDisplayFrame::entityId)
 
         fun displayKind(frame: PacketDisplayFrame): Class<*> = frame.metadata.content::class.java
+
+        fun generation(frame: PacketDisplayFrame): DisplayGeneration =
+            DisplayGeneration(frame.entityId, frame.uuid, displayKind(frame))
+
+        fun sameGeneration(old: PacketDisplayFrame, current: PacketDisplayFrame): Boolean =
+            old.entityId == current.entityId && old.uuid == current.uuid && displayKind(old) == displayKind(current)
+
+        fun visualStateChanged(old: PacketDisplayFrame, current: PacketDisplayFrame): Boolean =
+            old.metadata.transform != current.metadata.transform || old.metadata.content != current.metadata.content
 
         fun positionChanged(old: PacketDisplayFrame, current: PacketDisplayFrame): Boolean =
             old.x != current.x || old.y != current.y || old.z != current.z ||

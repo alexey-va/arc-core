@@ -33,9 +33,14 @@ outputs (locations, item stacks, block data and transformations) are copied.
 The service captures one frame per tick. It reads players, world IDs and received
 chunks on that thread, then submits only protocol values to each connection's
 Netty event loop. Encoding, delta calculation and packet writes happen there.
-The queue coalesces pending animation frames while retaining replay requests.
-An unchanged frame sends nothing; transform changes restart interpolation,
-position changes teleport the existing ID, and item changes retain the ID.
+The queue coalesces pending animation frames while retaining replay requests and
+any requested zero-duration visual-state edge for the same entity ID, UUID and
+display kind. The edge applies to the latest frame for that entity incarnation;
+the next normal-duration frame restores ordinary interpolation. Unchanged frames
+still send nothing. Transform changes restart interpolation, position changes
+teleport the existing ID, and item changes retain the ID. Reusing an entity ID
+with a different UUID or display kind destroys the old client entity before
+spawning the replacement.
 
 By default, every online player in the same world and within `viewRange * 64`
 blocks can see the visual, provided the client has received its chunk. Set

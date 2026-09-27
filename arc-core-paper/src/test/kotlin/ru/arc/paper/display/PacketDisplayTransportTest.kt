@@ -37,6 +37,199 @@ class PacketDisplayTransportTest : FreeSpec({
         backend.flushes shouldBe 1
     }
 
+    "a reveal snap survives a coalesced latest frame and restores normal interpolation" {
+        val backend = RecordingPacketBackend()
+        val channel = Any()
+        val connection = PacketDisplayAttachment(channel, Logger.getAnonymousLogger(), backend)
+        val hidden = animatedFrame(content = itemContent(TestItem.AIR), yTransform = -1f, duration = 2)
+
+        connection.submit(listOf(hidden))
+        backend.runAll()
+        backend.clear()
+
+        val reveal = animatedFrame(content = itemContent(TestItem.DIAMOND), yTransform = 0.5f, duration = 0)
+        val latest = reveal.copy(
+            metadata = reveal.metadata.copy(
+                transform = reveal.metadata.transform.copy(translation = DisplayVector(0f, 0.75f, 0f)),
+                interpolationDuration = 2,
+            ),
+        )
+        connection.submit(listOf(reveal))
+        connection.submit(listOf(latest))
+        backend.runAll()
+
+        val snapped = backend.writes.filterIsInstance<WrapperPlayServerEntityMetadata>().single()
+        snapped.metadataValue(9) shouldBe 0
+        (snapped.metadataValue(11) as com.github.retrooper.packetevents.util.Vector3f).y shouldBe 0.75f
+        snapped.metadataValue(23) shouldBe (latest.metadata.content as PacketDisplayContent.Item).item
+
+        backend.clear()
+        val next = latest.copy(
+            metadata = latest.metadata.copy(
+                transform = latest.metadata.transform.copy(translation = DisplayVector(0f, 1f, 0f)),
+                interpolationDuration = 2,
+            ),
+        )
+        connection.submit(listOf(next))
+        backend.runAll()
+
+        val restored = backend.writes.filterIsInstance<WrapperPlayServerEntityMetadata>().single()
+        restored.metadataValue(9) shouldBe 2
+        (restored.metadataValue(11) as com.github.retrooper.packetevents.util.Vector3f).y shouldBe 1f
+    }
+
+    "a submit during snap delivery uses the effective in-flight snapshot" {
+        val backend = RecordingPacketBackend()
+        val channel = Any()
+        val connection = PacketDisplayAttachment(channel, Logger.getAnonymousLogger(), backend)
+        val hidden = animatedFrame(content = itemContent(TestItem.AIR), yTransform = -1f, duration = 2)
+        connection.submit(listOf(hidden))
+        backend.runAll()
+        backend.clear()
+
+        val reveal = animatedFrame(content = itemContent(TestItem.DIAMOND), yTransform = 0.5f, duration = 0)
+        val next = reveal.copy(
+            metadata = reveal.metadata.copy(
+                transform = reveal.metadata.transform.copy(translation = DisplayVector(0f, 0.75f, 0f)),
+                interpolationDuration = 2,
+            ),
+        )
+        backend.onWrite = { packet ->
+            if (packet is WrapperPlayServerEntityMetadata && packet.metadataValue(9) == 0) {
+                backend.onWrite = null
+                connection.submit(listOf(next))
+            }
+        }
+        connection.submit(listOf(reveal))
+        backend.runAll()
+
+        val updates = backend.writes.filterIsInstance<WrapperPlayServerEntityMetadata>()
+        updates.map { it.metadataValue(9) } shouldBe listOf(0, 2)
+        updates.map {
+            (it.metadataValue(11) as com.github.retrooper.packetevents.util.Vector3f).y
+        } shouldBe listOf(0.5f, 0.75f)
+    }
+
+    "a recycle snap survives skipped air frames but does not survive removal" {
+        val backend = RecordingPacketBackend()
+        val channel = Any()
+        val connection = PacketDisplayAttachment(channel, Logger.getAnonymousLogger(), backend)
+        val visible = animatedFrame(content = itemContent(TestItem.DIAMOND), yTransform = 1f, duration = 2)
+        connection.submit(listOf(visible))
+        backend.runAll()
+        backend.clear()
+
+        val recycle = animatedFrame(content = itemContent(TestItem.AIR), yTransform = -1f, duration = 0)
+        val shiftedAir = recycle.copy(
+            metadata = recycle.metadata.copy(
+                transform = recycle.metadata.transform.copy(translation = DisplayVector(0f, -1.5f, 0f)),
+                interpolationDuration = 2,
+            ),
+        )
+        val latest = animatedFrame(content = itemContent(TestItem.EMERALD), yTransform = 0.25f, duration = 2)
+        connection.submit(listOf(recycle))
+        connection.submit(listOf(shiftedAir))
+        connection.submit(listOf(latest))
+        backend.runAll()
+
+        val snapped = backend.writes.filterIsInstance<WrapperPlayServerEntityMetadata>().single()
+        snapped.metadataValue(9) shouldBe 0
+        (snapped.metadataValue(11) as com.github.retrooper.packetevents.util.Vector3f).y shouldBe 0.25f
+        snapped.metadataValue(23) shouldBe (latest.metadata.content as PacketDisplayContent.Item).item
+
+        backend.clear()
+        connection.submit(listOf(recycle))
+        connection.submit(emptyList())
+        backend.runAll()
+
+        backend.writes.filterIsInstance<WrapperPlayServerDestroyEntities>().single()
+            .entityIds.toList() shouldBe listOf(visible.entityId)
+        backend.writes.filterIsInstance<WrapperPlayServerEntityMetadata>().size shouldBe 0
+        backend.writes.filterIsInstance<WrapperPlayServerSpawnEntity>().size shouldBe 0
+    }
+
+    "a changed UUID reuses its numeric ID only after destroy and spawn" {
+        val backend = RecordingPacketBackend()
+        val channel = Any()
+        val connection = PacketDisplayAttachment(channel, Logger.getAnonymousLogger(), backend)
+        val old = animatedFrame(content = PacketDisplayContent.Block(1), yTransform = 0f, duration = 2)
+        connection.submit(listOf(old))
+        backend.runAll()
+        backend.clear()
+
+        val snap = old.copy(
+            metadata = old.metadata.copy(
+                transform = old.metadata.transform.copy(translation = DisplayVector(0f, 1f, 0f)),
+                interpolationDuration = 0,
+            ),
+        )
+        val replacement = old.copy(
+            uuid = UUID.randomUUID(),
+            metadata = old.metadata.copy(
+                transform = old.metadata.transform.copy(translation = DisplayVector(0f, 2f, 0f)),
+                interpolationDuration = 2,
+            ),
+        )
+        connection.submit(listOf(snap))
+        connection.submit(listOf(replacement))
+        backend.runAll()
+
+        backend.writes.first() as WrapperPlayServerDestroyEntities
+        val spawn = backend.writes.filterIsInstance<WrapperPlayServerSpawnEntity>().single()
+        spawn.entityId shouldBe old.entityId
+        spawn.uuid.get() shouldBe replacement.uuid
+        val spawnMetadata = backend.writes.filterIsInstance<WrapperPlayServerEntityMetadata>().single()
+        spawnMetadata.metadataValue(9) shouldBe 2
+        (spawnMetadata.metadataValue(11) as com.github.retrooper.packetevents.util.Vector3f).y shouldBe 2f
+    }
+
+    "a changed display kind does not inherit a pending snap" {
+        val backend = RecordingPacketBackend()
+        val channel = Any()
+        val connection = PacketDisplayAttachment(channel, Logger.getAnonymousLogger(), backend)
+        val old = animatedFrame(content = PacketDisplayContent.Block(1), yTransform = 0f, duration = 2)
+        connection.submit(listOf(old))
+        backend.runAll()
+        backend.clear()
+
+        val snap = old.copy(
+            metadata = old.metadata.copy(
+                transform = old.metadata.transform.copy(translation = DisplayVector(0f, 1f, 0f)),
+                interpolationDuration = 0,
+            ),
+        )
+        val replacement = animatedFrame(
+            id = old.entityId,
+            uuid = old.uuid,
+            content = itemContent(TestItem.EMERALD),
+            yTransform = 2f,
+            duration = 2,
+        )
+        connection.submit(listOf(snap))
+        connection.submit(listOf(replacement))
+        backend.runAll()
+
+        backend.writes.first() as WrapperPlayServerDestroyEntities
+        backend.writes.filterIsInstance<WrapperPlayServerSpawnEntity>().single().entityId shouldBe old.entityId
+        backend.writes.filterIsInstance<WrapperPlayServerEntityMetadata>().single().metadataValue(9) shouldBe 2
+    }
+
+    "unchanged zero-duration frames do not schedule packets" {
+        val backend = RecordingPacketBackend()
+        val channel = Any()
+        val connection = PacketDisplayAttachment(channel, Logger.getAnonymousLogger(), backend)
+        val display = animatedFrame(content = itemContent(TestItem.DIAMOND), yTransform = 0f, duration = 0)
+        connection.submit(listOf(display))
+        backend.runAll()
+        backend.clear()
+
+        connection.submit(listOf(display))
+
+        backend.tasks.size shouldBe 0
+        backend.writes.size shouldBe 0
+        backend.flushes shouldBe 0
+    }
+
     "a submit racing an in-flight drain is not lost by the unchanged fast path" {
         val backend = RecordingPacketBackend()
         val channel = Any()
@@ -225,9 +418,10 @@ private fun frame(
     id: Int = 100,
     x: Double = 0.0,
     content: PacketDisplayContent = PacketDisplayContent.Block(1),
+    uuid: UUID = UUID(0, id.toLong()),
 ): PacketDisplayFrame = PacketDisplayFrame(
     entityId = id,
-    uuid = UUID(0, id.toLong()),
+    uuid = uuid,
     x = x,
     y = 64.0,
     z = 0.0,
@@ -236,12 +430,39 @@ private fun frame(
     metadata = PacketDisplayMetadata(content),
 )
 
-private fun testItem(): com.github.retrooper.packetevents.protocol.item.ItemStack =
-    com.github.retrooper.packetevents.protocol.item.ItemStack.builder()
-        .type(com.github.retrooper.packetevents.protocol.item.type.ItemTypes.DIAMOND)
+private fun animatedFrame(
+    id: Int = 100,
+    uuid: UUID = UUID(0, id.toLong()),
+    content: PacketDisplayContent,
+    yTransform: Float,
+    duration: Int,
+): PacketDisplayFrame = frame(id = id, content = content, uuid = uuid).copy(
+    metadata = PacketDisplayMetadata(
+        content = content,
+        transform = DisplayTransform(translation = DisplayVector(0f, yTransform, 0f)),
+        interpolationDuration = duration,
+    ),
+)
+
+private enum class TestItem { AIR, DIAMOND, EMERALD }
+
+private fun itemContent(material: TestItem): PacketDisplayContent.Item = PacketDisplayContent.Item(testItem(material), 0)
+
+private fun testItem(material: TestItem = TestItem.DIAMOND): com.github.retrooper.packetevents.protocol.item.ItemStack {
+    val type = when (material) {
+        TestItem.AIR -> com.github.retrooper.packetevents.protocol.item.type.ItemTypes.AIR
+        TestItem.DIAMOND -> com.github.retrooper.packetevents.protocol.item.type.ItemTypes.DIAMOND
+        TestItem.EMERALD -> com.github.retrooper.packetevents.protocol.item.type.ItemTypes.EMERALD
+    }
+    return com.github.retrooper.packetevents.protocol.item.ItemStack.builder()
+        .type(type)
         .amount(1)
         .version(com.github.retrooper.packetevents.protocol.player.ClientVersion.V_1_21_11)
         .build()
+}
+
+private fun WrapperPlayServerEntityMetadata.metadataValue(index: Int): Any? =
+    entityMetadata.single { it.index == index }.value
 
 /** Real registry and buffer plumbing, with no live player/channel operations. */
 private class TestPacketEventsApi : PacketEventsAPI<Any>() {
