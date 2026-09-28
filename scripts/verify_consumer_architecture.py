@@ -142,7 +142,9 @@ CAPABILITY_EVIDENCE = {
     "paper-menu": (
         (
             "main",
-            re.compile(r"\b(?:PaperMenuRuntime|PaperMenuConfigurationParser|PaperMenuService|MenuLayoutParser)\b"),
+            re.compile(
+                r"\b(?:PaperDialogRuntime|PaperMenuRuntime|PaperMenuConfigurationParser|PaperMenuService|MenuLayoutParser)\b"
+            ),
         ),
     ),
     "paper-teleport": (

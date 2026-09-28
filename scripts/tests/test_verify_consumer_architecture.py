@@ -322,6 +322,51 @@ fun redisTest() = RedisTestService.start().use { }
         self.assertEqual(0, exit_code)
         self.assertIn("paper-menu", output)
 
+    def test_paper_menu_capability_accepts_native_dialogs_without_weakening_contract(self) -> None:
+        manifest = self.root / "arc-core-consumer.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                '"runtime"]',
+                '"runtime", "paper-menu"]',
+            ),
+            encoding="utf-8",
+        )
+        source = self.root / "src/main/kotlin/example/ExamplePlugin.kt"
+        source.write_text(
+            source.read_text(encoding="utf-8") + "\nval dialogs: PaperDialogRuntime = nativeDialogs()\n",
+            encoding="utf-8",
+        )
+
+        # Native dialog usage is valid evidence, but it does not bypass required dependencies.
+        exit_code, output = self.verify()
+        self.assertEqual(1, exit_code)
+        self.assertIn("arc-core-menu", output)
+        self.assertIn("arc-core-paper-menu", output)
+        self.assertNotIn("capability-evidence", output)
+
+        build = self.root / "build.gradle.kts"
+        build.write_text(
+            build.read_text(encoding="utf-8").replace(
+                "dependencies {",
+                'dependencies {\n    implementation("ru.ruscrafting.arc:arc-core-menu:2.1.0")'
+                '\n    implementation("ru.ruscrafting.arc:arc-core-paper-menu:2.1.0")',
+            ),
+            encoding="utf-8",
+        )
+        exit_code, output = self.verify()
+        self.assertEqual(0, exit_code)
+        self.assertIn("paper-menu", output)
+
+        # Declaring the capability still requires canonical API evidence.
+        source.write_text(
+            source.read_text(encoding="utf-8").replace("PaperDialogRuntime", "LocalDialogRuntime"),
+            encoding="utf-8",
+        )
+        exit_code, output = self.verify()
+        self.assertEqual(1, exit_code)
+        self.assertIn("rule=capability-evidence", output)
+        self.assertIn("paper-menu is declared", output)
+
     def test_neutral_menu_capability_requires_layout_module_and_canonical_usage(self) -> None:
         manifest = self.root / "arc-core-consumer.toml"
         manifest.write_text(
