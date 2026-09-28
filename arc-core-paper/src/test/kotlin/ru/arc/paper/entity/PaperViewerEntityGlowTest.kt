@@ -1,19 +1,32 @@
 package ru.arc.paper.entity
 
 import com.github.retrooper.packetevents.event.PacketListenerCommon
+import com.github.retrooper.packetevents.event.PacketListenerAbstract
+import com.github.retrooper.packetevents.event.PacketSendEvent
+import com.github.retrooper.packetevents.event.UserDisconnectEvent
+import com.github.retrooper.packetevents.PacketEvents
 import com.github.retrooper.packetevents.protocol.entity.data.EntityData
 import com.github.retrooper.packetevents.protocol.entity.data.EntityDataTypes
+import com.github.retrooper.packetevents.protocol.packettype.PacketType
+import com.github.retrooper.packetevents.protocol.player.User
 import io.kotest.core.spec.style.FreeSpec
 import io.kotest.matchers.shouldBe
+import io.mockk.every
+import io.mockk.mockk
 import org.bukkit.entity.Player
 import org.bukkit.entity.LivingEntity
-import org.bukkit.plugin.Plugin
 import ru.arc.paper.player.TestPaperPlugin
+import ru.arc.paper.display.TestPacketEventsApi
 import ru.arc.paper.testing.MockBukkitTestRuntime
+import ru.arc.paper.testing.failOnUnsupportedMockBukkitOperation
 import ru.arc.paper.testing.loadPlugin
 import java.util.UUID
 
 class PaperViewerEntityGlowTest : FreeSpec({
+    val previousPacketEventsApi = PacketEvents.getAPI()
+    beforeSpec { PacketEvents.setAPI(TestPacketEventsApi()) }
+    afterSpec { PacketEvents.setAPI(previousPacketEventsApi) }
+
     "glow overrides preserve every other common flag and update only metadata index zero" {
         for (raw in 0..0xff) {
             val flags = raw.toByte()
@@ -69,6 +82,32 @@ class PaperViewerEntityGlowTest : FreeSpec({
             transport.unregistered shouldBe true
         }
     }
+
+    "PacketEvents status users with no UUID are ignored on send and disconnect" {
+        failOnUnsupportedMockBukkitOperation {
+            MockBukkitTestRuntime.open().use { paper ->
+                val plugin = paper.loadPlugin<TestPaperPlugin>()
+                val viewer = paper.addPlayer("Viewer")
+                val target = paper.addPlayer("Target")
+                val transport = RecordingTransport()
+                val glow = PaperViewerEntityGlow(plugin, transport)
+                glow.set(viewer, target, glowing = true)
+
+                val statusUser = mockk<User>()
+                every { statusUser.uuid } returns null
+                transport.fireDisconnect(UserDisconnectEvent(statusUser))
+                glow.isSelectedFor(viewer.uniqueId, target.entityId) shouldBe true
+
+                val statusPacket = mockk<PacketSendEvent>(relaxed = true)
+                every { statusPacket.isCancelled } returns false
+                every { statusPacket.user } returns statusUser
+                every { statusPacket.packetType } returns PacketType.Play.Server.ENTITY_METADATA
+                transport.firePacketSend(statusPacket)
+                glow.isSelectedFor(viewer.uniqueId, target.entityId) shouldBe true
+                glow.close()
+            }
+        }
+    }
 })
 
 private class RecordingTransport : ViewerEntityGlowPacketTransport {
@@ -94,5 +133,13 @@ private class RecordingTransport : ViewerEntityGlowPacketTransport {
 
     override fun send(viewer: Player, entityId: Int, flags: Byte) {
         sent += Sent(viewer.uniqueId, entityId, flags)
+    }
+
+    fun fireDisconnect(event: UserDisconnectEvent) {
+        registered?.onUserDisconnect(event)
+    }
+
+    fun firePacketSend(event: PacketSendEvent) {
+        (registered as PacketListenerAbstract).onPacketSend(event)
     }
 }

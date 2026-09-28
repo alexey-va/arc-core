@@ -465,7 +465,7 @@ private fun WrapperPlayServerEntityMetadata.metadataValue(index: Int): Any? =
     entityMetadata.single { it.index == index }.value
 
 /** Real registry and buffer plumbing, with no live player/channel operations. */
-private class TestPacketEventsApi : PacketEventsAPI<Any>() {
+internal class TestPacketEventsApi : PacketEventsAPI<Any>() {
     private val server = ServerManager { ServerVersion.V_1_21_11 }
     private val netty = NettyManagerImpl()
     override fun getServerManager() = server

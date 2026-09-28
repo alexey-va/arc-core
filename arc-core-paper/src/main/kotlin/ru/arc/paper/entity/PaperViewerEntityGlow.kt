@@ -48,7 +48,7 @@ class PaperViewerEntityGlow internal constructor(
     private val packetListener = object : PacketListenerAbstract(PacketListenerPriority.HIGHEST) {
         override fun onPacketSend(event: PacketSendEvent) {
             if (closed || event.isCancelled) return
-            val viewerId = event.user.uuid
+            val viewerId = event.user.uuid ?: return
             when (event.packetType) {
                 PacketType.Play.Server.ENTITY_METADATA -> {
                     val metadata = WrapperPlayServerEntityMetadata(event)
@@ -64,7 +64,7 @@ class PaperViewerEntityGlow internal constructor(
         }
 
         override fun onUserDisconnect(event: UserDisconnectEvent) {
-            selections.forgetViewer(event.user.uuid)
+            event.user.uuid?.let(selections::forgetViewer)
         }
     }
 
