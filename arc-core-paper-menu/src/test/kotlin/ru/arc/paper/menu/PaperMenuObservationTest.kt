@@ -95,6 +95,38 @@ class PaperMenuObservationTest : FreeSpec({
         service.close()
     }
 
+    "includes safe row, page, click and material fields for a paginated entry" {
+        val plugin = paper.createSimplePlugin("ObservationRow")
+        val player = paper.addPlayer("Viewer")
+        val observed = paper.observations(plugin)
+        val service = PaperMenuService(plugin, repository(paginated = true), BukkitTaskScheduler(plugin))
+        val entries = listOf(
+            PaperMenuEntry(org.bukkit.inventory.ItemStack.of(Material.STONE)),
+            PaperMenuEntry(org.bukkit.inventory.ItemStack.of(Material.DIRT)),
+            PaperMenuEntry(org.bukkit.inventory.ItemStack.of(Material.COPPER_INGOT)),
+            PaperMenuEntry(org.bukkit.inventory.ItemStack.of(Material.EMERALD, 7)),
+        )
+        val session = service.open(player, MENU) {
+            content(Material.DIAMOND).copy(regions = mapOf(CONTENT to entries))
+        }
+        session.setPage(1)
+
+        paper.callEvent(click(player, 10, ClickType.LEFT, InventoryAction.PICKUP_ALL))
+
+        val click = observed.last { it["phase"] == "click" }
+        click["button"] shouldBe "region:content"
+        click["rawSlot"] shouldBe 10
+        click["regionIndex"] shouldBe 3
+        click["pageIndex"] shouldBe 1
+        click["pageCount"] shouldBe 2
+        click["clickType"] shouldBe "LEFT"
+        click["action"] shouldBe "PICKUP_ALL"
+        click["material"] shouldBe "minecraft:emerald"
+        click["amount"] shouldBe 7
+        (click.keys intersect setOf("lore", "nbt", "displayText")) shouldBe emptySet()
+        service.close()
+    }
+
     "reports user, quit and shutdown close reasons" {
         val plugin = paper.createSimplePlugin("ObservationClose")
         val user = paper.addPlayer("User")

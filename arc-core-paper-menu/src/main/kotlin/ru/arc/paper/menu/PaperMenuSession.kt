@@ -325,21 +325,22 @@ class PaperMenuSession internal constructor(
         val target = slot.target ?: return
         if (!open || event.whoClicked.uniqueId != player.uniqueId || !isCurrent() || !processedEvents.add(event)) return
         val button = targetKey(target)
+        val clickDetails = clickObservation(button, target, event)
         if (!entry.enabled || event.click !in entry.acceptedClicks) {
-            observe("blocked", mapOf("button" to button))
+            observe("blocked", clickDetails)
             return
         }
         val context = PaperMenuClickContext(this, player, target, event)
         val transfer = entry.transfer
         if (transfer == null) {
-            observe("click", mapOf("button" to button))
+            observe("click", clickDetails)
             entry.onClick.handle(context)
         } else if (event.action in SAFE_MENU_TRANSFER_ACTIONS &&
             transfer.handle(context) == PaperMenuTransferDecision.ALLOW
         ) {
-            observe("click", mapOf("button" to button))
+            observe("click", clickDetails)
             event.isCancelled = false
-        } else observe("blocked", mapOf("button" to button))
+        } else observe("blocked", clickDetails)
     }
 
     private fun restoreFeedback(token: MenuFeedbackToken) {
@@ -400,6 +401,26 @@ class PaperMenuSession internal constructor(
     private fun targetKey(target: PaperMenuClickTarget): String = when (target) {
         is PaperMenuClickTarget.Element -> target.id.value
         is PaperMenuClickTarget.RegionEntry -> "region:${target.region.value}"
+    }
+
+    private fun clickObservation(
+        button: String,
+        target: PaperMenuClickTarget,
+        event: InventoryClickEvent,
+    ): Map<String, Any> = buildMap {
+        put("button", button)
+        put("rawSlot", event.rawSlot)
+        put("clickType", event.click.name)
+        put("action", event.action.name)
+        if (target is PaperMenuClickTarget.RegionEntry) put("regionIndex", target.index)
+        renderedPageState?.let { state ->
+            put("pageIndex", state.pageIndex)
+            put("pageCount", state.pageCount)
+        }
+        event.currentItem?.let { item ->
+            put("material", item.type.key.toString())
+            put("amount", item.amount)
+        }
     }
 
     private fun requirePrimaryThread() {

@@ -150,6 +150,7 @@ tasks.register("integrationTestAll") {
     dependsOn(
         ":arc-core-integration-testing:integrationTest",
         ":arc-core-sql:integrationTest",
+        ":arc-core-telemetry:integrationTest",
     )
 }
 

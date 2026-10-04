@@ -36,6 +36,7 @@ arc-core ─────┬───── ARC (Paper: Event DSL, GUI, gameplay)
 | `arc-core-metrics/` | `ru.arc:arc-core-metrics` | Prometheus registry, cached JVM/OS/disk metrics, scrape HTTP |
 | `arc-core-redis/` | `ru.arc:arc-core-redis` | Redis plus strict codecs, CAS, validated topics, bounded request/reply and presence leases |
 | `arc-core-sql/` | `ru.arc:arc-core-sql` | Optional MySQL/Hikari runtime, async JDBC and migrations |
+| `arc-core-telemetry/` | `ru.arc:arc-core-telemetry` | Bounded asynchronous player activity capture, shared SQL persistence, and query model |
 | `arc-core-paper/` | `ru.arc:arc-core-paper` | Paper scheduling, audience/teleport delivery, chunk-ticket lifecycle, player-state escrow, and transient player nameplates |
 | `arc-core-menu/` | `ru.arc:arc-core-menu` | Platform-neutral validated menu layouts, contracts, catalog generations, pagination, and feedback state |
 | `arc-core-paper-menu/` | `ru.arc:arc-core-paper-menu` | Paper item templates and lifecycle-safe Inventory Framework rendering without exposing IF types to consumers |
@@ -114,6 +115,7 @@ position retention for Escape or disable it merely to hide the cursor reset.
 | Shared, no Bukkit/Velocity? | `arc-core` or new `arc-core-*` module |
 | Shared Redis transport, codec, CAS, or replay rule? | `arc-core-redis/ru.arc.redis.safety` |
 | Redis topic, request/reply, or hash-backed presence lifecycle? | `arc-core-redis/ru.arc.redis.network` |
+| Shared durable player activity telemetry? | `arc-core-telemetry` for the capture/store; `arc-core-paper-api` for Paper consumer submission |
 | Paper API only (Material, Sound)? | `arc-core-paper` |
 | Reusable layered player nameplate? | `arc-core` composer + one `arc-core-paper` display lifecycle |
 | Reusable exact Paper call/lifecycle with a stable contract? | `arc-core-paper` plus its `arc-core-paper-testing` double when needed |
