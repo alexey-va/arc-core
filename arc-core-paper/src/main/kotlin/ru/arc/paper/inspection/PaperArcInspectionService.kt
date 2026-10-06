@@ -46,7 +46,7 @@ class PaperArcInspectionService internal constructor(
     private val displays: PaperPacketDisplays,
     private val audience: PaperAudienceEffects,
 ) : ArcInspectionService, AutoCloseable, Listener {
-    constructor(host: Plugin) : this(host, PaperPacketDisplays(host), NativePaperAudienceEffects)
+    constructor(host: Plugin) : this(host, PaperPacketDisplays(host, "inspection"), NativePaperAudienceEffects)
 
     private data class SourceKey(val ownerName: String, val id: String)
 

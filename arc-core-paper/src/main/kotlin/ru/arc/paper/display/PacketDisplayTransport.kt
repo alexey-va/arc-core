@@ -20,6 +20,9 @@ import org.bukkit.Bukkit
 import org.bukkit.block.data.BlockData
 import org.bukkit.entity.Player
 import org.bukkit.inventory.ItemStack
+import org.bukkit.plugin.Plugin
+import ru.arc.paper.api.VisualPacketAdmission
+import ru.arc.paper.packet.PaperVisualPackets
 import java.lang.ref.WeakReference
 import java.util.Optional
 import java.util.UUID
@@ -58,20 +61,23 @@ internal interface PacketDisplayConnection {
 internal interface PacketDisplayChannelBackend {
     fun isOpen(channel: Any): Boolean
     fun enqueue(channel: Any, task: () -> Unit)
-    fun write(channel: Any, packet: PacketWrapper<*>)
+    fun retry(channel: Any, task: () -> Unit)
+    fun tryWrite(channel: Any, packets: List<PacketWrapper<*>>, cleanup: Boolean): Boolean
     fun flush(channel: Any)
 }
 
-private object PacketEventsChannelBackend : PacketDisplayChannelBackend {
+private class PacketEventsChannelBackend(plugin: Plugin, source: String) : PacketDisplayChannelBackend {
+    private val packets = PaperVisualPackets(plugin, source)
     override fun isOpen(channel: Any): Boolean = ChannelHelper.isOpen(channel)
 
     override fun enqueue(channel: Any, task: () -> Unit) {
         ChannelHelper.runInEventLoop(channel, Runnable(task))
     }
 
-    override fun write(channel: Any, packet: PacketWrapper<*>) {
-        PacketEvents.getAPI().protocolManager.writePacket(channel, packet)
-    }
+    override fun retry(channel: Any, task: () -> Unit) = PaperVisualPackets.retry(channel, task)
+
+    override fun tryWrite(channel: Any, packets: List<PacketWrapper<*>>, cleanup: Boolean): Boolean =
+        this.packets.write(channel, packets, cleanup) == VisualPacketAdmission.ALLOWED
 
     override fun flush(channel: Any) {
         ChannelHelper.flush(channel)
@@ -80,8 +86,9 @@ private object PacketEventsChannelBackend : PacketDisplayChannelBackend {
 
 internal class PacketEventsDisplayTransport(
     private val logger: Logger,
-    private val backend: PacketDisplayChannelBackend = PacketEventsChannelBackend,
+    private val backend: PacketDisplayChannelBackend,
 ) : PacketDisplayTransport {
+    constructor(plugin: Plugin, source: String) : this(plugin.logger, PacketEventsChannelBackend(plugin, source))
     /* Weak keys and weak channel snapshots avoid retaining disconnected players. */
     private val attachments = WeakHashMap<Player, PacketDisplayAttachment>()
 
@@ -141,6 +148,7 @@ internal class PacketDisplayAttachment internal constructor(
     private var inFlightFrames: Map<Int, PacketDisplayFrame>? = null
     private var cleanupIds: Set<Int> = emptySet()
     private var failureLogged = false
+    private var resumeEntityId: Int? = null
 
     override val identity: Any get() = attachmentIdentity
 
@@ -221,12 +229,30 @@ internal class PacketDisplayAttachment internal constructor(
                 inFlightFrames = desired
                 DeliveryBatch(value, previous, desired)
             }
-            try {
+            val deferred = try {
                 process(batch)
             } catch (failure: Throwable) {
                 fail(failure)
+                null
             } finally {
                 synchronized(lock) { inFlightFrames = null }
+            }
+            if (deferred != null) {
+                synchronized(lock) {
+                    pending = pending?.let(deferred::merge) ?: deferred
+                }
+                val channel = channelRef.get()
+                try {
+                    if (channel != null) {
+                        backend.retry(channel) { drain() }
+                        return
+                    }
+                    fail(IllegalStateException("display channel was collected"))
+                } catch (failure: Throwable) {
+                    fail(failure)
+                }
+                synchronized(lock) { scheduled = false }
+                return
             }
             synchronized(lock) {
                 if (pending == null) {
@@ -237,102 +263,94 @@ internal class PacketDisplayAttachment internal constructor(
         }
     }
 
-    private fun process(batch: DeliveryBatch) {
+    /** Returns the coalescible remainder; a denied transaction never advances its baseline. */
+    private fun process(batch: DeliveryBatch): Pending? {
         val work = batch.pending
-        val previous = batch.previous
         val channel = channelRef.get()
-        val open = channel?.let { runCatching { backend.isOpen(it) }.getOrElse { failure ->
-            fail(failure)
-            false
-        } } ?: false
-        if (channel == null || !open) {
-            synchronized(lock) { cleanupIds = cleanupIds + previous.keys }
+        if (channel == null || !backend.isOpen(channel)) {
+            synchronized(lock) { cleanupIds = cleanupIds + batch.previous.keys }
             fail(IllegalStateException("display channel is closed"))
-            return
+            return null
+        }
+        if (!synchronized(lock) { valid }) {
+            synchronized(lock) { cleanupIds = cleanupIds + batch.previous.keys }
+            return if (cleanup(channel)) null else work.copy(frames = emptyMap())
         }
 
-        val isValid = synchronized(lock) { valid }
-        if (!isValid) {
-            synchronized(lock) { cleanupIds = cleanupIds + previous.keys }
-            cleanup(channel)
-            return
-        }
-
-        val desired = batch.desired
+        val acknowledged = batch.previous.toMutableMap()
         val destroys = linkedSetOf<Int>().apply { addAll(synchronized(lock) { cleanupIds }) }
-        val spawns = mutableListOf<PacketDisplayFrame>()
-        val spawnIds = hashSetOf<Int>()
-        val metadata = mutableListOf<Pair<Int, List<EntityData<*>>>>()
-        val teleports = mutableListOf<PacketDisplayFrame>()
-        val desiredById = desired
-
-        previous.forEach { (id, old) ->
-            val current = desiredById[id]
-            val forceReplay = work.resetAll || old.chunkKey in work.resetChunks ||
-                (current != null && current.chunkKey in work.resetChunks)
-            if (current == null || forceReplay || !sameGeneration(old, current)) {
-                destroys += id
-            }
-            if (current != null && (forceReplay || !sameGeneration(old, current))) {
-                if (spawnIds.add(id)) spawns += current
-            }
+        batch.previous.forEach { (id, old) ->
+            val current = batch.desired[id]
+            if (current == null || work.resetAll || old.chunkKey in work.resetChunks ||
+                current.chunkKey in work.resetChunks || !sameGeneration(old, current)
+            ) destroys += id
         }
-        desiredById.forEach { (id, current) ->
-            val old = previous[id]
-            val forceReplay = work.resetAll || current.chunkKey in work.resetChunks ||
-                (old != null && old.chunkKey in work.resetChunks)
-            if (old == null || forceReplay || !sameGeneration(old, current)) {
-                if (spawnIds.add(id)) spawns += current
-            } else {
-                val changed = metadataDelta(old, current)
-                if (changed.isNotEmpty()) metadata += id to changed
-                if (positionChanged(old, current)) teleports += current
-            }
-        }
-
-        val hasChanges = destroys.isNotEmpty() || spawns.isNotEmpty() ||
-            metadata.isNotEmpty() || teleports.isNotEmpty()
-        if (!hasChanges) {
-            synchronized(lock) { submitted = desiredById }
-            return
-        }
-
-        /* Record every ID that may have reached the client before the first write. */
-        synchronized(lock) { cleanupIds = cleanupIds + previous.keys + desiredById.keys }
+        var wrote = false
+        var failed = false
         try {
-            if (destroys.isNotEmpty()) write(channel, WrapperPlayServerDestroyEntities(*destroys.toIntArray()))
-            spawns.forEach { frame ->
-                write(channel, spawnPacket(frame))
-                write(channel, metadataPacket(frame, metadataFor(frame)))
+            if (destroys.isNotEmpty()) {
+                synchronized(lock) { cleanupIds = cleanupIds + destroys }
+                if (!backend.tryWrite(channel, listOf(WrapperPlayServerDestroyEntities(*destroys.toIntArray())), true)) {
+                    return work
+                }
+                wrote = true
+                destroys.forEach(acknowledged::remove)
             }
-            metadata.forEach { (id, values) -> write(channel, WrapperPlayServerEntityMetadata(id, values)) }
-            teleports.forEach { write(channel, teleportPacket(it)) }
-            backend.flush(channel)
-            synchronized(lock) {
-                submitted = desiredById
-                cleanupIds = emptySet()
+            // Admit each entity's spawn+metadata/update atomically. Large scenes
+            // can progressively appear even when their total size exceeds a burst.
+            val frames = batch.desired.values.toList()
+            val start = frames.indexOfFirst { it.entityId == resumeEntityId }.coerceAtLeast(0)
+            for (offset in frames.indices) {
+                val current = frames[(start + offset) % frames.size]
+                val id = current.entityId
+                val old = acknowledged[id]
+                val packets = if (old == null) {
+                    listOf(spawnPacket(current), metadataPacket(current, metadataFor(current)))
+                } else {
+                    buildList {
+                        val values = metadataDelta(old, current)
+                        if (values.isNotEmpty()) add(metadataPacket(current, values))
+                        if (positionChanged(old, current)) add(teleportPacket(current))
+                    }
+                }
+                if (packets.isNotEmpty()) {
+                    synchronized(lock) { cleanupIds = cleanupIds + id }
+                    if (!backend.tryWrite(channel, packets, false)) {
+                        synchronized(lock) { cleanupIds = cleanupIds - id }
+                        resumeEntityId = id
+                        // Resets were already applied by the destroy transaction.
+                        // Missing IDs in the acknowledged baseline still need spawns.
+                        return work.copy(resetChunks = emptySet(), resetAll = false)
+                    }
+                    wrote = true
+                }
+                acknowledged[id] = current
             }
+            resumeEntityId = null
+            return null
         } catch (failure: Throwable) {
-            fail(failure)
+            failed = true
+            throw failure
+        } finally {
+            if (wrote) backend.flush(channel)
+            synchronized(lock) {
+                submitted = acknowledged.toMap()
+                if (!failed) cleanupIds = emptySet()
+            }
         }
     }
 
-    private fun cleanup(channel: Any) {
+    private fun cleanup(channel: Any): Boolean {
         val ids = synchronized(lock) { cleanupIds }
-        if (ids.isEmpty()) return
-        try {
-            write(channel, WrapperPlayServerDestroyEntities(*ids.toIntArray()))
-            backend.flush(channel)
-            synchronized(lock) {
-                cleanupIds = emptySet()
-                submitted = emptyMap()
-            }
-        } catch (failure: Throwable) {
-            fail(failure)
+        if (ids.isEmpty()) return true
+        if (!backend.tryWrite(channel, listOf(WrapperPlayServerDestroyEntities(*ids.toIntArray())), true)) return false
+        backend.flush(channel)
+        synchronized(lock) {
+            cleanupIds = emptySet()
+            submitted = emptyMap()
         }
+        return true
     }
-
-    private fun write(channel: Any, packet: PacketWrapper<*>) = backend.write(channel, packet)
 
     private fun spawnPacket(frame: PacketDisplayFrame) = WrapperPlayServerSpawnEntity(
         frame.entityId,

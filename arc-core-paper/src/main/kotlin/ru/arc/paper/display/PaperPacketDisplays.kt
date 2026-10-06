@@ -40,8 +40,11 @@ class PaperPacketDisplays internal constructor(
     private val tasks: LifecycleTaskScope,
     private val audience: PacketDisplayAudienceSource,
 ) : AutoCloseable, Listener {
-    constructor(plugin: Plugin) : this(
-        plugin, PacketEventsDisplayTransport(plugin.logger), LifecycleTaskScope(), BukkitPacketDisplayAudience,
+    constructor(plugin: Plugin) : this(plugin, "displays")
+
+    /** [source] is a stable feature name for the server-wide visual traffic budget. */
+    constructor(plugin: Plugin, source: String) : this(
+        plugin, PacketEventsDisplayTransport(plugin, source), LifecycleTaskScope(), BukkitPacketDisplayAudience,
     )
 
     private data class ViewerState(val connection: PacketDisplayConnection, val worldId: UUID)

@@ -22,6 +22,80 @@ class PacketDisplayTransportTest : FreeSpec({
     beforeSpec { PacketEvents.setAPI(TestPacketEventsApi()) }
     afterSpec { PacketEvents.setAPI(previousApi) }
 
+    "rate limiting progressively spawns an atomic entity and keeps only the latest frame" {
+        val backend = RecordingPacketBackend().apply { ordinaryTransactions = 1 }
+        val channel = Any()
+        val connection = PacketDisplayAttachment(channel, Logger.getAnonymousLogger(), backend)
+        connection.submit(listOf(frame(id = 1), frame(id = 2), frame(id = 3)))
+        backend.tasks.removeFirst().invoke()
+        backend.writes.map { it::class.java.simpleName } shouldBe listOf(
+            "WrapperPlayServerSpawnEntity", "WrapperPlayServerEntityMetadata",
+        )
+        backend.tasks.size shouldBe 1
+
+        // The unsent second entity disappears; no stale spawn is replayed.
+        repeat(100) { connection.submit(listOf(frame(id = 1), frame(id = 3, x = it.toDouble()))) }
+        backend.tasks.size shouldBe 1
+        backend.ordinaryTransactions = 1
+        backend.runAll()
+        backend.writes.filterIsInstance<WrapperPlayServerSpawnEntity>().map { it.entityId } shouldBe listOf(1, 3)
+        backend.writes.filterIsInstance<WrapperPlayServerSpawnEntity>().last().position.x shouldBe 99.0
+    }
+
+    "rate exhaustion never prevents removal and a blocked channel retries cleanup after owner close" {
+        val backend = RecordingPacketBackend()
+        val channel = Any()
+        val connection = PacketDisplayAttachment(channel, Logger.getAnonymousLogger(), backend)
+        connection.submit(listOf(frame()))
+        backend.runAll()
+        backend.clear()
+        backend.ordinaryTransactions = 0
+        backend.writable = false
+        connection.submit(emptyList())
+        backend.tasks.removeFirst().invoke()
+        backend.writes.size shouldBe 0
+        backend.tasks.size shouldBe 1
+        // No further Bukkit submit is needed to finish closing the owner.
+        backend.writable = true
+        backend.runAll()
+        backend.writes.filterIsInstance<WrapperPlayServerDestroyEntities>().single().entityIds.toList() shouldBe listOf(100)
+        backend.tasks.size shouldBe 0
+    }
+
+    "a partial replay does not repeatedly destroy already respawned entities" {
+        val backend = RecordingPacketBackend()
+        val channel = Any()
+        val connection = PacketDisplayAttachment(channel, Logger.getAnonymousLogger(), backend)
+        val frames = listOf(frame(id = 1), frame(id = 2))
+        connection.submit(frames)
+        backend.runAll()
+        backend.clear()
+        backend.ordinaryTransactions = 1
+        connection.submit(frames, resetAll = true)
+        backend.tasks.removeFirst().invoke()
+        backend.ordinaryTransactions = 1
+        backend.runAll()
+        backend.writes.filterIsInstance<WrapperPlayServerDestroyEntities>().size shouldBe 1
+        backend.writes.filterIsInstance<WrapperPlayServerSpawnEntity>().map { it.entityId } shouldBe listOf(1, 2)
+    }
+
+    "deferred animation rotates admission so later entities can progress" {
+        val backend = RecordingPacketBackend()
+        val channel = Any()
+        val connection = PacketDisplayAttachment(channel, Logger.getAnonymousLogger(), backend)
+        connection.submit((1..3).map { frame(id = it) })
+        backend.runAll()
+        backend.clear()
+        repeat(3) { tick ->
+            backend.ordinaryTransactions = 1
+            connection.submit((1..3).map { frame(id = it, x = tick + 1.0) })
+            backend.tasks.removeFirst().invoke()
+        }
+        backend.writes.filterIsInstance<WrapperPlayServerEntityTeleport>().map { it.entityId } shouldBe listOf(1, 2, 3)
+        backend.ordinaryTransactions = Int.MAX_VALUE
+        backend.runAll()
+    }
+
     "a pending attachment keeps one latest frame and one drain" {
         val backend = RecordingPacketBackend()
         val channel = Any()
@@ -382,6 +456,8 @@ private class RecordingPacketBackend(
     var flushes = 0
         private set
     var failEnqueue = false
+    var writable = true
+    var ordinaryTransactions = Int.MAX_VALUE
     var onWrite: ((PacketWrapper<*>) -> Unit)? = null
     private var writeCount = 0
 
@@ -392,11 +468,18 @@ private class RecordingPacketBackend(
         tasks += task
     }
 
-    override fun write(channel: Any, packet: PacketWrapper<*>) {
-        writeCount++
-        if (writeCount == failOnWrite) throw IllegalStateException("injected packet write failure")
-        writes += packet
-        onWrite?.invoke(packet)
+    override fun retry(channel: Any, task: () -> Unit) { tasks += task }
+
+    override fun tryWrite(channel: Any, packets: List<PacketWrapper<*>>, cleanup: Boolean): Boolean {
+        if (!writable || (!cleanup && ordinaryTransactions <= 0)) return false
+        if (!cleanup) ordinaryTransactions--
+        packets.forEach { packet ->
+            writeCount++
+            if (writeCount == failOnWrite) throw IllegalStateException("injected packet write failure")
+            writes += packet
+            onWrite?.invoke(packet)
+        }
+        return true
     }
 
     override fun flush(channel: Any) {

@@ -9,9 +9,13 @@ The host supplies PacketEvents **2.12.1** and Paper **1.21.11**. Declare
 `packetevents` as a plugin dependency and compile it only; do not shade it.
 Other consumers of `arc-core-paper` need no PacketEvents dependency unless they
 construct this service. Install core scheduling before construction.
+The ARC host must also install [the shared visual packet provider](visual-packets.md)
+before constructing a visual owner. All plugin copies resolve the same
+`ArcVisualPacketBudget` API through Bukkit services; keep that API compile-only
+in consumers and supplied by ARC.
 
 ```kotlin
-val displays = PaperPacketDisplays(plugin)
+val displays = PaperPacketDisplays(plugin, "workshop-tables")
 val marker = displays.spawnBlock(location, blockData).apply {
     isVisibleByDefault = false
     showTo(player)
@@ -41,6 +45,14 @@ still send nothing. Transform changes restart interpolation, position changes
 teleport the existing ID, and item changes retain the ID. Reusing an entity ID
 with a different UUID or display kind destroys the old client entity before
 spawning the replacement.
+
+Rate or channel pressure retains one latest desired scene, with one delayed
+event-loop retry per attachment. Entity spawn and initial metadata are admitted
+together. Large scenes progress in individual entity transactions; animation
+updates rotate their starting entity to avoid starving later entities in one
+scene. Removal precedes replacement and bypasses rate quotas, but waits for a
+writable channel. Closing an owner replaces any deferred scene with empty state
+and keeps bounded cleanup retries alive until sent or the connection closes.
 
 By default, every online player in the same world and within `viewRange * 64`
 blocks can see the visual, provided the client has received its chunk. Set
