@@ -67,6 +67,13 @@ Custom latest-state transports can use `PaperVisualPackets.retry` for the shared
 Native passenger/pose/vehicle-visibility corrections remain ordered with their
 gameplay packets and are outside the replaceable cosmetic frame budget.
 
+`PaperViewerParticles` handles the opposite case: a one-shot viewer-only dust
+effect. The caller selects the audience and cadence; the owner captures only
+immutable coordinates, color, size and offsets, attempts one `PaperVisualPackets`
+write, and drops pressure or closed-channel outcomes without retrying. `close()`
+and `invalidatePending()` prevent an already-enqueued event-loop task from
+sending after its owner or session/target has ended.
+
 `snapshot()` exposes bounded cumulative counters and current settings.
 `metricPoints()` returns aggregate gauges and three series per source (bytes,
 packets, deferrals) for an existing host metrics collector. Source labels are
