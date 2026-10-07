@@ -847,7 +847,7 @@ open class Config(
             "Bundled config resource is missing: $resource"
         }
         return stream.bufferedReader(Charsets.UTF_8).use { reader ->
-            val node = Compose(loadSettings).composeReader(reader).orElse(null)
+            val node = Compose(loadSettings).composeReader(SnakeYamlEngineStringReader(reader.readText())).orElse(null)
             require(node is MappingNode) { "Bundled config resource must contain a YAML mapping: $resource" }
             node
         }

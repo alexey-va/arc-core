@@ -91,6 +91,36 @@ class ConfigTest : FreeSpec({
             config.string("value") shouldBe filler + emoji
         }
 
+        "should merge a bundled yaml whose emoji splits the SnakeYAML reader buffer" {
+            val dir = Files.createTempDirectory("arc-core-config-bundled-surrogate-boundary")
+            val resource = "config/generated-surrogate-boundary.yml"
+            val prefix = "main-server: true\nvalue: '"
+            val emoji = "\uD83D\uDCB2"
+            val filler = "a".repeat(1024 - prefix.length)
+            val content = "$prefix$filler$emoji'\n"
+            content.indexOf(emoji.first()) shouldBe 1024
+
+            val thread = Thread.currentThread()
+            val parent = checkNotNull(thread.contextClassLoader)
+            val resourceClassLoader = object : ClassLoader(parent) {
+                override fun getResourceAsStream(name: String): java.io.InputStream? =
+                    if (name == resource) content.byteInputStream(Charsets.UTF_8) else super.getResourceAsStream(name)
+            }
+            val previousClassLoader = thread.contextClassLoader
+            thread.contextClassLoader = resourceClassLoader
+            ConfigManager.clear()
+            try {
+                val config = ConfigManager.of(dir, "merged.yml")
+
+                config.mergeMissingFromBundled(resource) shouldBe true
+                config.boolean("main-server", false) shouldBe true
+                config.string("value") shouldBe filler + emoji
+            } finally {
+                thread.contextClassLoader = previousClassLoader
+                ConfigManager.clear()
+            }
+        }
+
         "should atomically persist a validated structured subtree" {
             val dir = Files.createTempDirectory("arc-core-config-structured")
             val yaml = dir.resolve("structured.yml")
