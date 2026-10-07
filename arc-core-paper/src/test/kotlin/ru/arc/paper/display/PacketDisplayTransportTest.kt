@@ -23,6 +23,16 @@ class PacketDisplayTransportTest : FreeSpec({
     beforeSpec { PacketEvents.setAPI(TestPacketEventsApi()) }
     afterSpec { PacketEvents.setAPI(previousApi) }
 
+    "a display owner can close before PacketEvents is initialized" {
+        val api = PacketEvents.getAPI()
+        PacketEvents.setAPI(null)
+        try {
+            PacketEventsDisplayTransport(Logger.getAnonymousLogger(), RecordingPacketBackend()).close()
+        } finally {
+            PacketEvents.setAPI(api)
+        }
+    }
+
     "rate limiting progressively spawns an atomic entity and keeps only the latest frame" {
         val backend = RecordingPacketBackend().apply { ordinaryTransactions = 1 }
         val channel = Any()

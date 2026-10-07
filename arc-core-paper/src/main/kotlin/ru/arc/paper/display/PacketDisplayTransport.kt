@@ -1,6 +1,7 @@
 package ru.arc.paper.display
 
 import com.github.retrooper.packetevents.PacketEvents
+import com.github.retrooper.packetevents.PacketEventsAPI
 import com.github.retrooper.packetevents.event.PacketListenerAbstract
 import com.github.retrooper.packetevents.event.PacketListenerPriority
 import com.github.retrooper.packetevents.event.PacketSendEvent
@@ -101,6 +102,8 @@ internal class PacketEventsDisplayTransport(
     /* Weak keys and weak channel snapshots avoid retaining disconnected players. */
     private val attachments = WeakHashMap<Player, PacketDisplayAttachment>()
     private val passengerStates = mutableMapOf<UUID, WeakReference<PacketDisplayPassengerState>>()
+    private val listenerLock = Any()
+    private var listenerApi: PacketEventsAPI<*>? = null
     private var closed = false
     private val passengerListener = object : PacketListenerAbstract(PacketListenerPriority.MONITOR) {
         override fun onPacketSend(event: PacketSendEvent) {
@@ -131,10 +134,6 @@ internal class PacketEventsDisplayTransport(
         }
     }
 
-    init {
-        PacketEvents.getAPI().eventManager.registerListener(passengerListener)
-    }
-
     override fun blockStateId(block: BlockData): Int =
         SpigotConversionUtil.fromBukkitBlockData(block).globalId
 
@@ -145,9 +144,11 @@ internal class PacketEventsDisplayTransport(
     override fun nextEntityId(): Int = Bukkit.getUnsafe().nextEntityId()
 
     override fun connection(player: Player): PacketDisplayConnection? {
-        val channel = runCatching { PacketEvents.getAPI().playerManager.getChannel(player) }.getOrNull()
+        val api = PacketEvents.getAPI() ?: return null
+        val channel = runCatching { api.playerManager.getChannel(player) }.getOrNull()
             ?: return null
         if (!backend.isOpen(channel)) return null
+        if (!registerPassengerListener(api)) return null
 
         synchronized(attachments) {
             val current = attachments[player]
@@ -170,10 +171,24 @@ internal class PacketEventsDisplayTransport(
         /* Queued attachment drains keep their own weak channel and cleanup IDs. */
         synchronized(attachments) { attachments.clear() }
         synchronized(passengerStates) { passengerStates.clear() }
-        if (!closed) {
+        val registeredApi = synchronized(listenerLock) {
+            if (closed) return
             closed = true
-            PacketEvents.getAPI().eventManager.unregisterListener(passengerListener)
+            listenerApi.also { listenerApi = null }
         }
+        registeredApi?.eventManager?.unregisterListener(passengerListener)
+    }
+
+    /** Install only after PacketEvents can provide a usable viewer channel. */
+    private fun registerPassengerListener(api: PacketEventsAPI<*>): Boolean = synchronized(listenerLock) {
+        if (closed) return@synchronized false
+        val currentApi = listenerApi
+        if (currentApi !== api) {
+            currentApi?.eventManager?.unregisterListener(passengerListener)
+            api.eventManager.registerListener(passengerListener)
+            listenerApi = api
+        }
+        true
     }
 }
 
