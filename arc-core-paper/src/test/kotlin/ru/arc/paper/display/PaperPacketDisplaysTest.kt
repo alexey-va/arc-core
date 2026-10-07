@@ -97,6 +97,47 @@ class PaperPacketDisplaysTest : FreeSpec({
         }
     }
 
+    "mounted frames use the carrier snapshot and only reach viewers tracking a visible carrier" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val plugin = paper.loadPlugin<TestPaperPlugin>()
+            val world = paper.addSimpleWorld("mounted-audience")
+            val carrier = paper.addPlayer("Carrier")
+            val bystander = paper.addPlayer("Bystander")
+            val audience = MutableAudience().apply {
+                values = listOf(viewer(carrier, world.uid), viewer(bystander, world.uid))
+            }
+            val transport = RecordingTransport()
+            PaperPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), audience).use { displays ->
+                val display = displays.spawnText(Location(world, 1.0, 64.0, 1.0), Component.text("Held"))
+                display.attachTo(carrier)
+                displays.refresh()
+
+                transport.forPlayer(carrier).last().frames.single().attachmentVehicleId shouldBe carrier.entityId
+                transport.connections.containsKey(bystander.uniqueId) shouldBe false
+
+                audience.values = listOf(
+                    viewer(carrier, world.uid).copy(trackedBy = setOf(bystander.uniqueId)),
+                    viewer(bystander, world.uid),
+                )
+                displays.refresh()
+                transport.forPlayer(bystander).last().passengers shouldBe mapOf(carrier.entityId to listOf(display.entityId))
+                transport.forPlayer(bystander).last().frames.single().x shouldBe audience.values.first { it.id == carrier.uniqueId }.x
+
+                val replacement = RecordingConnection()
+                transport.connections[bystander.uniqueId] = replacement
+                displays.refresh()
+                replacement.last().frames.single().entityId shouldBe display.entityId
+                replacement.last().passengers shouldBe mapOf(carrier.entityId to listOf(display.entityId))
+
+                display.teleport(Location(world, 3.0, 66.0, 3.0))
+                display.detach()
+                displays.refresh()
+                replacement.last().passengers shouldBe emptyMap()
+                replacement.last().frames.single().x shouldBe 3.0
+            }
+        }
+    }
+
     "chunk resets survive a quick unload reload between snapshots and replacement connections clean up" {
         MockBukkitTestRuntime.open().use { paper ->
             val plugin = paper.loadPlugin<TestPaperPlugin>()
@@ -146,8 +187,16 @@ class PaperPacketDisplaysTest : FreeSpec({
     }
 })
 
-private fun viewer(player: Player, world: UUID, x: Double = 1.0, chunks: Set<Long> = setOf(0L)) =
-    PacketDisplayViewer(player, player.uniqueId, world, x, 64.0, 1.0, chunks)
+private fun viewer(
+    player: Player,
+    world: UUID,
+    x: Double = 1.0,
+    chunks: Set<Long> = setOf(0L),
+    trackedBy: Set<UUID> = emptySet(),
+) = PacketDisplayViewer(
+    player, player.uniqueId, world, player.entityId, trackedBy, x, 64.0, 1.0, chunks,
+    player.passengers.map { it.entityId },
+)
 
 private class MutableAudience : PacketDisplayAudienceSource {
     var values = emptyList<PacketDisplayViewer>()
@@ -169,11 +218,23 @@ private class RecordingTransport : PacketDisplayTransport {
 }
 
 private class RecordingConnection : PacketDisplayConnection {
-    data class Frame(val frames: List<PacketDisplayFrame>, val resetChunks: Set<Long>, val resetAll: Boolean)
+    data class Frame(
+        val frames: List<PacketDisplayFrame>,
+        val resetChunks: Set<Long>,
+        val resetAll: Boolean,
+        val passengers: Map<Int, List<Int>>,
+    )
     override val identity: Any = Any()
     private val frames = mutableListOf<Frame>()
     fun last() = frames.last()
-    override fun submit(desired: List<PacketDisplayFrame>, resetChunks: Set<Long>, resetAll: Boolean) {
-        frames += Frame(desired, resetChunks, resetAll)
+    override fun submit(
+        desired: List<PacketDisplayFrame>,
+        resetChunks: Set<Long>,
+        resetAll: Boolean,
+        desiredPassengers: Map<Int, List<Int>>,
+        nativePassengerSnapshots: Map<Int, List<Int>>,
+        liveVehicleIds: Set<Int>?,
+    ) {
+        frames += Frame(desired, resetChunks, resetAll, desiredPassengers)
     }
 }

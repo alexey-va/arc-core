@@ -94,13 +94,26 @@ class PaperPacketDisplays internal constructor(
             resetViewers.clear()
             return
         }
-        val frames = handles.values.map { it to it.frame() }
         val currentAudience = audience.capture()
+        val audienceById = currentAudience.associateBy(PacketDisplayViewer::id)
+        val passengerSnapshots = currentAudience.associate { it.entityId to it.passengerEntityIds }
+        val liveVehiclesByWorld = currentAudience.groupBy(PacketDisplayViewer::worldId)
+            .mapValues { (_, values) -> values.mapTo(hashSetOf(), PacketDisplayViewer::entityId) }
+        val frames = handles.values.mapNotNull { display ->
+            val target = display.attachmentTargetId?.let(audienceById::get)
+            display.frame(target)?.let { display to it }
+        }
         val present = currentAudience.mapTo(hashSetOf(), PacketDisplayViewer::id)
         (viewers.keys - present).forEach(::forgetViewer)
         currentAudience.forEach { viewer ->
             val desired = frames.asSequence()
-                .filter { (display, frame) -> frame.chunkKey in viewer.sentChunks && display.visibleTo(viewer) }
+                .filter { (display, frame) ->
+                    val targetId = display.attachmentTargetId
+                    val carrier = targetId?.let(audienceById::get)
+                    val carrierVisible = targetId == null || targetId == viewer.id ||
+                        (carrier != null && viewer.id in carrier.trackedBy && viewer.player.canSee(carrier.player))
+                    carrierVisible && frame.chunkKey in viewer.sentChunks && display.visibleTo(viewer, frame)
+                }
                 .map { it.second }.toList()
             val previous = viewers[viewer.id]
             if (desired.isEmpty() && previous == null) {
@@ -117,10 +130,20 @@ class PaperPacketDisplays internal constructor(
                 // Invalid attachments must still receive cleanup for a partially written batch.
                 previous.connection.submit(emptyList())
             }
+            val desiredPassengers = desired.asSequence()
+                .mapNotNull { frame -> frame.attachmentVehicleId?.let { it to frame.entityId } }
+                .groupBy({ it.first }, { it.second })
+                .mapValues { (_, ids) -> ids.sorted() }
+            val nativePassengers = desiredPassengers.keys.associateWith { vehicleId ->
+                passengerSnapshots[vehicleId].orEmpty()
+            }
             connection.submit(
                 desired,
                 resetChunks.remove(viewer.id)?.toSet().orEmpty(),
                 resetViewers.remove(viewer.id) || (previous != null && previous.worldId != viewer.worldId),
+                desiredPassengers,
+                nativePassengers,
+                liveVehiclesByWorld[viewer.worldId].orEmpty(),
             )
             // Keep a connected viewer's attachment even for an empty scene so
             // a failed cleanup can be retried on the following tick.
@@ -180,16 +203,24 @@ internal data class PacketDisplayViewer(
     val player: Player,
     val id: UUID,
     val worldId: UUID,
+    val entityId: Int,
+    val trackedBy: Set<UUID>,
     val x: Double,
     val y: Double,
     val z: Double,
     val sentChunks: Set<Long>,
+    val passengerEntityIds: List<Int> = emptyList(),
 )
 
 private object BukkitPacketDisplayAudience : PacketDisplayAudienceSource {
     override fun checkThread() { check(Bukkit.isPrimaryThread()) { "Packet display state must be accessed on the server thread" } }
     override fun capture(): List<PacketDisplayViewer> = Bukkit.getOnlinePlayers().map { player ->
         val location = player.location
-        PacketDisplayViewer(player, player.uniqueId, player.world.uid, location.x, location.y, location.z, player.sentChunkKeys)
+        PacketDisplayViewer(
+            player, player.uniqueId, player.world.uid, player.entityId,
+            player.getTrackedBy().mapTo(hashSetOf()) { it.uniqueId },
+            location.x, location.y, location.z, player.sentChunkKeys,
+            player.passengers.map { it.entityId },
+        )
     }
 }

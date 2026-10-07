@@ -24,10 +24,18 @@ val marker = displays.spawnBlock(location, blockData).apply {
     interpolationDuration = 1
     teleportDuration = 1
 }
+val carried = displays.spawnItem(player.location, itemStack).apply {
+    // Supply a passenger-local transformation; Core does not infer hand/shoulder offsets or yaw.
+    transformation = carriedPose
+    attachTo(player)
+}
 // Later, on the server thread: stable ID, position/metadata delta only.
 marker.teleport(nextLocation)
 marker.transformation = nextTransformation
 marker.remove()
+// A mounted handle keeps this as its settled world position for detaching.
+carried.teleport(settledLocation)
+carried.detach()
 // At owner shutdown, after animations stop:
 displays.close()
 ```
@@ -45,6 +53,30 @@ still send nothing. Transform changes restart interpolation, position changes
 teleport the existing ID, and item changes retain the ID. Reusing an entity ID
 with a different UUID or display kind destroys the old client entity before
 spawning the replacement.
+
+`PacketDisplay.attachTo(player)` mounts the same client-only entity ID as a
+passenger of that player's native entity. While mounted, the current main-thread
+player position/world/chunk snapshot drives visibility and tracking; the display
+is not sent a world-position teleport each tick. Its `transformation` is the
+passenger-local pose, and `teleport(location)` records the world position used by
+`detach()`. Set the local translation/rotation explicitly: the Core does not
+choose a hand/shoulder anchor or promise yaw inheritance. The caller must account
+for the native passenger attachment point when converting a feet-relative pose to
+this passenger-local transform; Core does not compensate for player height. Paper
+describes display passengers as appearing above the vehicle's head; the exact
+position is client-version behavior
+([Paper display entity docs](https://docs.papermc.io/paper/dev/display-entities/)).
+
+For each viewer, Core sends spawn+initial metadata before the passenger link, and
+removes a link before sending a detached world teleport. Synthetic link changes
+use the same coalesced connection queue and visual packet budget; native full-replacement
+`SET_PASSENGERS` packets are merged with only fake display IDs whose spawn and
+link were admitted. Core keeps the latest native passenger list and appends its
+admitted IDs, so a later real passenger update cannot silently unmount them or
+replace them with a stale list. A vehicle may have only one active
+`PaperPacketDisplays` owner attaching fake passengers; cross-owner merging is not
+provided. Carrier visibility is bounded by the existing Paper tracking/visibility
+snapshot; viewers that cannot see the carrier do not receive its mounted displays.
 
 Rate or channel pressure retains one latest desired scene, with one delayed
 event-loop retry per attachment. Entity spawn and initial metadata are admitted

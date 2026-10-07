@@ -28,11 +28,13 @@ sealed class PacketDisplay protected constructor(
     val uniqueId: UUID = UUID.randomUUID()
     private var position = location.clone()
     private var transform = DisplayTransform()
+    private var attachedPlayerId: UUID? = null
     private val visibleTo = mutableSetOf<UUID>()
     private val hiddenFrom = mutableSetOf<UUID>()
     var isValid: Boolean = true
         private set
     val location: Location get() = position.clone()
+    internal val attachmentTargetId: UUID? get() = attachedPlayerId
     var isVisibleByDefault: Boolean = true
     var billboard: Display.Billboard = Display.Billboard.FIXED
     var brightness: Display.Brightness? = null
@@ -72,6 +74,23 @@ sealed class PacketDisplay protected constructor(
         position = location.clone()
     }
 
+    /**
+     * Mounts this client-only display on [player] without creating a server entity. The existing
+     * [transformation] becomes the passenger-local pose; the last [teleport] location remains its
+     * detached position.
+     */
+    fun attachTo(player: Player) {
+        owner.checkThread()
+        check(isValid) { "A removed packet display cannot be attached" }
+        attachedPlayerId = player.uniqueId
+    }
+
+    /** Returns this display to its last [teleport] position. */
+    fun detach() {
+        owner.checkThread()
+        attachedPlayerId = null
+    }
+
     fun showTo(player: Player) {
         owner.checkThread()
         hiddenFrom.remove(player.uniqueId)
@@ -88,25 +107,36 @@ sealed class PacketDisplay protected constructor(
         owner.checkThread()
         if (!isValid) return
         isValid = false
+        attachedPlayerId = null
         owner.remove(this)
         visibleTo.clear()
         hiddenFrom.clear()
     }
 
-    internal fun visibleTo(viewer: PacketDisplayViewer): Boolean {
-        if (!isValid || position.world?.uid != viewer.worldId || viewer.id in hiddenFrom) return false
+    internal fun visibleTo(viewer: PacketDisplayViewer, frame: PacketDisplayFrame): Boolean {
+        if (!isValid || frame.worldId != viewer.worldId || viewer.id in hiddenFrom) return false
         if (!isVisibleByDefault && viewer.id !in visibleTo) return false
-        val dx = position.x - viewer.x
-        val dy = position.y - viewer.y
-        val dz = position.z - viewer.z
+        val dx = frame.x - viewer.x
+        val dy = frame.y - viewer.y
+        val dz = frame.z - viewer.z
         // Native Display view_range is a multiple of 64 blocks.
         val range = viewRange.toDouble().coerceAtLeast(0.0) * 64.0
         return dx * dx + dy * dy + dz * dz <= range * range
     }
 
-    internal fun frame(): PacketDisplayFrame = PacketDisplayFrame(
-        entityId, uniqueId, position.x, position.y, position.z, position.yaw, position.pitch,
-        PacketDisplayMetadata(
+    internal fun frame(attachedPlayer: PacketDisplayViewer? = null): PacketDisplayFrame? {
+        val targetId = attachedPlayerId
+        if (targetId != null && attachedPlayer?.id != targetId) return null
+        val worldId = attachedPlayer?.worldId ?: requireNotNull(position.world) { "A packet display must belong to a world" }.uid
+        return PacketDisplayFrame(
+            entityId = entityId,
+            uuid = uniqueId,
+            x = attachedPlayer?.x ?: position.x,
+            y = attachedPlayer?.y ?: position.y,
+            z = attachedPlayer?.z ?: position.z,
+            yaw = position.yaw,
+            pitch = position.pitch,
+            metadata = PacketDisplayMetadata(
             content = content(), transform = transform,
             interpolationDelay = interpolationDelay,
             interpolationDuration = interpolationDuration.coerceAtLeast(0),
@@ -117,7 +147,10 @@ sealed class PacketDisplay protected constructor(
             displayWidth = displayWidth, displayHeight = displayHeight,
             glowRgb = glowColorOverride?.asRGB() ?: -1, glowing = isGlowing,
         ),
-    )
+            worldId = worldId,
+            attachmentVehicleId = attachedPlayer?.entityId.takeIf { targetId != null },
+        )
+    }
 
     internal abstract fun content(): PacketDisplayContent
 }

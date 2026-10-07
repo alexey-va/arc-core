@@ -9,6 +9,7 @@ import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerDe
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityMetadata
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityTeleport
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnEntity
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSetPassengers
 import io.kotest.core.spec.style.FreeSpec
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.shouldBe
@@ -374,6 +375,121 @@ class PacketDisplayTransportTest : FreeSpec({
         indexes shouldContain 11
     }
 
+    "mount waits for atomic spawn metadata, follows with metadata only, and detaches before settled teleport" {
+        val backend = RecordingPacketBackend()
+        val state = PacketDisplayPassengerState()
+        val connection = PacketDisplayAttachment(Any(), Logger.getAnonymousLogger(), backend, state)
+        val mounted = frame(x = 1.0).copy(attachmentVehicleId = 77, worldId = UUID.randomUUID())
+        connection.submit(
+            listOf(mounted), desiredPassengers = mapOf(77 to listOf(mounted.entityId)),
+            nativePassengerSnapshots = mapOf(77 to listOf(11)), liveVehicleIds = setOf(77),
+        )
+        backend.runAll()
+        backend.writes.map { it::class.java.simpleName } shouldBe listOf(
+            "WrapperPlayServerSpawnEntity", "WrapperPlayServerEntityMetadata", "WrapperPlayServerSetPassengers",
+        )
+        backend.writes.filterIsInstance<WrapperPlayServerSetPassengers>().single().passengers.toList() shouldBe listOf(11, mounted.entityId)
+
+        backend.clear()
+        connection.submit(
+            listOf(mounted), resetAll = true, desiredPassengers = mapOf(77 to listOf(mounted.entityId)),
+            nativePassengerSnapshots = mapOf(77 to listOf(11)), liveVehicleIds = setOf(77),
+        )
+        backend.runAll()
+        val replayWrites = backend.writes
+        (replayWrites.indexOfFirst { it is WrapperPlayServerSetPassengers } <
+            replayWrites.indexOfFirst { it is WrapperPlayServerDestroyEntities }) shouldBe true
+        (replayWrites.indexOfFirst { it is WrapperPlayServerEntityMetadata } <
+            replayWrites.indexOfLast { it is WrapperPlayServerSetPassengers }) shouldBe true
+        replayWrites.filterIsInstance<WrapperPlayServerSetPassengers>().map { it.passengers.toList() } shouldBe listOf(
+            listOf(11), listOf(11, mounted.entityId),
+        )
+
+        backend.clear()
+        connection.submit(
+            listOf(mounted.copy(x = 2.0)), desiredPassengers = mapOf(77 to listOf(mounted.entityId)),
+            nativePassengerSnapshots = mapOf(77 to listOf(11)), liveVehicleIds = setOf(77),
+        )
+        backend.runAll()
+        backend.writes.none { it is WrapperPlayServerEntityTeleport } shouldBe true
+        backend.writes.none { it is WrapperPlayServerSetPassengers } shouldBe true
+
+        backend.clear()
+        connection.submit(
+            listOf(mounted.copy(x = 4.0, attachmentVehicleId = null)),
+            nativePassengerSnapshots = mapOf(77 to listOf(11)), liveVehicleIds = setOf(77),
+        )
+        backend.runAll()
+        val detach = backend.writes.indexOfFirst { it is WrapperPlayServerSetPassengers }
+        val settle = backend.writes.indexOfFirst { it is WrapperPlayServerEntityTeleport }
+        (detach >= 0 && detach < settle) shouldBe true
+        backend.writes.filterIsInstance<WrapperPlayServerSetPassengers>().single().passengers.toList() shouldBe listOf(11)
+    }
+
+    "mount admission retries without a passenger link before spawn and metadata are admitted" {
+        val backend = RecordingPacketBackend().apply { ordinaryTransactions = 1 }
+        val connection = PacketDisplayAttachment(Any(), Logger.getAnonymousLogger(), backend)
+        val mounted = frame().copy(attachmentVehicleId = 77)
+        connection.submit(listOf(mounted), desiredPassengers = mapOf(77 to listOf(mounted.entityId)))
+        backend.tasks.removeFirst().invoke()
+        backend.writes.filterIsInstance<WrapperPlayServerSpawnEntity>().size shouldBe 1
+        backend.writes.filterIsInstance<WrapperPlayServerEntityMetadata>().size shouldBe 1
+        backend.writes.filterIsInstance<WrapperPlayServerSetPassengers>().size shouldBe 0
+
+        backend.ordinaryTransactions = 1
+        backend.runAll()
+        backend.writes.filterIsInstance<WrapperPlayServerSetPassengers>().single().passengers.toList() shouldBe listOf(mounted.entityId)
+    }
+
+    "native full passenger replacements retain current real IDs and only admitted fake IDs" {
+        val state = PacketDisplayPassengerState()
+        state.seedNative(77, listOf(9))
+        state.setMounted(77, listOf(100, 101))
+        state.observeNative(77, intArrayOf(12)).toList() shouldBe listOf(12, 100, 101)
+        state.nativePassengers(77) shouldBe listOf(12)
+
+        state.setMounted(77, listOf(101))
+        state.observeNative(77, intArrayOf(13)).toList() shouldBe listOf(13, 101)
+        state.nativePassengers(77) shouldBe listOf(13)
+        state.setMounted(77, emptyList())
+        state.observeNative(77, intArrayOf(14)).toList() shouldBe listOf(14)
+    }
+
+    "own passenger writes are not re-captured and same-channel failure cleanup preserves latest native IDs" {
+        val channel = Any()
+        val backend = RecordingPacketBackend().apply { failOnFlush = 2 }
+        val state = PacketDisplayPassengerState().apply { seedNative(77, listOf(11)) }
+        backend.onWrite = { packet ->
+            if (packet is WrapperPlayServerSetPassengers) {
+                state.observeNative(packet.entityId, packet.passengers)
+            }
+        }
+        val connection = PacketDisplayAttachment(channel, Logger.getAnonymousLogger(), backend, state)
+        val mounted = frame().copy(attachmentVehicleId = 77)
+        connection.submit(
+            listOf(mounted), desiredPassengers = mapOf(77 to listOf(mounted.entityId)),
+            nativePassengerSnapshots = mapOf(77 to listOf(11)), liveVehicleIds = setOf(77),
+        )
+        backend.runAll()
+
+        // RecordingPacketBackend invokes the same observer synchronously from tryWrite,
+        // which models PacketEvents observing the wrapper during its encode path.
+        state.nativePassengers(77) shouldBe listOf(11)
+        state.observeNative(77, intArrayOf(12)).toList() shouldBe listOf(12, mounted.entityId)
+        state.nativePassengers(77) shouldBe listOf(12)
+
+        backend.failOnFlush = null
+        backend.clear()
+        connection.deferReplacementUntilCleanup(channel) shouldBe true
+        backend.runAll()
+        backend.writes.filterIsInstance<WrapperPlayServerSetPassengers>().map { it.passengers.toList() } shouldBe
+            listOf(listOf(12))
+        backend.writes.filterIsInstance<WrapperPlayServerDestroyEntities>().single().entityIds.toList() shouldBe
+            listOf(mounted.entityId)
+        connection.deferReplacementUntilCleanup(channel) shouldBe false
+        state.isDisconnected() shouldBe false
+    }
+
     "text metadata packs the native flags at index 27" {
         val backend = RecordingPacketBackend()
         val channel = Any()
@@ -459,6 +575,7 @@ private class RecordingPacketBackend(
     var writable = true
     var ordinaryTransactions = Int.MAX_VALUE
     var onWrite: ((PacketWrapper<*>) -> Unit)? = null
+    var failOnFlush: Int? = null
     private var writeCount = 0
 
     override fun isOpen(channel: Any): Boolean = true
@@ -484,6 +601,7 @@ private class RecordingPacketBackend(
 
     override fun flush(channel: Any) {
         flushes++
+        if (flushes == failOnFlush) throw IllegalStateException("injected flush failure")
     }
 
     fun runAll() {

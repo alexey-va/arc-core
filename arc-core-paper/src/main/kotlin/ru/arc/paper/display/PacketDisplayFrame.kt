@@ -15,6 +15,9 @@ internal data class PacketDisplayFrame(
     val yaw: Float,
     val pitch: Float,
     val metadata: PacketDisplayMetadata,
+    val worldId: UUID = UUID(0L, 0L),
+    /** Native player entity ID when this client-only display is mounted. */
+    val attachmentVehicleId: Int? = null,
 ) {
     val chunkKey: Long get() = (floor(x).toInt().shr(4).toLong() and 0xffffffffL) or
         (floor(z).toInt().shr(4).toLong() shl 32)

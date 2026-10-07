@@ -1,11 +1,16 @@
 package ru.arc.paper.display
 
 import com.github.retrooper.packetevents.PacketEvents
+import com.github.retrooper.packetevents.event.PacketListenerAbstract
+import com.github.retrooper.packetevents.event.PacketListenerPriority
+import com.github.retrooper.packetevents.event.PacketSendEvent
+import com.github.retrooper.packetevents.event.UserDisconnectEvent
 import com.github.retrooper.packetevents.netty.channel.ChannelHelper
 import com.github.retrooper.packetevents.protocol.entity.data.EntityData
 import com.github.retrooper.packetevents.protocol.entity.data.EntityDataTypes
 import com.github.retrooper.packetevents.protocol.entity.type.EntityType
 import com.github.retrooper.packetevents.protocol.entity.type.EntityTypes
+import com.github.retrooper.packetevents.protocol.packettype.PacketType
 import com.github.retrooper.packetevents.protocol.item.ItemStack as PacketItemStack
 import com.github.retrooper.packetevents.util.Quaternion4f
 import com.github.retrooper.packetevents.util.Vector3d
@@ -16,6 +21,7 @@ import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerDe
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityMetadata
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityTeleport
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnEntity
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSetPassengers
 import org.bukkit.Bukkit
 import org.bukkit.block.data.BlockData
 import org.bukkit.entity.Player
@@ -54,6 +60,9 @@ internal interface PacketDisplayConnection {
         desired: List<PacketDisplayFrame>,
         resetChunks: Set<Long> = emptySet(),
         resetAll: Boolean = false,
+        desiredPassengers: Map<Int, List<Int>> = emptyMap(),
+        nativePassengerSnapshots: Map<Int, List<Int>> = emptyMap(),
+        liveVehicleIds: Set<Int>? = null,
     )
 }
 
@@ -91,6 +100,40 @@ internal class PacketEventsDisplayTransport(
     constructor(plugin: Plugin, source: String) : this(plugin.logger, PacketEventsChannelBackend(plugin, source))
     /* Weak keys and weak channel snapshots avoid retaining disconnected players. */
     private val attachments = WeakHashMap<Player, PacketDisplayAttachment>()
+    private val passengerStates = mutableMapOf<UUID, WeakReference<PacketDisplayPassengerState>>()
+    private var closed = false
+    private val passengerListener = object : PacketListenerAbstract(PacketListenerPriority.MONITOR) {
+        override fun onPacketSend(event: PacketSendEvent) {
+            if (event.isCancelled) return
+            val viewerId = event.user.uuid ?: return
+            val state = synchronized(passengerStates) { passengerStates[viewerId]?.get() } ?: return
+            when (event.packetType) {
+                PacketType.Play.Server.SET_PASSENGERS -> {
+                    val packet = WrapperPlayServerSetPassengers(event)
+                    if (state.isOwnPassengerWrite(packet.entityId)) return
+                    val original = packet.passengers
+                    val merged = state.observeNative(packet.entityId, original)
+                    if (!original.contentEquals(merged)) {
+                        packet.passengers = merged
+                        event.markForReEncode(true)
+                    }
+                }
+                PacketType.Play.Server.DESTROY_ENTITIES -> {
+                    state.forgetVehicles(WrapperPlayServerDestroyEntities(event).entityIds)
+                }
+            }
+        }
+
+        override fun onUserDisconnect(event: UserDisconnectEvent) {
+            event.user.uuid?.let { viewerId ->
+                synchronized(passengerStates) { passengerStates.remove(viewerId)?.get()?.closeConnection() }
+            }
+        }
+    }
+
+    init {
+        PacketEvents.getAPI().eventManager.registerListener(passengerListener)
+    }
 
     override fun blockStateId(block: BlockData): Int =
         SpigotConversionUtil.fromBukkitBlockData(block).globalId
@@ -109,19 +152,154 @@ internal class PacketEventsDisplayTransport(
         synchronized(attachments) {
             val current = attachments[player]
             if (current != null && current.isUsableFor(channel)) return current
-            val replacement = PacketDisplayAttachment(channel, logger, backend)
+            if (current?.deferReplacementUntilCleanup(channel) == true) return null
+            val passengerState = PacketDisplayPassengerState()
+            synchronized(passengerStates) { passengerStates[player.uniqueId] = WeakReference(passengerState) }
+            val replacement = PacketDisplayAttachment(channel, logger, backend, passengerState)
             attachments[player] = replacement
             return replacement
         }
     }
 
     override fun forget(player: Player) {
-        synchronized(attachments) { attachments.remove(player) }
+        synchronized(attachments) { attachments.remove(player)?.abandonPassengerState() }
+        synchronized(passengerStates) { passengerStates.remove(player.uniqueId) }
     }
 
     override fun close() {
         /* Queued attachment drains keep their own weak channel and cleanup IDs. */
         synchronized(attachments) { attachments.clear() }
+        synchronized(passengerStates) { passengerStates.clear() }
+        if (!closed) {
+            closed = true
+            PacketEvents.getAPI().eventManager.unregisterListener(passengerListener)
+        }
+    }
+}
+
+/** Per-viewer native passenger baseline plus only this queue's admitted fake IDs. */
+internal class PacketDisplayPassengerState {
+    private val trackedVehicles = mutableSetOf<Int>()
+    private val native = mutableMapOf<Int, List<Int>>()
+    private val observedNative = mutableSetOf<Int>()
+    private val mounted = mutableMapOf<Int, List<Int>>()
+    private val deadVehicles = mutableSetOf<Int>()
+    private val invalidatedVehicles = mutableSetOf<Int>()
+    private val ownPassengerWrites = ThreadLocal<Set<Int>?>()
+    @Volatile private var disconnected = false
+
+    /** PacketEvents raises send events while encoding Core's already budgeted passenger writes. */
+    fun <T> duringOwnPassengerWrites(vehicleIds: Set<Int>, action: () -> T): T {
+        val previous = ownPassengerWrites.get()
+        ownPassengerWrites.set(previous.orEmpty() + vehicleIds)
+        return try {
+            action()
+        } finally {
+            if (previous == null) ownPassengerWrites.remove() else ownPassengerWrites.set(previous)
+        }
+    }
+
+    fun isOwnPassengerWrite(vehicleId: Int): Boolean = vehicleId in ownPassengerWrites.get().orEmpty()
+
+    @Synchronized
+    fun seedNative(vehicleId: Int, passengers: List<Int>) {
+        trackedVehicles += vehicleId
+        deadVehicles.remove(vehicleId)
+        if (vehicleId !in observedNative) native[vehicleId] = withoutMounted(vehicleId, passengers)
+    }
+
+    @Synchronized
+    fun nativePassengers(vehicleId: Int, fallback: List<Int> = emptyList()): List<Int> {
+        if (vehicleId in deadVehicles) return emptyList()
+        return native[vehicleId] ?: withoutMounted(vehicleId, fallback).also { native[vehicleId] = it }
+    }
+
+    /** Captures a full native replacement list, then appends admitted packet displays. */
+    @Synchronized
+    fun observeNative(vehicleId: Int, passengers: IntArray): IntArray {
+        if (isOwnPassengerWrite(vehicleId)) return passengers
+        if (disconnected || vehicleId !in trackedVehicles) return passengers
+        deadVehicles.remove(vehicleId)
+        observedNative += vehicleId
+        native[vehicleId] = withoutMounted(vehicleId, passengers.toList())
+        return (native[vehicleId].orEmpty() + mounted[vehicleId].orEmpty()).distinct().toIntArray()
+    }
+
+    @Synchronized
+    fun setMounted(vehicleId: Int, passengers: List<Int>) {
+        deadVehicles.remove(vehicleId)
+        invalidatedVehicles.remove(vehicleId)
+        if (passengers.isEmpty()) {
+            trackedVehicles.remove(vehicleId)
+            native.remove(vehicleId)
+            observedNative.remove(vehicleId)
+            mounted.remove(vehicleId)
+        } else {
+            trackedVehicles += vehicleId
+            mounted[vehicleId] = passengers.distinct()
+        }
+    }
+
+    @Synchronized
+    fun forgetVehicles(vehicleIds: IntArray) {
+        vehicleIds.forEach { id ->
+            if (id in trackedVehicles) {
+                deadVehicles += id
+                if (mounted[id].orEmpty().isNotEmpty()) invalidatedVehicles += id
+            }
+            trackedVehicles.remove(id)
+            native.remove(id)
+            observedNative.remove(id)
+            mounted.remove(id)
+        }
+    }
+
+    @Synchronized
+    fun clear() {
+        native.clear()
+        trackedVehicles.clear()
+        observedNative.clear()
+        mounted.clear()
+        deadVehicles.clear()
+        invalidatedVehicles.clear()
+    }
+
+    fun isDisconnected(): Boolean = disconnected
+
+    @Synchronized
+    fun isDead(vehicleId: Int): Boolean = vehicleId in deadVehicles
+
+    @Synchronized
+    fun invalidatedVehicles(): Set<Int> = invalidatedVehicles.toSet()
+
+    @Synchronized
+    fun acknowledgeInvalidations(vehicleIds: Set<Int>) {
+        invalidatedVehicles.removeAll(vehicleIds)
+    }
+
+    @Synchronized
+    fun retainVehicles(vehicleIds: Set<Int>) {
+        (trackedVehicles - vehicleIds - mounted.keys).forEach { id ->
+            trackedVehicles.remove(id)
+            native.remove(id)
+            observedNative.remove(id)
+            deadVehicles.remove(id)
+        }
+        val discarded = deadVehicles - vehicleIds - mounted.keys
+        deadVehicles.removeAll(discarded)
+        invalidatedVehicles.removeAll(discarded)
+    }
+
+    @Synchronized
+    fun closeConnection() {
+        disconnected = true
+        clear()
+    }
+
+    @Synchronized
+    private fun withoutMounted(vehicleId: Int, passengers: List<Int>): List<Int> {
+        val fakeIds = mounted[vehicleId].orEmpty().toSet()
+        return passengers.filterNot(fakeIds::contains)
     }
 }
 
@@ -137,6 +315,7 @@ internal class PacketDisplayAttachment internal constructor(
     channel: Any,
     private val logger: Logger,
     private val backend: PacketDisplayChannelBackend,
+    private val passengerState: PacketDisplayPassengerState = PacketDisplayPassengerState(),
 ) : PacketDisplayConnection {
     private val channelRef = WeakReference(channel)
     private val lock = Any()
@@ -145,6 +324,7 @@ internal class PacketDisplayAttachment internal constructor(
     private var scheduled = false
     private var pending: Pending? = null
     private var submitted: Map<Int, PacketDisplayFrame> = emptyMap()
+    @Volatile private var submittedPassengers: Map<Int, List<Int>> = emptyMap()
     private var inFlightFrames: Map<Int, PacketDisplayFrame>? = null
     private var cleanupIds: Set<Int> = emptySet()
     private var failureLogged = false
@@ -156,12 +336,38 @@ internal class PacketDisplayAttachment internal constructor(
         valid && channelRef.get() === channel
     }
 
+    internal fun abandonPassengerState() = passengerState.closeConnection()
+
+    /** Keep same-channel listener state alive until an invalid queue has removed all admitted IDs. */
+    internal fun deferReplacementUntilCleanup(channel: Any): Boolean {
+        val sameChannel = synchronized(lock) { channelRef.get() === channel }
+        if (!sameChannel) {
+            abandonPassengerState()
+            return false
+        }
+        val cleaned = synchronized(lock) {
+            !valid && pending == null && !scheduled && inFlightFrames == null &&
+                submitted.isEmpty() && submittedPassengers.isEmpty() && cleanupIds.isEmpty()
+        }
+        if (cleaned) return false
+        submit(emptyList())
+        return true
+    }
+
     override fun submit(
         desired: List<PacketDisplayFrame>,
         resetChunks: Set<Long>,
         resetAll: Boolean,
+        desiredPassengers: Map<Int, List<Int>>,
+        nativePassengerSnapshots: Map<Int, List<Int>>,
+        liveVehicleIds: Set<Int>?,
     ) {
         val resetSnapshot = resetChunks.toSet()
+        val passengerSnapshot = desiredPassengers.mapValues { (_, ids) -> ids.distinct().sorted() }.filterValues { it.isNotEmpty() }
+        val nativeSnapshot = nativePassengerSnapshots.mapValues { (_, ids) -> ids.distinct() }
+        nativeSnapshot.forEach { (vehicleId, ids) -> passengerState.seedNative(vehicleId, ids) }
+        val liveSnapshot = liveVehicleIds?.toSet()
+        val invalidatedSnapshot = passengerState.invalidatedVehicles()
         var schedule = false
         synchronized(lock) {
             val previous = pending
@@ -174,11 +380,18 @@ internal class PacketDisplayAttachment internal constructor(
                     current.metadata.interpolationDuration == 0 && visualStateChanged(prior, current)
                 ) generation(current) else null
             }.toSet()
-            val next = Pending(frames, resetSnapshot, resetAll, snapTargets).bounded()
-            if (valid && !scheduled && previous == null && next.resetChunks.isEmpty() && !next.resetAll && submitted == next.frames) {
+            val next = Pending(
+                frames, resetSnapshot, resetAll, snapTargets, passengerSnapshot, nativeSnapshot, liveSnapshot,
+                invalidatedSnapshot,
+            ).bounded()
+            if (valid && !scheduled && previous == null && next.resetChunks.isEmpty() && !next.resetAll &&
+                next.resyncVehicles.isEmpty() && submitted == next.frames && submittedPassengers == next.desiredPassengers
+            ) {
                 return
             }
             if (scheduled && previous != null && previous.frames == next.frames &&
+                previous.desiredPassengers == next.desiredPassengers &&
+                next.resyncVehicles.all(previous.resyncVehicles::contains) &&
                 next.resetChunks.all { it in previous.resetChunks } && (!next.resetAll || previous.resetAll)
             ) {
                 return
@@ -274,20 +487,50 @@ internal class PacketDisplayAttachment internal constructor(
         }
         if (!synchronized(lock) { valid }) {
             synchronized(lock) { cleanupIds = cleanupIds + batch.previous.keys }
-            return if (cleanup(channel)) null else work.copy(frames = emptyMap())
+            return if (cleanup(channel)) null else work.copy(frames = emptyMap(), desiredPassengers = emptyMap())
         }
 
         val acknowledged = batch.previous.toMutableMap()
+        work.resyncVehicles.forEach { vehicleId -> submittedPassengers = submittedPassengers - vehicleId }
+        if (work.liveVehicleIds != null) {
+            val departed = submittedPassengers.keys.filter { it !in work.liveVehicleIds }
+            departed.forEach { vehicleId ->
+                passengerState.forgetVehicles(intArrayOf(vehicleId))
+                submittedPassengers = submittedPassengers - vehicleId
+            }
+        }
         val destroys = linkedSetOf<Int>().apply { addAll(synchronized(lock) { cleanupIds }) }
+        val forceDetachVehicles = linkedSetOf<Int>()
+        val resetVehicles = linkedSetOf<Int>()
         batch.previous.forEach { (id, old) ->
             val current = batch.desired[id]
-            if (current == null || work.resetAll || old.chunkKey in work.resetChunks ||
-                current.chunkKey in work.resetChunks || !sameGeneration(old, current)
-            ) destroys += id
+            val reset = work.resetAll || old.chunkKey in work.resetChunks ||
+                (current != null && current.chunkKey in work.resetChunks)
+            val replaced = current == null || !sameGeneration(old, current)
+            val relationReplaced = current != null &&
+                (!sameGeneration(old, current) || old.attachmentVehicleId != current.attachmentVehicleId)
+            if (old.attachmentVehicleId != null && (reset || relationReplaced)) {
+                forceDetachVehicles += old.attachmentVehicleId
+                if (reset) resetVehicles += old.attachmentVehicleId
+            }
+            if (replaced || reset) destroys += id
         }
         var wrote = false
         var failed = false
         try {
+            val detachUpdates = linkedMapOf<Int, List<Int>>()
+            (submittedPassengers.keys + forceDetachVehicles).forEach { vehicleId ->
+                val oldPassengers = submittedPassengers[vehicleId].orEmpty()
+                val wanted = work.desiredPassengers[vehicleId].orEmpty()
+                val retained = if (vehicleId in resetVehicles) emptyList() else oldPassengers.filter(wanted::contains)
+                if (oldPassengers != retained && (oldPassengers.isNotEmpty() || retained.isNotEmpty())) {
+                    detachUpdates[vehicleId] = retained
+                }
+            }
+            if (detachUpdates.isNotEmpty()) {
+                if (!writePassengerSets(channel, detachUpdates, work.nativePassengerSnapshots, cleanup = true)) return work
+                wrote = true
+            }
             if (destroys.isNotEmpty()) {
                 synchronized(lock) { cleanupIds = cleanupIds + destroys }
                 if (!backend.tryWrite(channel, listOf(WrapperPlayServerDestroyEntities(*destroys.toIntArray())), true)) {
@@ -327,6 +570,16 @@ internal class PacketDisplayAttachment internal constructor(
                 acknowledged[id] = current
             }
             resumeEntityId = null
+            val mountUpdates = work.desiredPassengers.mapValues { (vehicleId, displayIds) ->
+                displayIds.filter { id -> batch.desired[id]?.attachmentVehicleId == vehicleId && id in acknowledged }
+            }.filterValues { it.isNotEmpty() }
+                .filter { (vehicleId, displayIds) -> submittedPassengers[vehicleId] != displayIds }
+            if (mountUpdates.isNotEmpty()) {
+                if (!writePassengerSets(channel, mountUpdates, work.nativePassengerSnapshots, cleanup = false)) return work
+                wrote = true
+            }
+            passengerState.acknowledgeInvalidations(work.resyncVehicles)
+            passengerState.retainVehicles(submittedPassengers.keys + work.desiredPassengers.keys)
             return null
         } catch (failure: Throwable) {
             failed = true
@@ -341,6 +594,8 @@ internal class PacketDisplayAttachment internal constructor(
     }
 
     private fun cleanup(channel: Any): Boolean {
+        val passengerRestores = submittedPassengers.keys.associateWith { emptyList<Int>() }
+        if (passengerRestores.isNotEmpty() && !writePassengerSets(channel, passengerRestores, emptyMap(), cleanup = true)) return false
         val ids = synchronized(lock) { cleanupIds }
         if (ids.isEmpty()) return true
         if (!backend.tryWrite(channel, listOf(WrapperPlayServerDestroyEntities(*ids.toIntArray())), true)) return false
@@ -348,8 +603,62 @@ internal class PacketDisplayAttachment internal constructor(
         synchronized(lock) {
             cleanupIds = emptySet()
             submitted = emptyMap()
+            submittedPassengers = emptyMap()
         }
         return true
+    }
+
+    /** Passenger packets are full replacement lists, so read the latest native baseline at write time. */
+    private fun writePassengerSets(
+        channel: Any,
+        desired: Map<Int, List<Int>>,
+        fallbackNative: Map<Int, List<Int>>,
+        cleanup: Boolean,
+    ): Boolean {
+        if (desired.isEmpty()) return true
+        if (passengerState.isDisconnected()) {
+            desired.keys.forEach { vehicleId -> submittedPassengers = submittedPassengers - vehicleId }
+            return true
+        }
+        val liveDesired = desired.filterKeys { !passengerState.isDead(it) }
+        val deadDesired = desired.keys - liveDesired.keys
+        deadDesired.forEach { vehicleId ->
+            submittedPassengers = submittedPassengers - vehicleId
+        }
+        if (liveDesired.isEmpty()) return true
+        val packets = liveDesired.map { (vehicleId, fakePassengers) ->
+            val native = passengerState.nativePassengers(vehicleId, fallbackNative[vehicleId].orEmpty())
+            WrapperPlayServerSetPassengers(vehicleId, (native + fakePassengers).distinct().toIntArray())
+        }
+        val priorPassengers = liveDesired.keys.associateWith { submittedPassengers[it].orEmpty() }
+        liveDesired.keys.forEach { vehicleId ->
+            val possible = (priorPassengers.getValue(vehicleId) + liveDesired.getValue(vehicleId)).distinct().sorted()
+            setSubmittedPassengers(vehicleId, possible)
+        }
+        val admitted = try {
+            passengerState.duringOwnPassengerWrites(liveDesired.keys) {
+                backend.tryWrite(channel, packets, cleanup)
+            }
+        } catch (failure: Throwable) {
+            // A write may fail after a prefix of its buffers entered the channel.
+            // Keep the possible relation until cleanup can safely clear it.
+            throw failure
+        }
+        if (!admitted) {
+            priorPassengers.forEach { (vehicleId, passengers) -> setSubmittedPassengers(vehicleId, passengers) }
+            return false
+        }
+        backend.flush(channel)
+        liveDesired.forEach { (vehicleId, fakePassengers) ->
+            setSubmittedPassengers(vehicleId, fakePassengers.distinct().sorted())
+        }
+        return true
+    }
+
+    private fun setSubmittedPassengers(vehicleId: Int, passengers: List<Int>) {
+        submittedPassengers = if (passengers.isEmpty()) submittedPassengers - vehicleId
+        else submittedPassengers + (vehicleId to passengers.toList())
+        passengerState.setMounted(vehicleId, passengers)
     }
 
     private fun spawnPacket(frame: PacketDisplayFrame) = WrapperPlayServerSpawnEntity(
@@ -467,15 +776,25 @@ internal class PacketDisplayAttachment internal constructor(
         val resetChunks: Set<Long>,
         val resetAll: Boolean,
         val snapTargets: Set<DisplayGeneration> = emptySet(),
+        val desiredPassengers: Map<Int, List<Int>> = emptyMap(),
+        val nativePassengerSnapshots: Map<Int, List<Int>> = emptyMap(),
+        val liveVehicleIds: Set<Int>? = null,
+        val resyncVehicles: Set<Int> = emptySet(),
     ) {
         fun merge(next: Pending): Pending {
             val mergedChunks = resetChunks + next.resetChunks
             val generations = next.frames.values.map(::generation).toSet()
             val snaps = (snapTargets + next.snapTargets).intersect(generations)
             return if (resetAll || next.resetAll || mergedChunks.size > MAX_RESET_CHUNKS) {
-                Pending(next.frames, emptySet(), true, snaps)
+                Pending(
+                    next.frames, emptySet(), true, snaps, next.desiredPassengers,
+                    next.nativePassengerSnapshots, next.liveVehicleIds, resyncVehicles + next.resyncVehicles,
+                )
             } else {
-                Pending(next.frames, mergedChunks, false, snaps)
+                Pending(
+                    next.frames, mergedChunks, false, snaps, next.desiredPassengers,
+                    next.nativePassengerSnapshots, next.liveVehicleIds, resyncVehicles + next.resyncVehicles,
+                )
             }
         }
 
@@ -510,13 +829,16 @@ internal class PacketDisplayAttachment internal constructor(
             DisplayGeneration(frame.entityId, frame.uuid, displayKind(frame))
 
         fun sameGeneration(old: PacketDisplayFrame, current: PacketDisplayFrame): Boolean =
-            old.entityId == current.entityId && old.uuid == current.uuid && displayKind(old) == displayKind(current)
+            old.entityId == current.entityId && old.uuid == current.uuid &&
+                old.worldId == current.worldId && displayKind(old) == displayKind(current)
 
         fun visualStateChanged(old: PacketDisplayFrame, current: PacketDisplayFrame): Boolean =
             old.metadata.transform != current.metadata.transform || old.metadata.content != current.metadata.content
 
         fun positionChanged(old: PacketDisplayFrame, current: PacketDisplayFrame): Boolean =
-            old.x != current.x || old.y != current.y || old.z != current.z ||
+            if (old.attachmentVehicleId == current.attachmentVehicleId && current.attachmentVehicleId != null) false
+            else old.attachmentVehicleId != current.attachmentVehicleId ||
+                old.x != current.x || old.y != current.y || old.z != current.z ||
                 old.yaw != current.yaw || old.pitch != current.pitch
 
         fun DisplayVector.packet() = Vector3f(x, y, z)

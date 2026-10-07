@@ -238,8 +238,8 @@ private class MutableAudience(private val player: Player) : PacketDisplayAudienc
         val location = player.location
         return if (player.isOnline) listOf(
             PacketDisplayViewer(
-                player, player.uniqueId, player.world.uid,
-                location.x, location.y, location.z, setOf(0L),
+                player, player.uniqueId, player.world.uid, player.entityId, emptySet(),
+                location.x, location.y, location.z, setOf(0L), player.passengers.map { it.entityId },
             ),
         ) else emptyList()
     }
@@ -271,7 +271,14 @@ private class RecordingConnection : PacketDisplayConnection {
     private val snapshots = mutableListOf<Snapshot>()
     override val identity: Any = Any()
     fun last() = snapshots.last()
-    override fun submit(desired: List<PacketDisplayFrame>, resetChunks: Set<Long>, resetAll: Boolean) {
+    override fun submit(
+        desired: List<PacketDisplayFrame>,
+        resetChunks: Set<Long>,
+        resetAll: Boolean,
+        desiredPassengers: Map<Int, List<Int>>,
+        nativePassengerSnapshots: Map<Int, List<Int>>,
+        liveVehicleIds: Set<Int>?,
+    ) {
         snapshots += Snapshot(desired)
     }
 }
