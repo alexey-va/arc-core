@@ -159,7 +159,8 @@ class PaperSqlServiceIntegrationTest : StringSpec({
                     repeat(2) {
                         consumerRuntime.executor.execute {
                             workersStarted.countDown()
-                            check(unblockWorkers.await(5, TimeUnit.SECONDS))
+                            // Provider shutdown has its own 5s bound; let it return before this task expires.
+                            check(unblockWorkers.await(15, TimeUnit.SECONDS))
                             workersFinished.countDown()
                         }
                     }

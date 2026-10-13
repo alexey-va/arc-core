@@ -45,6 +45,16 @@ jobs:
           java-version: "25"
       - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
       - run: ./gradlew --build-cache testAll
+      - name: Save unit test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: unit-test-reports-${{ github.sha }}
+          path: |
+            **/build/test-results/test/**
+            **/build/reports/tests/test/**
+          retention-days: 7
+          if-no-files-found: ignore
 
   integration:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.heavy_tests }}
@@ -61,3 +71,13 @@ jobs:
       - name: Verify Docker daemon
         run: docker info
       - run: ./gradlew integrationTestAll
+      - name: Save integration test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: integration-test-reports-${{ github.sha }}
+          path: |
+            **/build/test-results/integrationTest/**
+            **/build/reports/tests/integrationTest/**
+          retention-days: 7
+          if-no-files-found: ignore

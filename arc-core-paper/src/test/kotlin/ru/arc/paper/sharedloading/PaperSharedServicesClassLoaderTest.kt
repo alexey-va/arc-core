@@ -135,7 +135,7 @@ class PaperSharedServicesClassLoaderTest : FreeSpec({
                         val secondRead = invoke(clientB, "loadMap", arrayOf(String::class.java), "shared") as CompletableFuture<*>
                         secondRead.get(1, TimeUnit.SECONDS) shouldBe mapOf("state" to "two")
                     } finally {
-                        service.leases.forEach(AutoCloseable::close)
+                        service.leases.forEach { it.api.close() }
                         paper.server.servicesManager.unregisterAll(host)
                     }
                 }
