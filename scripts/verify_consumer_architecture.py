@@ -226,7 +226,10 @@ FORBIDDEN_RULES = (
     ForbiddenRule(
         "direct-mockbukkit",
         frozenset({"gradle", "test", "integration"}),
-        re.compile(r"(?:org\.mockbukkit|mockbukkit:mockbukkit)"),
+        # Published test-kit methods expose MockBukkit fixture types. Domain
+        # adapters may use them; dependency and singleton lifecycle ownership
+        # still belong exclusively to arc-core-paper-testing.
+        re.compile(r"(?:org\.mockbukkit[^\s\";]*\bMockBukkit\b|\bMockBukkit\s*\.|mockbukkit:mockbukkit|org\.mockbukkit:)"),
         "depend on arc-core-paper-testing and use MockBukkitTestRuntime",
     ),
     ForbiddenRule(

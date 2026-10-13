@@ -175,6 +175,30 @@ fun testRuntime() = MockBukkitTestRuntime.open().use { }
         self.assertEqual(1, exit_code)
         self.assertIn("rule=direct-mockbukkit", output)
 
+    def test_accepts_domain_fixture_types_with_the_shared_runtime(self) -> None:
+        source = self.root / "src/test/kotlin/example/ExamplePluginTest.kt"
+        source.write_text(source.read_text(encoding="utf-8") + "\n" +
+            "import org.mockbukkit.mockbukkit.WorldMock\n"
+            "import org.mockbukkit.mockbukkit.entity.SkeletonMock\n"
+            "fun domainFixture(world: WorldMock, actor: SkeletonMock) = world.name\n",
+            encoding="utf-8")
+        exit_code, output = self.verify()
+        self.assertEqual(0, exit_code, output)
+
+    def test_rejects_mockbukkit_lifecycle_and_direct_dependency(self) -> None:
+        source = self.root / "src/test/kotlin/example/DirectTest.kt"
+        for forbidden in (
+            "MockBukkit.mock()",
+            "MockBukkit.unmock()",
+            "import org.mockbukkit.mockbukkit.MockBukkit as DirectRuntime",
+            'testImplementation("org.mockbukkit.mockbukkit:mockbukkit-v1.21:4.116.3")',
+        ):
+            with self.subTest(forbidden=forbidden):
+                source.write_text(forbidden, encoding="utf-8")
+                exit_code, output = self.verify()
+                self.assertEqual(1, exit_code)
+                self.assertIn("rule=direct-mockbukkit", output)
+
     def test_rejects_reflective_access_to_project_owned_arc_code(self) -> None:
         source = self.root / "src/main/kotlin/example/ExamplePlugin.kt"
         source.write_text(

@@ -50,6 +50,12 @@ visible from the first commit. A plugin may remain small; it must not replace
 the baseline with a local superclass, scheduler bag, health DTO, locale engine,
 or MockBukkit singleton.
 
+The Paper test-kit exposes concrete fixture types, such as `WorldMock`, through
+its published API. Feature-specific test adapters may use those types while
+`MockBukkitTestRuntime` retains server setup and teardown. The verifier rejects
+direct MockBukkit coordinates and singleton access, rather than every fixture
+type import. Reusable platform compatibility still belongs in the test-kit.
+
 The `metrics` capability and `arc-core-metrics` module are optional. Keep the
 Prometheus listener in the central ARC/ProxyARC runtimes; ordinary add-on
 plugins expose technical counters, gauges and timers through `ArcMetricsService`
