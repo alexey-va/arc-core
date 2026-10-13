@@ -19,6 +19,8 @@ dependencies {
     compileOnlyApi(project(":arc-core-paper-api"))
     compileOnlyApi(project(":arc-core-logging"))
     compileOnlyApi(project(":arc-core-metrics"))
+    compileOnlyApi(project(":arc-core-sql"))
+    compileOnlyApi(project(":arc-core-redis"))
     compileOnly("io.papermc.paper:paper-api:$paperApiVersion")
     // Optional at runtime: only the packet-display owner loads this integration.
     // Consumers using it declare the installed PacketEvents plugin as a dependency.
@@ -29,9 +31,29 @@ dependencies {
     testImplementation(project(":arc-core-paper-api"))
     testImplementation(project(":arc-core-logging"))
     testImplementation(project(":arc-core-metrics"))
+    testImplementation(project(":arc-core-sql"))
+    testImplementation(project(":arc-core-redis"))
     testImplementation("io.mockk:mockk:1.14.7")
     testImplementation("com.github.retrooper:packetevents-spigot:2.12.1")
     testRuntimeOnly("io.netty:netty-transport:4.2.7.Final")
+}
+
+val integrationTest by sourceSets.creating {
+    compileClasspath += sourceSets.main.get().output + configurations.testRuntimeClasspath.get()
+    runtimeClasspath += output + compileClasspath
+}
+configurations[integrationTest.implementationConfigurationName].extendsFrom(configurations.testImplementation.get())
+configurations[integrationTest.runtimeOnlyConfigurationName].extendsFrom(configurations.testRuntimeOnly.get())
+dependencies {
+    add(integrationTest.implementationConfigurationName, project(":arc-core-integration-testing"))
+}
+tasks.register<Test>("integrationTest") {
+    description = "Verifies shared Paper resource leases against disposable Redis and MySQL"
+    group = "verification"
+    testClassesDirs = integrationTest.output.classesDirs
+    classpath = integrationTest.runtimeClasspath
+    useJUnitPlatform()
+    shouldRunAfter(tasks.test)
 }
 
 publishing {

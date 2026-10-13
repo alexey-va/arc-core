@@ -26,6 +26,10 @@ import java.time.Clock
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 /** One purpose partition inside the shared one-time-use table. */
 data class MySqlOneTimeUsePartition(
@@ -227,11 +231,16 @@ class MySqlOneTimeUseLedger private constructor(
     )
 
     private val claimHandles = ConcurrentHashMap<UUID, ClaimHandle>()
+    private val lifecycle = Any()
+    private var inFlightOperations = 0
+    private var closing = false
+    private var cleanupScheduled = false
+    private val cleanupCompleted = CompletableFuture<Unit>()
 
     override val activeClaims: Int get() = claimHandles.size
 
     override fun claim(request: OneTimeUseClaimRequest): CompletableFuture<OneTimeUseClaimResult> =
-        runtime.executor.submit {
+        submit(runtime.executor) {
             val connection = runtime.dataSource.connection
             val lockName = lockName(request.identity.useId)
             var retained = false
@@ -252,32 +261,119 @@ class MySqlOneTimeUseLedger private constructor(
         }
 
     override fun commit(claim: OneTimeUseClaim): CompletableFuture<OneTimeUseCommitResult> =
-        completionExecutor.submit {
+        submit(completionExecutor) {
             withClaimHandle(claim, OneTimeUseCommitResult.REJECTED) { connection ->
                 transaction(connection) { store.commit(connection, claim) }
             }
         }
 
     override fun release(claim: OneTimeUseClaim): CompletableFuture<OneTimeUseReleaseResult> =
-        completionExecutor.submit {
+        submit(completionExecutor) {
             withClaimHandle(claim, OneTimeUseReleaseResult.REJECTED) { connection ->
                 transaction(connection) { store.release(connection, claim) }
             }
         }
 
     override fun abandon(claim: OneTimeUseClaim): CompletableFuture<OneTimeUseAbandonResult> =
-        completionExecutor.submit {
+        submit(completionExecutor) {
             withClaimHandle(claim, OneTimeUseAbandonResult.REJECTED) { connection ->
                 transaction(connection) { store.abandon(connection, claim) }
             }
         }
 
     override fun close() {
-        completionExecutor.close()
-        claimHandles.entries.toList().forEach { (claimId, handle) ->
-            if (claimHandles.remove(claimId, handle)) releaseNamedLock(handle.connection, handle.lockName)
+        synchronized(lifecycle) {
+            closing = true
         }
-        if (ownsRuntime) runtime.close()
+        scheduleCleanupIfDrained()
+        if (runtime.ownsPool) awaitStandaloneCleanup()
+    }
+
+    private fun <T> submit(executor: SqlExecutor, block: () -> T): CompletableFuture<T> {
+        val accepted = synchronized(lifecycle) {
+            if (closing) false else {
+                inFlightOperations++
+                true
+            }
+        }
+        if (!accepted) {
+            return CompletableFuture.failedFuture(RejectedExecutionException("One-time-use ledger is closed"))
+        }
+        val future = CompletableFuture<T>()
+        val operation = Runnable {
+            try {
+                future.complete(block())
+            } catch (failure: Throwable) {
+                future.completeExceptionally(failure)
+            } finally {
+                operationFinished()
+            }
+        }
+        try {
+            executor.execute(operation)
+        } catch (failure: Throwable) {
+            future.completeExceptionally(failure)
+            operationFinished()
+        }
+        return future
+    }
+
+    private fun operationFinished() {
+        synchronized(lifecycle) { inFlightOperations-- }
+        scheduleCleanupIfDrained()
+    }
+
+    private fun scheduleCleanupIfDrained() {
+        val schedule = synchronized(lifecycle) {
+            if (!closing || inFlightOperations != 0 || cleanupScheduled) {
+                false
+            } else {
+                cleanupScheduled = true
+                true
+            }
+        }
+        if (schedule) CompletableFuture.runAsync(::finishClose)
+    }
+
+    private fun finishClose() {
+        var failure: Throwable? = null
+        try {
+            completionExecutor.close()
+        } catch (closeFailure: Throwable) {
+            failure = closeFailure
+        }
+        try {
+            claimHandles.entries.toList().forEach { (claimId, handle) ->
+                if (claimHandles.remove(claimId, handle)) releaseNamedLock(handle.connection, handle.lockName)
+            }
+        } catch (releaseFailure: Throwable) {
+            failure = failure?.also { it.addSuppressed(releaseFailure) } ?: releaseFailure
+        }
+        if (ownsRuntime) {
+            try {
+                runtime.close()
+            } catch (runtimeFailure: Throwable) {
+                failure = failure?.also { it.addSuppressed(runtimeFailure) } ?: runtimeFailure
+            }
+        }
+        if (failure == null) cleanupCompleted.complete(Unit)
+        else cleanupCompleted.completeExceptionally(failure)
+    }
+
+    private fun awaitStandaloneCleanup() {
+        try {
+            cleanupCompleted.get(STANDALONE_CLOSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        } catch (_: TimeoutException) {
+            // Cleanup keeps draining asynchronously after the bounded wait.
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        } catch (failure: ExecutionException) {
+            when (val cause = failure.cause ?: failure) {
+                is RuntimeException -> throw cause
+                is Error -> throw cause
+                else -> throw IllegalStateException("One-time-use ledger cleanup failed", cause)
+            }
+        }
     }
 
     private fun <T> withClaimHandle(claim: OneTimeUseClaim, rejected: T, block: (Connection) -> T): T {
@@ -324,7 +420,7 @@ class MySqlOneTimeUseLedger private constructor(
             }
         }.getOrDefault(false)
         if (released) runCatching { connection.close() }
-        else runCatching { runtime.dataSource.evictConnection(connection) }
+        else runCatching { runtime.evictConnection(connection) }
     }
 
     private fun lockName(useId: UUID): String {
@@ -334,6 +430,8 @@ class MySqlOneTimeUseLedger private constructor(
     }
 
     companion object {
+        private const val STANDALONE_CLOSE_TIMEOUT_SECONDS = 5L
+
         fun createTableSql(tableName: String = MySqlOneTimeUsePartition.DEFAULT_TABLE): String {
             val partition = MySqlOneTimeUsePartition("schema", tableName)
             return """
@@ -373,7 +471,7 @@ class MySqlOneTimeUseLedger private constructor(
             clock: Clock = Clock.systemUTC(),
         ): MySqlOneTimeUseLedger {
             require(completionThreads in 1..8) { "One-time-use completion threads must be between 1 and 8" }
-            val completion = SqlExecutor(runtime.dataSource, completionThreads, "$runtimeName-otu-complete")
+            val completion = runtime.createCompletionExecutor(completionThreads, "$runtimeName-otu-complete")
             return MySqlOneTimeUseLedger(
                 runtime = runtime,
                 completionExecutor = completion,
@@ -396,7 +494,7 @@ class MySqlOneTimeUseLedger private constructor(
         ): MySqlOneTimeUseLedger {
             require(completionThreads in 1..8) { "One-time-use completion threads must be between 1 and 8" }
             val runtime = SqlRuntime.create(connectionConfig, runtimeName)
-            val completion = SqlExecutor(runtime.dataSource, completionThreads, "$runtimeName-complete")
+            val completion = runtime.createCompletionExecutor(completionThreads, "$runtimeName-complete")
             return runCatching {
                 MySqlMigrator(runtime.dataSource, migrationNamespace).migrate(migrations, compatibility)
                 MySqlOneTimeUseLedger(

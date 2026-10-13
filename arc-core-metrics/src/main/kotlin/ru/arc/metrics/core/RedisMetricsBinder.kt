@@ -18,10 +18,11 @@ import java.util.concurrent.TimeUnit
  * so this adds useful latency and failure signals without unbounded series.
  */
 class RedisMetricsBinder(
-    private val manager: RedisManager,
+    private val installTelemetry: (RedisTelemetrySink) -> Unit,
     private val registry: MeterRegistry,
 ) : RedisTelemetrySink,
     AutoCloseable {
+    constructor(manager: RedisManager, registry: MeterRegistry) : this(manager::installTelemetry, registry)
     private data class OperationKey(
         val operation: RedisOperation,
         val result: RedisOperationResult,
@@ -37,7 +38,7 @@ class RedisMetricsBinder(
     private val reconnectCounters = ConcurrentHashMap<ReconnectKey, Counter>()
 
     init {
-        manager.installTelemetry(this)
+        installTelemetry(this)
     }
 
     override fun onOperation(
@@ -61,7 +62,7 @@ class RedisMetricsBinder(
     }
 
     override fun close() {
-        manager.installTelemetry(NoOpRedisTelemetrySink)
+        installTelemetry(NoOpRedisTelemetrySink)
     }
 
     private fun operationCounter(key: OperationKey): Counter =

@@ -52,8 +52,10 @@ or MockBukkit singleton.
 
 The `metrics` capability and `arc-core-metrics` module are optional. Keep the
 Prometheus listener in the central ARC/ProxyARC runtimes; ordinary add-on
-plugins should expose bounded health through their owning runtime instead of
-opening another fixed port.
+plugins expose technical counters, gauges and timers through `ArcMetricsService`
+from `arc-core-paper-api`, and bounded health through their owning runtime.
+`PaperArcMetrics` performs optional lookup; the ARC host owns the single registry
+and exporter. See [shared Paper services](shared-paper-services.md).
 
 ## Capability routing
 

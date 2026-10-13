@@ -8,6 +8,9 @@ import io.mockk.mockk
 import io.mockk.verify
 import java.sql.Connection
 import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executor
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.RejectedExecutionException
 import javax.sql.DataSource
 
 class SqlExecutorTest : StringSpec({
@@ -17,6 +20,22 @@ class SqlExecutorTest : StringSpec({
         SqlExecutor(dataSource, 1, "sql-test").use { executor ->
             executor.submit { Thread.currentThread().name }.get() shouldBe "sql-test-1"
         }
+    }
+
+    "closing a borrowed executor rejects new work and preserves accepted work" {
+        val dataSource = mockk<DataSource>()
+        val queue = LinkedBlockingQueue<Runnable>()
+        val sharedExecutor = Executor(queue::add)
+        val executor = SqlExecutor(dataSource, sharedExecutor)
+        val accepted = executor.submit { "drained" }
+
+        executor.close()
+
+        shouldThrow<RejectedExecutionException> { executor.submit { "rejected" } }
+        queue.take().run()
+        accepted.get() shouldBe "drained"
+        sharedExecutor.execute { }
+        queue.size shouldBe 1
     }
 
     "read marks the pooled connection read-only and closes it" {

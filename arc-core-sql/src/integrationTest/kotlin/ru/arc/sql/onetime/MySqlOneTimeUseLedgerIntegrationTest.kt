@@ -12,13 +12,16 @@ import ru.arc.onetime.OneTimeUseCommitResult
 import ru.arc.onetime.OneTimeUseFingerprint
 import ru.arc.onetime.OneTimeUseIdentity
 import ru.arc.onetime.OneTimeUseReleaseResult
+import ru.arc.sql.MySqlMigrator
 import ru.arc.sql.SqlConnectionConfig
+import ru.arc.sql.SqlRuntime
 import ru.arc.sql.SqlSslMode
 import ru.arc.testing.containers.MySqlTestService
 import ru.arc.testing.containers.MySqlTestSettings
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 class MySqlOneTimeUseLedgerIntegrationTest : FreeSpec({
@@ -87,6 +90,53 @@ class MySqlOneTimeUseLedgerIntegrationTest : FreeSpec({
         }
     }
 
+    "completion lane commits while every normal SQL worker is saturated" {
+        val owner = SqlRuntime.createOwned(config, "one-time-owner")
+        val completionReserve = Executors.newFixedThreadPool(2)
+        val consumer = SqlRuntime.borrow(
+            dataSource = owner.dataSource,
+            executor = owner.executor,
+            completionExecutor = completionReserve,
+            lease = AutoCloseable { },
+            evictConnection = owner::evictConnection,
+        )
+        val partition = MySqlOneTimeUsePartition("arc.test.shared-completion")
+        var ledger: MySqlOneTimeUseLedger? = null
+        val workersStarted = CountDownLatch(2)
+        val unblockWorkers = CountDownLatch(1)
+        val workersFinished = CountDownLatch(2)
+        try {
+            MySqlMigrator(owner.dataSource, "arc_one_time_shared_completion").migrate(
+                listOf(MySqlOneTimeUseLedger.createTableMigration(1)),
+            )
+            ledger = MySqlOneTimeUseLedger.attach(
+                runtime = consumer,
+                runtimeName = "one-time-shared",
+                partition = partition,
+            )
+            val claim = ledger.claim(request()).get(5, TimeUnit.SECONDS)
+                .shouldBeInstanceOf<OneTimeUseClaimResult.Acquired>().claim
+
+            repeat(2) {
+                consumer.executor.execute {
+                    workersStarted.countDown()
+                    check(unblockWorkers.await(5, TimeUnit.SECONDS))
+                    workersFinished.countDown()
+                }
+            }
+            workersStarted.await(5, TimeUnit.SECONDS) shouldBe true
+
+            ledger.commit(claim).get(5, TimeUnit.SECONDS) shouldBe OneTimeUseCommitResult.COMMITTED
+        } finally {
+            unblockWorkers.countDown()
+            workersFinished.await(5, TimeUnit.SECONDS)
+            ledger?.close()
+            consumer.close()
+            completionReserve.shutdownNow()
+            owner.close()
+        }
+    }
+
     "release, recovery, abandon and identity conflict remain explicit" {
         open().use { ledger ->
             val initial = request()
@@ -117,6 +167,28 @@ class MySqlOneTimeUseLedgerIntegrationTest : FreeSpec({
                     claimId = UUID.randomUUID(),
                 ),
             ).join() shouldBe OneTimeUseClaimResult.IdentityConflict
+        }
+    }
+
+    "standalone close releases retained claims before returning" {
+        val base = request()
+        val standalone = open()
+        try {
+            standalone.claim(base).join().shouldBeInstanceOf<OneTimeUseClaimResult.Acquired>()
+            standalone.activeClaims shouldBe 1
+        } finally {
+            standalone.close()
+        }
+        standalone.activeClaims shouldBe 0
+
+        val contender = open()
+        try {
+            val recovered = contender.claim(base).join()
+                .shouldBeInstanceOf<OneTimeUseClaimResult.Acquired>().claim
+            recovered.newlyCreated shouldBe false
+            contender.release(recovered).join() shouldBe OneTimeUseReleaseResult.RELEASED
+        } finally {
+            contender.close()
         }
     }
 

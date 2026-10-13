@@ -7,7 +7,6 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.future.asCompletableFuture
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -100,8 +99,14 @@ class RedisManager(
     private val channelListeners = ConcurrentHashMap<String, MutableList<ChannelListener>>()
     private val channelList = ConcurrentHashMap.newKeySet<String>()
 
-    private val subscriptionMutex = Mutex()
+    private val subscriptionStateMonitor = Any()
+    private val subscribedChannels = ConcurrentHashMap.newKeySet<String>()
+    private val requestedChannels = ConcurrentHashMap.newKeySet<String>()
+    private val topologyReconcileMutex = Mutex()
+    private var subscriptionGeneration = 0L
     private var subscriptionJob: kotlinx.coroutines.Job? = null
+    private var topologyReconcileJob: kotlinx.coroutines.Job? = null
+    private var topologyReconcileScheduled = false
     private var subscriptionThread: Future<*>? = null
     private var subscriptionExecutor =
         Executors.newSingleThreadExecutor { r ->
@@ -112,6 +117,9 @@ class RedisManager(
 
     @Volatile
     private var isSubscribing = false
+
+    @Volatile
+    private var subscriptionClientReady = false
 
     @Volatile
     private var subscriptionActive = false
@@ -183,9 +191,18 @@ class RedisManager(
         }
 
     private fun resetTransport() {
-        connected = false
-        subscriptionActive = false
-        isSubscribing = false
+        synchronized(subscriptionStateMonitor) {
+            subscriptionGeneration++
+            connected = false
+            subscriptionActive = false
+            isSubscribing = false
+            subscriptionClientReady = false
+            subscribedChannels.clear()
+            requestedChannels.clear()
+            topologyReconcileScheduled = false
+            topologyReconcileJob?.cancel()
+            topologyReconcileJob = null
+        }
         scope.cancel()
         subscriptionJob?.cancel()
         subscriptionJob = null
@@ -293,11 +310,26 @@ class RedisManager(
         channel: String,
         subscribedChannels: Int,
     ) {
-        subscriptionActive = true
+        synchronized(subscriptionStateMonitor) {
+            this.subscribedChannels.add(channel)
+            subscriptionClientReady = true
+            subscriptionActive = this.subscribedChannels.isNotEmpty()
+        }
         logger.info("Subscribed to channel: {} (total: {})", channel, subscribedChannels)
+        reconcileSubscriptions()
     }
 
-    override fun onUnsubscribe(channel: String, subscribedChannels: Int) = Unit
+    override fun onUnsubscribe(channel: String, subscribedChannels: Int) {
+        synchronized(subscriptionStateMonitor) {
+            if (channel.isEmpty()) {
+                this.subscribedChannels.clear()
+            } else {
+                this.subscribedChannels.remove(channel)
+            }
+            subscriptionActive = this.subscribedChannels.isNotEmpty()
+        }
+        reconcileSubscriptions()
+    }
 
     override fun publish(channel: String, message: String) {
         publishInternal(channel, message)
@@ -602,85 +634,229 @@ class RedisManager(
         }
     }
 
-    override fun init() {
-        if (isShuttingDown || !connected) {
-            logger.error("Redis init() skipped: isShuttingDown={}, connected={}", isShuttingDown, connected)
-            return
-        }
-
-        if (isSubscribing) {
-            try {
-                unsubscribe()
-            } catch (_: Exception) {
+    /**
+     * Starts the subscription once, then adjusts only added or removed channels.
+     * Existing subscriptions stay active when one borrower changes its topology.
+     */
+    fun reconcileSubscriptions() {
+        var start = false
+        synchronized(subscriptionStateMonitor) {
+            if (isShuttingDown || !connected) return
+            if (subscriptionClientReady && subscriptionActive) {
+                scheduleTopologyReconciliationLocked()
+                return
             }
-            Thread.sleep(50)
+            if (!isSubscribing && channelList.isNotEmpty()) start = true
         }
-        subscriptionJob?.cancel()
-        subscriptionThread?.cancel(true)
-        isSubscribing = false
-        subscriptionActive = false
+        if (start) init()
+    }
 
-        subscriptionJob =
-            scope.launch {
-                subscriptionMutex.withLock {
-                    if (isSubscribing) {
-                        logger.warn("Redis subscription already in progress, skipping")
-                        return@withLock
-                    }
-                    if (channelList.isEmpty()) {
-                        logger.error("Redis init(): no channels registered, aborting")
-                        return@withLock
-                    }
+    override fun init() {
+        synchronized(subscriptionStateMonitor) {
+            if (isShuttingDown || !connected) {
+                logger.error("Redis init() skipped: isShuttingDown={}, connected={}", isShuttingDown, connected)
+                return
+            }
+            if (subscriptionClientReady && subscriptionActive) {
+                scheduleTopologyReconciliationLocked()
+                return
+            }
+            if (isSubscribing || channelList.isEmpty()) return
 
-                    isSubscribing = true
+            isSubscribing = true
+            val generation = ++subscriptionGeneration
+            subscriptionJob =
+                scope.launch {
                     delay(INIT_DELAY_MS)
 
-                    if (isShuttingDown || !connected) {
-                        logger.error("Redis init(): shutdown detected after delay, aborting")
-                        isSubscribing = false
-                        return@withLock
-                    }
+                    val channels =
+                        synchronized(subscriptionStateMonitor) {
+                            if (generation != subscriptionGeneration || isShuttingDown || !connected) {
+                                if (generation == subscriptionGeneration) isSubscribing = false
+                                return@launch
+                            }
+                            channelList.toTypedArray().also { target ->
+                                if (target.isEmpty()) isSubscribing = false
+                            }
+                        }
+                    if (channels.isEmpty()) return@launch
 
                     val subConnection = subscriptionConnection()
                     if (subConnection == null) {
+                        synchronized(subscriptionStateMonitor) {
+                            if (generation == subscriptionGeneration) isSubscribing = false
+                        }
                         logger.debug("Redis init(): subscription connection unavailable, retrying")
-                        isSubscribing = false
                         retrySubscriptionLater()
-                        return@withLock
+                        return@launch
                     }
 
-                    if (!coroutineContext.isActive || isShuttingDown || !connected) {
-                        isSubscribing = false
-                        return@withLock
-                    }
-
-                    if (subscriptionExecutor.isShutdown || subscriptionExecutor.isTerminated) {
-                        subscriptionExecutor =
-                            Executors.newSingleThreadExecutor { r ->
-                                Thread(r, "Redis-Subscription-${System.currentTimeMillis()}").apply {
-                                    isDaemon = true
-                                }
+                    val targetChannels =
+                        synchronized(subscriptionStateMonitor) {
+                            if (generation != subscriptionGeneration || isShuttingDown || !connected) {
+                                if (generation == subscriptionGeneration) isSubscribing = false
+                                return@launch
                             }
-                    }
-
-                    val channels = channelList.toTypedArray()
-                    subscriptionThread =
-                        subscriptionExecutor.submit {
-                            try {
-                                subConnection.subscribe(this@RedisManager, *channels)
-                            } catch (e: Exception) {
-                                isSubscribing = false
-                                subscriptionActive = false
-
-                                if (isShuttingDown) {
-                                    logger.debug("Redis subscription closed during shutdown")
-                                    return@submit
-                                }
-
-                                logger.error("Redis subscription thread exception", e)
-                                retrySubscriptionLater()
+                            channelList.toTypedArray().also { target ->
+                                requestedChannels.clear()
+                                requestedChannels.addAll(target)
                             }
                         }
+                    if (targetChannels.isEmpty()) {
+                        synchronized(subscriptionStateMonitor) {
+                            if (generation == subscriptionGeneration) isSubscribing = false
+                        }
+                        return@launch
+                    }
+
+                    synchronized(subscriptionStateMonitor) {
+                        if (generation != subscriptionGeneration || isShuttingDown || !connected) {
+                            if (generation == subscriptionGeneration) isSubscribing = false
+                            return@launch
+                        }
+                        if (subscriptionExecutor.isShutdown || subscriptionExecutor.isTerminated) {
+                            subscriptionExecutor = newSubscriptionExecutor()
+                        }
+                        subscriptionThread =
+                            subscriptionExecutor.submit {
+                                var failed = false
+                                try {
+                                    subConnection.subscribe(this@RedisManager, *targetChannels)
+                                } catch (e: Exception) {
+                                    failed = true
+                                    val current = synchronized(subscriptionStateMonitor) {
+                                        if (generation != subscriptionGeneration) {
+                                            false
+                                        } else {
+                                            subscriptionClientReady = false
+                                            subscriptionActive = false
+                                            isSubscribing = false
+                                            subscribedChannels.clear()
+                                            requestedChannels.clear()
+                                            true
+                                        }
+                                    }
+                                    if (current && !isShuttingDown) {
+                                        logger.error("Redis subscription thread exception", e)
+                                        retrySubscriptionLater()
+                                    }
+                                } finally {
+                                    val restart = synchronized(subscriptionStateMonitor) {
+                                        if (generation != subscriptionGeneration) {
+                                            false
+                                        } else {
+                                            subscriptionClientReady = false
+                                            subscriptionActive = false
+                                            isSubscribing = false
+                                            subscribedChannels.clear()
+                                            requestedChannels.clear()
+                                            !failed && !isShuttingDown && connected && channelList.isNotEmpty()
+                                        }
+                                    }
+                                    if (restart) init()
+                                }
+                            }
+                    }
+                }
+        }
+    }
+
+    /** Queues topology changes away from the Paper caller and keeps the subscription loop alive. */
+    private fun scheduleTopologyReconciliationLocked() {
+        if (
+            topologyReconcileScheduled || isShuttingDown || !connected ||
+            !subscriptionClientReady || !subscriptionActive
+        ) return
+
+        topologyReconcileScheduled = true
+        val generation = subscriptionGeneration
+        topologyReconcileJob =
+            scope.launch(Dispatchers.IO) {
+                try {
+                    topologyReconcileMutex.withLock {
+                        while (true) {
+                            val additions = synchronized(subscriptionStateMonitor) {
+                                if (
+                                    generation != subscriptionGeneration || isShuttingDown || !connected ||
+                                    !subscriptionClientReady || !subscriptionActive
+                                ) {
+                                    null
+                                } else {
+                                    channelList.filterNot(requestedChannels::contains).toSet()
+                                }
+                            } ?: return@withLock
+
+                            if (additions.isNotEmpty()) {
+                                subscribe(*additions.toTypedArray())
+                                synchronized(subscriptionStateMonitor) {
+                                    if (generation == subscriptionGeneration) requestedChannels.addAll(additions)
+                                }
+                            }
+
+                            val removals = synchronized(subscriptionStateMonitor) {
+                                if (
+                                    generation != subscriptionGeneration || isShuttingDown || !connected ||
+                                    !subscriptionClientReady || !subscriptionActive
+                                ) {
+                                    null
+                                } else {
+                                    requestedChannels.filterNot(channelList::contains).toSet()
+                                }
+                            } ?: return@withLock
+
+                            if (removals.isNotEmpty()) {
+                                unsubscribe(*removals.toTypedArray())
+                                synchronized(subscriptionStateMonitor) {
+                                    if (generation == subscriptionGeneration) requestedChannels.removeAll(removals)
+                                }
+                            }
+
+                            val hasChanges = synchronized(subscriptionStateMonitor) {
+                                generation == subscriptionGeneration && !isShuttingDown && connected &&
+                                    subscriptionClientReady && subscriptionActive &&
+                                    channelList.toSet() != requestedChannels.toSet()
+                            }
+                            if (!hasChanges) return@withLock
+                        }
+                    }
+                } catch (failure: Exception) {
+                    val current = synchronized(subscriptionStateMonitor) {
+                        if (generation != subscriptionGeneration) {
+                            false
+                        } else {
+                            subscriptionGeneration++
+                            topologyReconcileScheduled = false
+                            topologyReconcileJob = null
+                            subscriptionClientReady = false
+                            subscriptionActive = false
+                            isSubscribing = false
+                            subscribedChannels.clear()
+                            requestedChannels.clear()
+                            subscriptionThread?.cancel(true)
+                            true
+                        }
+                    }
+                    if (current) {
+                        val currentSubscription = sub
+                        sub = null
+                        runCatching { currentSubscription?.close() }
+                        logger.error("Redis subscription topology update failed", failure)
+                        retrySubscriptionLater()
+                    }
+                } finally {
+                    val restart = synchronized(subscriptionStateMonitor) {
+                        if (generation != subscriptionGeneration) {
+                            false
+                        } else {
+                            topologyReconcileScheduled = false
+                            topologyReconcileJob = null
+                            !isShuttingDown && connected && subscriptionClientReady && subscriptionActive &&
+                                channelList.toSet() != requestedChannels.toSet()
+                        }
+                    }
+                    if (restart) {
+                        synchronized(subscriptionStateMonitor) { scheduleTopologyReconciliationLocked() }
+                    }
                 }
             }
     }
@@ -729,6 +905,8 @@ class RedisManager(
                 reportOperation(RedisOperation.HEALTH_CHECK, result, started)
             }
         }
+
+    fun healthCheckAsync() = scope.async { healthCheck() }.asCompletableFuture()
 
     fun installTelemetry(sink: RedisTelemetrySink) {
         telemetrySink = sink
