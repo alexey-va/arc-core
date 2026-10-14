@@ -140,6 +140,56 @@ class PaperArcMetricsProviderTest : FreeSpec({
         }
     }
 
+    "explicit owner budget permits more than the default and rejects invalid budgets" {
+        SimpleMeterRegistry().withRegistry { registry ->
+            PaperArcMetricsProvider(registry).closeAfter { provider ->
+                val defaultScope = provider.open("default_budget")
+                repeat(129) { index ->
+                    defaultScope.gauge("default_budget_series", "Default budget series", mapOf("contract" to "c$index")).set(1.0)
+                }
+                registry.meters.count { it.id.name == "default_budget_series" } shouldBe 128
+
+                defaultScope.close()
+                val explicitScope = provider.open("explicit_budget", 129)
+                repeat(129) { index ->
+                    explicitScope.gauge("explicit_budget_series", "Explicit budget series", mapOf("contract" to "c$index")).set(1.0)
+                }
+                val invalidLow = provider.open("invalid_low_budget", 0)
+                val invalidHigh = provider.open("invalid_high_budget", 4097)
+                invalidLow.gauge("invalid_low_series", "Rejected budget", emptyMap()).set(1.0)
+                invalidHigh.gauge("invalid_high_series", "Rejected budget", emptyMap()).set(1.0)
+
+                registry.meters.count { it.id.name == "explicit_budget_series" } shouldBe 129
+                registry.find("invalid_low_series").gauge() shouldBe null
+                registry.find("invalid_high_series").gauge() shouldBe null
+            }
+        }
+    }
+
+    "aggregate series budget stays at the old ceiling and is reclaimed on owner close" {
+        SimpleMeterRegistry().withRegistry { registry ->
+            PaperArcMetricsProvider(registry).closeAfter { provider ->
+                val first = provider.open("budget_first", 4096)
+                val second = provider.open("budget_second", 4096)
+                val third = provider.open("budget_third", 1)
+                repeat(4096) { index ->
+                    first.gauge("aggregate_budget_series", "Aggregate budget series", mapOf("series" to "a$index")).set(1.0)
+                    second.gauge("aggregate_budget_series", "Aggregate budget series", mapOf("series" to "b$index")).set(2.0)
+                }
+                third.gauge("aggregate_budget_series", "Aggregate budget series", mapOf("series" to "overflow")).set(3.0)
+
+                registry.meters.count { it.id.name == "aggregate_budget_series" } shouldBe 8192
+                registry.find("aggregate_budget_series").tag("owner", "budget_third").gauge() shouldBe null
+
+                first.close()
+                third.gauge("aggregate_budget_series", "Aggregate budget series", mapOf("series" to "after-close")).set(4.0)
+
+                registry.meters.count { it.id.name == "aggregate_budget_series" } shouldBe 4097
+                registry.find("aggregate_budget_series").tag("owner", "budget_third").tag("series", "after-close").gauge()!!.value() shouldBe 4.0
+            }
+        }
+    }
+
     "one Prometheus scrape exposes all meter types and owner cleanup survives registry rebind" {
         PrometheusMeterRegistry(PrometheusConfig.DEFAULT).withRegistry { original ->
             PrometheusMeterRegistry(PrometheusConfig.DEFAULT).withRegistry { replacement ->

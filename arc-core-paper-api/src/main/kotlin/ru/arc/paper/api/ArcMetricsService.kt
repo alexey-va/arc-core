@@ -17,6 +17,9 @@ interface ArcMetricsService {
      * Invalid, duplicate, or over-limit owners receive an inert scope.
      */
     fun open(ownerId: String): ArcMetricsScope
+
+    /** Opens a scope with a bounded series budget of 1..4096. The provider also enforces an aggregate 8192-handle limit. */
+    fun open(ownerId: String, maxMetrics: Int): ArcMetricsScope
 }
 
 /**

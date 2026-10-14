@@ -32,13 +32,16 @@ class PaperArcMetricsProvider(initialRegistry: MeterRegistry?) : ArcMetricsServi
     private val warningBits = AtomicInteger()
     private var registry: MeterRegistry? = initialRegistry
     private var ownerCountMeter: Meter? = null
+    private var activeMetricHandles = 0
     private var closed = false
 
     init {
         bindOwnerCountMeter(initialRegistry)
     }
 
-    override fun open(ownerId: String): ArcMetricsScope = synchronized(lock) {
+    override fun open(ownerId: String): ArcMetricsScope = open(ownerId, DEFAULT_METRICS_PER_OWNER)
+
+    override fun open(ownerId: String, maxMetrics: Int): ArcMetricsScope = synchronized(lock) {
         if (closed || !isOwnerId(ownerId) || scopes.size >= MAX_OWNERS || ownerId in scopes) {
             val bit = when {
                 closed -> 0
@@ -49,8 +52,12 @@ class PaperArcMetricsProvider(initialRegistry: MeterRegistry?) : ArcMetricsServi
             if (bit != 0) warnOnce(bit, "ARC metrics rejected an invalid or duplicate owner scope")
             return@synchronized RejectedScope
         }
+        if (maxMetrics !in 1..MAX_METRICS_PER_OWNER) {
+            warnOnce(INVALID_BUDGET_WARNING, "ARC metrics rejected an invalid owner series budget")
+            return@synchronized RejectedScope
+        }
 
-        val scope = OwnerScope(ownerId)
+        val scope = OwnerScope(ownerId, maxMetrics)
         scopes[ownerId] = scope
         activeOwners.incrementAndGet()
         scope.rebind(registry)
@@ -81,6 +88,7 @@ class PaperArcMetricsProvider(initialRegistry: MeterRegistry?) : ArcMetricsServi
         scopes.values.forEach { it.closeFromProvider(registry) }
         scopes.clear()
         activeOwners.set(0)
+        activeMetricHandles = 0
         ownerCountMeter?.let { registry?.remove(it) }
         ownerCountMeter = null
         registry = null
@@ -90,6 +98,7 @@ class PaperArcMetricsProvider(initialRegistry: MeterRegistry?) : ArcMetricsServi
         if (scopes[scope.ownerId] !== scope) return@synchronized
         scopes.remove(scope.ownerId)
         activeOwners.decrementAndGet()
+        activeMetricHandles -= scope.registeredMetricCount()
         scope.closeFromProvider(registry)
     }
 
@@ -117,7 +126,7 @@ class PaperArcMetricsProvider(initialRegistry: MeterRegistry?) : ArcMetricsServi
         }
     }
 
-    private inner class OwnerScope(val ownerId: String) : ArcMetricsScope {
+    private inner class OwnerScope(val ownerId: String, private val metricLimit: Int) : ArcMetricsScope {
         private val handles = linkedMapOf<MetricKey, MetricHandle>()
         private var isClosed = false
 
@@ -152,8 +161,12 @@ class PaperArcMetricsProvider(initialRegistry: MeterRegistry?) : ArcMetricsServi
                 }
                 return@synchronized existing
             }
-            if (handles.size >= MAX_METRICS_PER_OWNER) {
+            if (handles.size >= metricLimit) {
                 warnOnce(METRIC_LIMIT_WARNING, "ARC metrics reached the per-owner meter limit")
+                return@synchronized null
+            }
+            if (activeMetricHandles >= MAX_TOTAL_METRIC_HANDLES) {
+                warnOnce(TOTAL_METRIC_LIMIT_WARNING, "ARC metrics reached the aggregate meter limit")
                 return@synchronized null
             }
 
@@ -163,6 +176,7 @@ class PaperArcMetricsProvider(initialRegistry: MeterRegistry?) : ArcMetricsServi
                 MetricType.TIMER -> TimerHandle(ownerId, name, description, tags)
             }
             handles[key] = handle
+            activeMetricHandles++
             handle.rebind(registry)
             handle
         }
@@ -171,6 +185,8 @@ class PaperArcMetricsProvider(initialRegistry: MeterRegistry?) : ArcMetricsServi
             if (isClosed) return
             handles.values.forEach { it.rebind(nextRegistry) }
         }
+
+        fun registeredMetricCount(): Int = handles.size
 
         fun closeFromProvider(currentRegistry: MeterRegistry?) {
             if (isClosed) return
@@ -344,7 +360,9 @@ class PaperArcMetricsProvider(initialRegistry: MeterRegistry?) : ArcMetricsServi
 
     private companion object {
         const val MAX_OWNERS = 64
-        const val MAX_METRICS_PER_OWNER = 128
+        const val DEFAULT_METRICS_PER_OWNER = 128
+        const val MAX_METRICS_PER_OWNER = 4096
+        const val MAX_TOTAL_METRIC_HANDLES = MAX_OWNERS * DEFAULT_METRICS_PER_OWNER
         const val MAX_TAGS = 8
         const val MAX_OWNER_LENGTH = 64
         const val MAX_METRIC_NAME_LENGTH = 100
@@ -359,6 +377,8 @@ class PaperArcMetricsProvider(initialRegistry: MeterRegistry?) : ArcMetricsServi
         const val TYPE_CONFLICT_WARNING = 1 shl 4
         const val METRIC_LIMIT_WARNING = 1 shl 5
         const val REGISTRY_CONFLICT_WARNING = 1 shl 6
+        const val INVALID_BUDGET_WARNING = 1 shl 7
+        const val TOTAL_METRIC_LIMIT_WARNING = 1 shl 8
 
         val LOGGER: Logger = Logger.getLogger(PaperArcMetricsProvider::class.java.name)
 

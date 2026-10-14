@@ -72,6 +72,12 @@ gauge values; counters/timers begin in the new registry. Samples without an
 active registry are dropped rather than queued. Metrics availability must not
 control a durable gameplay action.
 
+`open(ownerId)` keeps the default 128-series budget. A consumer with a known,
+bounded larger label space may call `open(ownerId, maxMetrics)` for 1–4096
+series. The provider still caps owners at 64 and aggregate handles at 8192
+(64 × the default 128), so explicit scope budgets do not increase the prior
+provider-wide resource ceiling. Closing a scope releases its aggregate budget.
+
 Existing domain telemetry (`ArcTelemetryProvider`) has its own event and
 storage contract. It is not replaced by arbitrary technical counters.
 
