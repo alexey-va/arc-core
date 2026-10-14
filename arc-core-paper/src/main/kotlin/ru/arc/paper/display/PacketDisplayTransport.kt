@@ -420,16 +420,14 @@ internal class PacketDisplayAttachment internal constructor(
         if (!schedule) return
         val channel = channelRef.get()
         if (channel == null) {
-            synchronized(lock) { cleanupIds = cleanupIds + submitted.keys }
-            fail(IllegalStateException("display channel was collected"))
+            invalidate(cause = IllegalStateException("display channel was collected"))
             synchronized(lock) { scheduled = false }
             return
         }
         try {
             backend.enqueue(channel) { drain() }
         } catch (failure: Throwable) {
-            synchronized(lock) { cleanupIds = cleanupIds + submitted.keys }
-            fail(failure)
+            invalidate(cause = failure)
             synchronized(lock) { scheduled = false }
         }
     }
@@ -460,7 +458,7 @@ internal class PacketDisplayAttachment internal constructor(
             val deferred = try {
                 process(batch)
             } catch (failure: Throwable) {
-                fail(failure)
+                invalidate(cause = failure)
                 null
             } finally {
                 synchronized(lock) { inFlightFrames = null }
@@ -475,9 +473,9 @@ internal class PacketDisplayAttachment internal constructor(
                         backend.retry(channel) { drain() }
                         return
                     }
-                    fail(IllegalStateException("display channel was collected"))
+                    invalidate(cause = IllegalStateException("display channel was collected"))
                 } catch (failure: Throwable) {
-                    fail(failure)
+                    invalidate(cause = failure)
                 }
                 synchronized(lock) { scheduled = false }
                 return
@@ -496,8 +494,7 @@ internal class PacketDisplayAttachment internal constructor(
         val work = batch.pending
         val channel = channelRef.get()
         if (channel == null || !backend.isOpen(channel)) {
-            synchronized(lock) { cleanupIds = cleanupIds + batch.previous.keys }
-            fail(IllegalStateException("display channel is closed"))
+            invalidate(additionalCleanupIds = batch.previous.keys)
             return null
         }
         if (!synchronized(lock) { valid }) {
@@ -776,14 +773,19 @@ internal class PacketDisplayAttachment internal constructor(
         return result
     }
 
-    private fun fail(failure: Throwable) {
-        synchronized(lock) {
-            cleanupIds = cleanupIds + submitted.keys
+    private fun invalidate(
+        cause: Throwable? = null,
+        additionalCleanupIds: Set<Int> = emptySet(),
+    ) {
+        val failureToLog = synchronized(lock) {
+            cleanupIds = cleanupIds + submitted.keys + additionalCleanupIds
             valid = false
-            if (failureLogged) return
-            failureLogged = true
+            if (cause == null || failureLogged) null
+            else cause.also { failureLogged = true }
         }
-        logger.log(Level.WARNING, "Packet display batch failed; a new attachment will replay the scene", failure)
+        failureToLog?.let {
+            logger.log(Level.WARNING, "Packet display batch failed; a new attachment will replay the scene", it)
+        }
     }
 
     private data class Pending(

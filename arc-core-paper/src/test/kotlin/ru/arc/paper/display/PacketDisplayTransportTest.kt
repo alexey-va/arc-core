@@ -16,6 +16,9 @@ import io.kotest.matchers.shouldBe
 import io.github.retrooper.packetevents.impl.netty.NettyManagerImpl
 import net.kyori.adventure.text.Component
 import java.util.UUID
+import java.util.logging.Filter
+import java.util.logging.Level
+import java.util.logging.LogRecord
 import java.util.logging.Logger
 
 class PacketDisplayTransportTest : FreeSpec({
@@ -521,7 +524,8 @@ class PacketDisplayTransportTest : FreeSpec({
     "a partial write invalidates the attachment and cleanup still destroys possible IDs" {
         val backend = RecordingPacketBackend(failOnWrite = 2)
         val channel = Any()
-        val connection = PacketDisplayAttachment(channel, Logger.getAnonymousLogger(), backend)
+        val logs = CapturedLogs()
+        val connection = PacketDisplayAttachment(channel, logs.logger, backend)
         val display = frame()
 
         connection.submit(listOf(display))
@@ -535,6 +539,50 @@ class PacketDisplayTransportTest : FreeSpec({
         val destroy = backend.writes.filterIsInstance<WrapperPlayServerDestroyEntities>().single()
         destroy.entityIds.toList() shouldBe listOf(display.entityId)
         backend.flushes shouldBe 1
+        logs.records.map { it.level } shouldBe listOf(Level.WARNING)
+    }
+
+    "a queued batch on a closed channel invalidates quietly and a replacement replays the scene" {
+        val backend = RecordingPacketBackend()
+        val logs = CapturedLogs()
+        val channel = Any()
+        val connection = PacketDisplayAttachment(channel, logs.logger, backend)
+        val display = frame()
+
+        connection.submit(listOf(display))
+        backend.runAll()
+        backend.clear()
+
+        // Enqueue while open, then close before the event-loop drain runs.
+        connection.submit(listOf(display.copy(x = 1.0)))
+        backend.open = false
+        backend.runAll()
+
+        backend.writes shouldBe emptyList()
+        backend.flushes shouldBe 0
+        connection.isUsableFor(channel) shouldBe false
+        logs.records shouldBe emptyList()
+
+        // Cleanup IDs survive the closed-channel invalidation and remain usable if
+        // this same channel is still available to finish its ordered cleanup.
+        backend.open = true
+        connection.submit(emptyList())
+        backend.runAll()
+        backend.writes.filterIsInstance<WrapperPlayServerDestroyEntities>().single()
+            .entityIds.toList() shouldBe listOf(display.entityId)
+        connection.deferReplacementUntilCleanup(channel) shouldBe false
+
+        val replacementChannel = Any()
+        connection.deferReplacementUntilCleanup(replacementChannel) shouldBe false
+        backend.clear()
+        val replacement = PacketDisplayAttachment(replacementChannel, logs.logger, backend)
+        replacement.submit(listOf(display.copy(x = 2.0)))
+        backend.runAll()
+
+        val replay = backend.writes.filterIsInstance<WrapperPlayServerSpawnEntity>().single()
+        replay.entityId shouldBe display.entityId
+        replay.position.x shouldBe 2.0
+        logs.records shouldBe emptyList()
     }
 
     "an enqueue failure leaves cleanup retry work schedulable" {
@@ -583,12 +631,13 @@ private class RecordingPacketBackend(
         private set
     var failEnqueue = false
     var writable = true
+    var open = true
     var ordinaryTransactions = Int.MAX_VALUE
     var onWrite: ((PacketWrapper<*>) -> Unit)? = null
     var failOnFlush: Int? = null
     private var writeCount = 0
 
-    override fun isOpen(channel: Any): Boolean = true
+    override fun isOpen(channel: Any): Boolean = open
 
     override fun enqueue(channel: Any, task: () -> Unit) {
         if (failEnqueue) throw IllegalStateException("injected enqueue failure")
@@ -622,6 +671,18 @@ private class RecordingPacketBackend(
         writes.clear()
         flushes = 0
         writeCount = 0
+    }
+}
+
+private class CapturedLogs {
+    val records = mutableListOf<LogRecord>()
+    val logger = Logger.getAnonymousLogger().apply {
+        level = Level.ALL
+        useParentHandlers = false
+        filter = Filter { record ->
+            records += record
+            true
+        }
     }
 }
 

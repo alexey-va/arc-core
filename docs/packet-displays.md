@@ -90,7 +90,9 @@ By default, every online player in the same world and within `viewRange * 64`
 blocks can see the visual, provided the client has received its chunk. Set
 `isVisibleByDefault = false` and use `showTo` for an explicit audience, or
 `hideFrom` to exclude one player from a public animation. Chunk unload/reload,
-respawn, world changes and new/failed connections replay the current scene.
+respawn, world changes and new/failed connections replay the current scene. A
+queued drain that reaches a closed channel quietly invalidates that attachment;
+a replacement channel receives a fresh replay.
 Cleanup is ordered before replacement spawns and remains eligible after a failed
 batch. Entity IDs use Paper's `UnsafeValues.nextEntityId()` global allocator directly,
 without entity construction or per-ID reflection.
