@@ -88,8 +88,9 @@ storage contract. It is not replaced by arbitrary technical counters.
 
 ## Release and verification
 
-Only ArcCore embeds `ru/arc/paper/api/**`; consumers compile against a compatible
-published API. The initial migration installs ArcCore 0.1.0 and ARC 1.4.395 in
+ArcCore embeds only `ArcSql*`, `ArcRedis*` and `ArcMetric*` under `ru.arc.paper.api`;
+the other Paper API types retain ARC as their runtime owner. Consumers compile
+against a compatible published API. The initial migration installs ArcCore 0.1.0 and ARC 1.4.395 in
 one restart batch, retaining the published 2.7.23 API and existing consumers.
 Compatible implementation updates replace only the changed plugin JAR. An API
 change still requires a new immutable core version and compatible consumers.
