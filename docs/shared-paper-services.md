@@ -1,8 +1,12 @@
 # Shared Paper SQL, Redis and technical metrics
 
-The ARC host registers the service APIs from `arc-core-paper-api` once per
-Paper JVM. Consumer JARs use that API as `compileOnly`, depend on ARC, and keep
-local framework lifecycle/configuration objects. Do not share `Tasks`,
+The ArcCore Paper plugin registers the SQL, Redis and technical-metrics services
+from `arc-core-paper-api` once per Paper JVM. It is packaged by the
+[`arc-core-plugin` subproject in ARC](https://github.com/alexey-va/ARC/tree/master/arc-core-plugin),
+independently of the core libraries' Maven release. Consumer JARs use that API
+as `compileOnly` and depend on its runtime owner (existing domain consumers reach
+ArcCore through their ARC dependency). They keep local framework
+lifecycle/configuration objects. Do not share `Tasks`,
 `ConfigManager` or `ModuleRegistry` across plugin classloaders.
 
 ## SQL
@@ -42,7 +46,7 @@ work, latency and database load before changing operator limits.
 
 Use `PaperRedisClient.open(plugin, connection, origin)` for an explicit profile.
 Use `openPrimary(plugin)` only when the feature intentionally inherits ARC's
-primary connection and server origin. The host configures that profile without
+primary connection and server origin. ARC configures that profile without
 exposing its credentials through diagnostics.
 
 Complete connection settings and origin define a physical group. Each lease
@@ -61,8 +65,9 @@ must not rewrite live borrowers' wire identity.
 
 `PaperArcMetrics` performs optional lookup of `ArcMetricsService`. Open one
 stable owner scope and declare counters, gauges and timers through the API.
-Close the scope with the plugin. Micrometer and the Prometheus listener remain
-inside the host; plugins do not construct registries or bind additional ports.
+Close the scope with the plugin. ArcCore owns the metrics service and Micrometer
+types; ARC supplies its existing registry and Prometheus listener. Consumers do
+not construct registries or bind additional ports.
 
 Choose descriptive metric names and stable, bounded tag values. Never use
 player names/UUIDs, requests, payloads or errors as tags. Use a stable feature
@@ -83,11 +88,13 @@ storage contract. It is not replaced by arbitrary technical counters.
 
 ## Release and verification
 
-The host and every migrated consumer must use the same new API release on each
-server. Only the host embeds `ru/arc/paper/api/**`; consumers compile against it.
-Publish the immutable core version, build consumers from public coordinates,
-check JAR ownership and descriptor dependency order, then activate the matched
-batch. Do not hot-replace ARC while consumers retain leases from its classloader.
+Only ArcCore embeds `ru/arc/paper/api/**`; consumers compile against a compatible
+published API. The initial migration installs ArcCore 0.1.0 and ARC 1.4.395 in
+one restart batch, retaining the published 2.7.23 API and existing consumers.
+Compatible implementation updates replace only the changed plugin JAR. An API
+change still requires a new immutable core version and compatible consumers.
+Check JAR ownership and descriptor dependency order before activation. Do not
+hot-replace ArcCore while consumers retain leases from its classloader.
 
 Tests cover compatible sharing, incompatible-group isolation, borrower close,
 queued work drain, durable completion saturation, listener replacement,
