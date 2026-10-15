@@ -19,6 +19,8 @@ from typing import Iterable
 
 
 SCHEMA_VERSION = 1
+DEFAULT_ROLE = "feature-consumer"
+KNOWN_ROLES = {DEFAULT_ROLE, "provider-host"}
 PUBLIC_GROUP = "ru.ruscrafting.arc"
 CORE_MODULES = {
     "arc-core",
@@ -49,6 +51,11 @@ PLATFORM_MODULES = {
         "runtime": {"arc-core", "arc-core-logging", "arc-core-velocity"},
         "testing": set(),
     },
+}
+
+PROVIDER_HOST_MODULES = {
+    "runtime": {"arc-core-paper-api", "arc-core-paper", "arc-core-sql", "arc-core-redis"},
+    "testing": {"arc-core-paper-testing"},
 }
 
 REQUIRED_CAPABILITIES = {
@@ -176,6 +183,15 @@ PLATFORM_RUNTIME_EVIDENCE = {
         re.compile(r"\bVelocityArcRuntime\.installScheduling\s*\("),
     ),
 }
+
+PROVIDER_HOST_EVIDENCE = (
+    re.compile(r"\bPaperSqlServiceProvider\b"),
+    re.compile(r"\bPaperRedisServiceProvider\b"),
+    re.compile(r"\bPaperArcMetricsProvider\b"),
+    re.compile(r"\bservicesManager\b"),
+    re.compile(r"\.register\s*\("),
+    re.compile(r"\.unregister\s*\("),
+)
 
 DIRECT_PROJECT_REFLECTION = re.compile(r"(?:Class\.forName|\.loadClass)\s*\(\s*[\"']ru\.arc\.")
 
@@ -398,7 +414,7 @@ def verify(root: Path, manifest_path: Path) -> list[Violation]:
     if manifest is None:
         return violations
 
-    allowed_fields = {"schema", "platform", "core_version", "capabilities"}
+    allowed_fields = {"schema", "role", "platform", "core_version", "capabilities"}
     unknown_fields = sorted(set(manifest) - allowed_fields)
     if unknown_fields:
         violations.append(Violation("manifest-fields", f"unknown fields: {', '.join(unknown_fields)}", manifest_path))
@@ -407,10 +423,27 @@ def verify(root: Path, manifest_path: Path) -> list[Violation]:
     if schema != SCHEMA_VERSION:
         violations.append(Violation("manifest-schema", f"schema must be {SCHEMA_VERSION}, got {schema!r}", manifest_path))
 
+    raw_role = manifest.get("role", DEFAULT_ROLE)
+    if not isinstance(raw_role, str) or raw_role not in KNOWN_ROLES:
+        violations.append(
+            Violation(
+                "manifest-role",
+                f"role must be {DEFAULT_ROLE!r} or 'provider-host', got {raw_role!r}",
+                manifest_path,
+            )
+        )
+        role = DEFAULT_ROLE
+    else:
+        role = raw_role
+
     platform = manifest.get("platform")
     if platform not in PLATFORM_MODULES:
         violations.append(Violation("manifest-platform", "platform must be 'paper' or 'velocity'", manifest_path))
         return violations
+
+    provider_host = role == "provider-host" and platform == "paper"
+    if role == "provider-host" and platform != "paper":
+        violations.append(Violation("provider-host-platform", "provider-host is supported only for Paper", manifest_path))
 
     core_version = manifest.get("core_version")
     if not isinstance(core_version, str) or not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", core_version):
@@ -429,7 +462,17 @@ def verify(root: Path, manifest_path: Path) -> list[Violation]:
         if unknown:
             violations.append(Violation("manifest-capabilities", f"unknown capabilities: {', '.join(unknown)}", manifest_path))
 
-    missing_capabilities = sorted(REQUIRED_CAPABILITIES[platform] - capabilities)
+    if provider_host and capabilities:
+        violations.append(
+            Violation(
+                "provider-host-capabilities",
+                "provider-host must use an empty capabilities array; feature capabilities belong to consumers",
+                manifest_path,
+            )
+        )
+
+    required_capabilities = set() if provider_host else REQUIRED_CAPABILITIES[platform]
+    missing_capabilities = sorted(required_capabilities - capabilities)
     if missing_capabilities:
         violations.append(
             Violation(
@@ -466,8 +509,9 @@ def verify(root: Path, manifest_path: Path) -> list[Violation]:
                 )
             )
 
-    required_runtime_modules = set(PLATFORM_MODULES[platform]["runtime"])
-    required_test_modules = set(PLATFORM_MODULES[platform]["testing"])
+    baseline_modules = PROVIDER_HOST_MODULES if provider_host else PLATFORM_MODULES[platform]
+    required_runtime_modules = set(baseline_modules["runtime"])
+    required_test_modules = set(baseline_modules["testing"])
     for capability in capabilities:
         modules = CAPABILITY_MODULES.get(capability, set())
         for module in modules:
@@ -494,10 +538,14 @@ def verify(root: Path, manifest_path: Path) -> list[Violation]:
             )
 
     source_text = {scope: combined_text(paths) for scope, paths in files.items() if scope != "gradle"}
-    for pattern in PLATFORM_RUNTIME_EVIDENCE[platform]:
+    required_source_evidence = PROVIDER_HOST_EVIDENCE if provider_host else PLATFORM_RUNTIME_EVIDENCE[platform]
+    for pattern in required_source_evidence:
         if not pattern.search(source_text["main"]):
             violations.append(
-                Violation("runtime-composition", f"missing canonical {platform} runtime evidence: {pattern.pattern}")
+                Violation(
+                    "provider-host-evidence" if provider_host else "runtime-composition",
+                    f"missing canonical {'Paper provider-host' if provider_host else platform} source evidence: {pattern.pattern}",
+                )
             )
 
     for capability in sorted(capabilities):
@@ -553,7 +601,7 @@ def main(argv: list[str] | None = None) -> int:
     capabilities = sorted(str(value) for value in manifest["capabilities"])
     print(
         "CONSUMER_CONTRACT_SUMMARY status=ok "
-        f"platform={manifest['platform']} version={manifest['core_version']} "
+        f"role={manifest.get('role', DEFAULT_ROLE)} platform={manifest['platform']} version={manifest['core_version']} "
         f"capabilities={','.join(capabilities)} modules={','.join(modules)}"
     )
     return 0

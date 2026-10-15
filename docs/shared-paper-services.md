@@ -1,8 +1,8 @@
 # Shared Paper SQL, Redis and technical metrics
 
 The ArcCore Paper plugin registers the SQL, Redis and technical-metrics services
-from `arc-core-paper-api` once per Paper JVM. It is packaged by the
-[`arc-core-plugin` subproject in ARC](https://github.com/alexey-va/ARC/tree/master/arc-core-plugin),
+from `arc-core-paper-api` once per Paper JVM. It is packaged by the standalone
+[`ArcCorePlugin` repository](https://github.com/alexey-va/ArcCorePlugin),
 independently of the core libraries' Maven release. Consumer JARs use that API
 as `compileOnly` and depend on its runtime owner (existing domain consumers reach
 ArcCore through their ARC dependency). They keep local framework
@@ -92,6 +92,11 @@ ArcCore embeds only `ArcSql*`, `ArcRedis*` and `ArcMetric*` under `ru.arc.paper.
 the other Paper API types retain ARC as their runtime owner. Consumers compile
 against a compatible published API. The initial migration installs ArcCore 0.1.0 and ARC 1.4.395 in
 one restart batch, retaining the published 2.7.23 API and existing consumers.
+Starting with 0.1.1, the standalone repository publishes the dependency-free
+`ru.ruscrafting:ArcCore:<version>` runtime JAR through its own GitHub Actions.
+ARC pins that artifact for compilation, tests and Paper integration fixtures;
+ARC no longer builds the host. The existing `mc jar` workflow can deliver only
+ArcCore, without rebuilding or replacing ARC.
 Compatible implementation updates replace only the changed plugin JAR. An API
 change still requires a new immutable core version and compatible consumers.
 Check JAR ownership and descriptor dependency order before activation. Do not

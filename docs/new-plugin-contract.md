@@ -7,6 +7,14 @@ executable architecture boundary: adding an infrastructure capability requires
 the matching arc-core module and canonical API evidence, while high-signal
 local reimplementations fail the build.
 
+The manifest role defaults to `feature-consumer`, so existing manifests need no
+change. Use `role = "provider-host"` only for the Paper plugin that owns shared
+SQL, Redis, and metrics providers. That role has its own required modules and
+lifecycle evidence; it does not require the feature runtime, logging,
+localization, health, or scheduler baseline. It is not an exception from other
+checks: the host must keep `capabilities` empty, and all forbidden
+local-implementation rules still run.
+
 "Use all core modules" means **all applicable modules selected by capability**.
 It does not mean putting Redis, SQL, Velocity, or AI on a plugin that has no
 such boundary. Unused infrastructure increases startup, dependency, and
@@ -55,6 +63,28 @@ its published API. Feature-specific test adapters may use those types while
 `MockBukkitTestRuntime` retains server setup and teardown. The verifier rejects
 direct MockBukkit coordinates and singleton access, rather than every fixture
 type import. Reusable platform compatibility still belongs in the test-kit.
+
+## Shared Paper provider host
+
+The shared provider host is the only supported non-feature role. Its manifest
+keeps `capabilities` empty because it supplies shared services rather than
+consuming feature capabilities:
+
+```toml
+schema = 1
+role = "provider-host"
+platform = "paper"
+core_version = "2.7.23"
+capabilities = []
+```
+
+It must depend on `arc-core-paper-api`, `arc-core-paper`, `arc-core-sql`, and
+`arc-core-redis` as runtime modules, plus `arc-core-paper-testing` in test
+scope. Main sources must construct `PaperSqlServiceProvider`,
+`PaperRedisServiceProvider`, and `PaperArcMetricsProvider`, and show the Paper
+`servicesManager` registration and unregistration lifecycle. A provider host
+cannot use this role on Velocity. Feature consumers keep the normal platform
+baseline and do not select this role.
 
 The `metrics` capability and `arc-core-metrics` module are optional. Keep the
 Prometheus listener in the central ARC/ProxyARC runtimes; ordinary add-on

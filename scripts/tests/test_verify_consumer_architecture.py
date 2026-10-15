@@ -97,6 +97,47 @@ fun testRuntime() = MockBukkitTestRuntime.open().use { }
 """,
         )
 
+    def write_valid_provider_host(self, platform: str = "paper") -> None:
+        self.write(
+            "arc-core-consumer.toml",
+            f"""\
+schema = 1
+role = "provider-host"
+platform = "{platform}"
+core_version = "2.1.0"
+capabilities = []
+""",
+        )
+        self.write(
+            "build.gradle.kts",
+            """\
+dependencies {
+    implementation("ru.ruscrafting.arc:arc-core-paper-api:2.1.0")
+    implementation("ru.ruscrafting.arc:arc-core-paper:2.1.0")
+    implementation("ru.ruscrafting.arc:arc-core-sql:2.1.0")
+    implementation("ru.ruscrafting.arc:arc-core-redis:2.1.0")
+    testImplementation("ru.ruscrafting.arc:arc-core-paper-testing:2.1.0")
+}
+""",
+        )
+        self.write(
+            "src/main/kotlin/example/ProviderHost.kt",
+            """\
+package example
+
+class ProviderHost {
+    fun install(owner: Plugin) {
+        val manager = owner.server.servicesManager
+        val sql = PaperSqlServiceProvider(owner)
+        val redis = PaperRedisServiceProvider(owner)
+        val metrics = PaperArcMetricsProvider(null)
+        manager.register(ArcCoreServices::class.java, this, owner, priority)
+        manager.unregister(ArcCoreServices::class.java, this)
+    }
+}
+""",
+        )
+
     def verify(self) -> tuple[int, str]:
         output = StringIO()
         with redirect_stdout(output):
@@ -107,6 +148,84 @@ fun testRuntime() = MockBukkitTestRuntime.open().use { }
         exit_code, output = self.verify()
         self.assertEqual(0, exit_code)
         self.assertIn("CONSUMER_CONTRACT_SUMMARY status=ok", output)
+        self.assertIn("role=feature-consumer", output)
+
+    def test_accepts_paper_provider_host_without_feature_consumer_baseline(self) -> None:
+        self.write_valid_provider_host()
+
+        exit_code, output = self.verify()
+
+        self.assertEqual(0, exit_code, output)
+        self.assertIn("role=provider-host platform=paper", output)
+        self.assertIn("capabilities=", output)
+
+    def test_provider_host_requires_each_provider_and_service_lifecycle_evidence(self) -> None:
+        self.write_valid_provider_host()
+        source = self.root / "src/main/kotlin/example/ProviderHost.kt"
+        original = source.read_text(encoding="utf-8")
+
+        for missing in (
+            "PaperSqlServiceProvider",
+            "PaperRedisServiceProvider",
+            "PaperArcMetricsProvider",
+            "servicesManager",
+            ".register(",
+            ".unregister(",
+        ):
+            with self.subTest(missing=missing):
+                source.write_text(original.replace(missing, "missingEvidence", 1), encoding="utf-8")
+                exit_code, output = self.verify()
+                self.assertEqual(1, exit_code)
+                self.assertIn("rule=provider-host-evidence", output)
+        source.write_text(original, encoding="utf-8")
+
+    def test_provider_host_requires_host_modules_and_test_scope(self) -> None:
+        self.write_valid_provider_host()
+        build = self.root / "build.gradle.kts"
+        original = build.read_text(encoding="utf-8")
+
+        build.write_text(original.replace('    implementation("ru.ruscrafting.arc:arc-core-sql:2.1.0")\n', ""), encoding="utf-8")
+        exit_code, output = self.verify()
+        self.assertEqual(1, exit_code)
+        self.assertIn("rule=required-module", output)
+        self.assertIn("arc-core-sql", output)
+
+        build.write_text(original.replace('    testImplementation("ru.ruscrafting.arc:arc-core-paper-testing:2.1.0")\n', ""), encoding="utf-8")
+        exit_code, output = self.verify()
+        self.assertEqual(1, exit_code)
+        self.assertIn("arc-core-paper-testing", output)
+
+    def test_provider_host_role_cannot_bypass_paper_consumer_rules_on_velocity(self) -> None:
+        self.write_valid_provider_host(platform="velocity")
+
+        exit_code, output = self.verify()
+
+        self.assertEqual(1, exit_code)
+        self.assertIn("rule=provider-host-platform", output)
+        self.assertIn("rule=required-capabilities", output)
+
+    def test_provider_host_cannot_claim_feature_capabilities(self) -> None:
+        self.write_valid_provider_host()
+        manifest = self.root / "arc-core-consumer.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace("capabilities = []", 'capabilities = ["runtime"]'),
+            encoding="utf-8",
+        )
+
+        exit_code, output = self.verify()
+
+        self.assertEqual(1, exit_code)
+        self.assertIn("rule=provider-host-capabilities", output)
+
+    def test_provider_host_keeps_forbidden_local_implementation_rules(self) -> None:
+        self.write_valid_provider_host()
+        source = self.root / "src/main/kotlin/example/ProviderHost.kt"
+        source.write_text(source.read_text(encoding="utf-8") + "\nfun badPool() = HikariDataSource(HikariConfig())\n", encoding="utf-8")
+
+        exit_code, output = self.verify()
+
+        self.assertEqual(1, exit_code)
+        self.assertIn("rule=local-sql-pool", output)
 
     def test_accepts_paper_composition_without_a_metrics_exporter(self) -> None:
         manifest = self.root / "arc-core-consumer.toml"
