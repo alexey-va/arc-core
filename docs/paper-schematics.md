@@ -64,7 +64,7 @@ schedule Bukkit/player/world operations explicitly in the consumer lifecycle.
 File resolution, reading, gzip/NBT preflight, WorldEdit decoding, full-volume
 geometry, hashes and retained-data weighing run on workers. WorldEdit's Bukkit
 adapter may populate native block-state caches, so exact Bukkit string
-canonicalization and native mirror/rotation happen on the primary thread.
+canonicalization and native WorldEdit mirror/rotation happen on the primary thread.
 One shared pump processes at most `palettePerTick` palette entries across all
 pending work. It does not materialize every cell as a Bukkit object.
 
@@ -119,7 +119,10 @@ remain consumer responsibilities.
 Transforms mirror local X first, then rotate around the source origin. One
 positive quarter turn maps `(x,y,z)` to `(-z,y,x)`. The returned snapshot uses
 origin-relative positions and origin `(0,0,0)`. Native block properties rotate
-and mirror with the geometry; NBT is preserved unchanged. Arbitrary embedded
+and mirror with the geometry through WorldEdit's `BlockTransformExtent`, including
+handed stair shapes and door hinges. The adapter's Bukkit `BlockData` is read-only:
+FAWE may return a shared cached instance, so mutating it would corrupt later
+loads and transforms. NBT is preserved unchanged. Arbitrary embedded
 coordinates inside opaque custom NBT are not rewritten. The file hash remains
 the source fingerprint; the content hash is recomputed for the returned view.
 

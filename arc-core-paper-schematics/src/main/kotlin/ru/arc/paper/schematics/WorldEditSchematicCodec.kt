@@ -3,10 +3,10 @@ package ru.arc.paper.schematics
 import com.sk89q.worldedit.bukkit.BukkitAdapter
 import com.sk89q.worldedit.extent.clipboard.io.ClipboardFormat
 import com.sk89q.worldedit.extent.clipboard.io.ClipboardFormats
+import com.sk89q.worldedit.extent.transform.BlockTransformExtent
 import com.sk89q.worldedit.math.BlockVector3
+import com.sk89q.worldedit.math.transform.AffineTransform
 import com.sk89q.worldedit.world.block.BlockState
-import org.bukkit.block.structure.Mirror
-import org.bukkit.block.structure.StructureRotation
 import org.enginehub.linbus.tree.LinCompoundTag
 import ru.arc.paper.api.ArcSchematicCacheSettings
 import ru.arc.paper.api.ArcSchematicFailure
@@ -74,20 +74,18 @@ internal class WorldEditSchematicCodec(private val settings: ArcSchematicCacheSe
     }
 
     override fun transform(entry: SchematicPaletteEntry, transform: ArcSchematicTransform): SchematicPaletteEntry {
-        val data = BukkitAdapter.adapt(entry.native)
-        // FRONT_BACK reflects the local X axis; rotate +90 maps north to east.
-        if (transform.mirrorX) data.mirror(Mirror.FRONT_BACK)
-        data.rotate(when (Math.floorMod(transform.quarterTurns, 4)) {
-            1 -> StructureRotation.CLOCKWISE_90
-            2 -> StructureRotation.CLOCKWISE_180
-            3 -> StructureRotation.COUNTERCLOCKWISE_90
-            else -> StructureRotation.NONE
-        })
-        return SchematicPaletteEntry(data.asString, data.material.isAir, entry.barrier, BukkitAdapter.adapt(data))
+        // FAWE can return a shared mutable BlockData from BukkitAdapter. Never mutate it.
+        // WorldEdit also preserves handed properties (stair shape, door hinge) when reflecting.
+        return canonicalize(BlockTransformExtent.transform(entry.native, transform.worldEditTransform()))
     }
 
     private fun BlockVector3.point(): ArcSchematicPoint = ArcSchematicPoint(x(), y(), z())
 }
+
+/** WorldEdit composes right-to-left and uses the opposite positive Y rotation convention. */
+internal fun ArcSchematicTransform.worldEditTransform(): AffineTransform = AffineTransform()
+    .rotateY(-90.0 * Math.floorMod(quarterTurns, 4))
+    .scale(if (mirrorX) -1.0 else 1.0, 1.0, 1.0)
 
 /** Uses the stream API shared by WorldEdit and FAWE without reopening the captured source file. */
 internal fun findSchematicFormat(bytes: ByteArray): ClipboardFormat? = ClipboardFormats.getAll().firstOrNull { format ->
