@@ -7,6 +7,9 @@ import com.sk89q.worldedit.extent.transform.BlockTransformExtent
 import com.sk89q.worldedit.math.BlockVector3
 import com.sk89q.worldedit.math.transform.AffineTransform
 import com.sk89q.worldedit.world.block.BlockState
+import org.bukkit.block.data.type.Chest
+import org.bukkit.block.data.type.Door
+import org.bukkit.block.structure.Mirror
 import org.enginehub.linbus.tree.LinCompoundTag
 import ru.arc.paper.api.ArcSchematicCacheSettings
 import ru.arc.paper.api.ArcSchematicFailure
@@ -75,8 +78,26 @@ internal class WorldEditSchematicCodec(private val settings: ArcSchematicCacheSe
 
     override fun transform(entry: SchematicPaletteEntry, transform: ArcSchematicTransform): SchematicPaletteEntry {
         // FAWE can return a shared mutable BlockData from BukkitAdapter. Never mutate it.
-        // WorldEdit also preserves handed properties (stair shape, door hinge) when reflecting.
-        return canonicalize(BlockTransformExtent.transform(entry.native, transform.worldEditTransform()))
+        var state = entry.native
+        var stateTransform = transform
+        if (transform.mirrorX) {
+            val data = BukkitAdapter.adapt(state)
+            if (data is Door || data is Chest) {
+                // Upstream WorldEdit omits door hinges; FAWE omits chest handedness.
+                val mirrored = data.clone().apply { mirror(Mirror.FRONT_BACK) }
+                if (data is Chest) {
+                    // Minecraft's mirror also leaves chest type unchanged, so reflect the pair side.
+                    (mirrored as Chest).type = when (data.type) {
+                        Chest.Type.LEFT -> Chest.Type.RIGHT
+                        Chest.Type.RIGHT -> Chest.Type.LEFT
+                        Chest.Type.SINGLE -> Chest.Type.SINGLE
+                    }
+                }
+                state = BukkitAdapter.adapt(mirrored)
+                stateTransform = transform.copy(mirrorX = false)
+            }
+        }
+        return canonicalize(BlockTransformExtent.transform(state, stateTransform.worldEditTransform()))
     }
 
     private fun BlockVector3.point(): ArcSchematicPoint = ArcSchematicPoint(x(), y(), z())

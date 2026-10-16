@@ -12,8 +12,12 @@ import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
 import io.mockk.verify
+import io.mockk.verifyOrder
 import org.bukkit.Material
 import org.bukkit.block.data.BlockData
+import org.bukkit.block.data.type.Chest
+import org.bukkit.block.data.type.Door
+import org.bukkit.block.structure.Mirror
 import ru.arc.paper.api.ArcSchematicCacheSettings
 import ru.arc.paper.api.ArcSchematicPoint
 import ru.arc.paper.api.ArcSchematicTransform
@@ -68,6 +72,94 @@ class WorldEditSchematicTransformTest : FreeSpec({
             }
             verify(exactly = 4) { BlockTransformExtent.transform(source, any<Transform>()) }
             verify(exactly = 0) { shared.rotate(any()); shared.mirror(any()); output.rotate(any()); output.mirror(any()) }
+        } finally {
+            unmockkStatic(BukkitAdapter::class, BlockTransformExtent::class)
+        }
+    }
+
+    "door reflection uses an owned native clone before the common rotation" {
+        val source = mockk<BlockState>()
+        val mirrored = mockk<BlockState>()
+        val transformed = mockk<BlockState>()
+        val shared = mockk<Door>(relaxed = true)
+        val owned = mockk<Door>(relaxed = true)
+        val output = mockk<BlockData>()
+        val originalText = "minecraft:spruce_door[facing=north,half=lower,hinge=left,open=true,powered=false]"
+        val transformedText = "minecraft:spruce_door[facing=east,half=lower,hinge=right,open=true,powered=false]"
+        every { shared.clone() } returns owned
+        every { output.asString } returns transformedText
+        every { output.material } returns Material.SPRUCE_DOOR
+        mockkStatic(BukkitAdapter::class, BlockTransformExtent::class)
+        try {
+            every { BukkitAdapter.adapt(source) } returns shared
+            every { BukkitAdapter.adapt(owned) } returns mirrored
+            every { BukkitAdapter.adapt(transformed) } returns output
+            every { BlockTransformExtent.transform(mirrored, any<Transform>()) } answers {
+                // Reflection is already native; the remaining affine must only rotate.
+                secondArg<Transform>().apply(Vector3.at(1.0, 0.0, 0.0)) shouldBe Vector3.at(0.0, 0.0, 1.0)
+                transformed
+            }
+            val codec = WorldEditSchematicCodec(ArcSchematicCacheSettings.defaults())
+            val entry = SchematicPaletteEntry(originalText, false, false, source)
+            val result = codec.transform(entry, ArcSchematicTransform(1, true))
+            result.text shouldBe transformedText
+            result.native shouldBe transformed
+            entry.text shouldBe originalText
+            entry.native shouldBe source
+            verifyOrder {
+                shared.clone()
+                owned.mirror(Mirror.FRONT_BACK)
+                BukkitAdapter.adapt(owned)
+                BlockTransformExtent.transform(mirrored, any<Transform>())
+                BukkitAdapter.adapt(transformed)
+            }
+            verify(exactly = 0) { shared.rotate(any()); shared.mirror(any()); output.rotate(any()); output.mirror(any()) }
+        } finally {
+            unmockkStatic(BukkitAdapter::class, BlockTransformExtent::class)
+        }
+    }
+
+    "chest reflection swaps pair sides on an owned clone and preserves single chests" {
+        mockkStatic(BukkitAdapter::class, BlockTransformExtent::class)
+        try {
+            for ((original, expected) in listOf(
+                Chest.Type.LEFT to Chest.Type.RIGHT,
+                Chest.Type.RIGHT to Chest.Type.LEFT,
+                Chest.Type.SINGLE to Chest.Type.SINGLE,
+            )) {
+                val source = mockk<BlockState>()
+                val mirrored = mockk<BlockState>()
+                val shared = mockk<Chest>(relaxed = true)
+                val owned = mockk<Chest>(relaxed = true)
+                val output = mockk<BlockData>()
+                val originalText = "minecraft:chest[facing=east,type=${original.name.lowercase()},waterlogged=false]"
+                val expectedText = "minecraft:chest[facing=west,type=${expected.name.lowercase()},waterlogged=false]"
+                every { shared.type } returns original
+                every { shared.clone() } returns owned
+                every { output.asString } returns expectedText
+                every { output.material } returns Material.CHEST
+                every { BukkitAdapter.adapt(source) } returns shared
+                every { BukkitAdapter.adapt(owned) } returns mirrored
+                every { BukkitAdapter.adapt(mirrored) } returns output
+                every { BlockTransformExtent.transform(mirrored, any<Transform>()) } answers {
+                    secondArg<Transform>().isIdentity shouldBe true
+                    mirrored
+                }
+                val entry = SchematicPaletteEntry(originalText, false, false, source)
+                val result = WorldEditSchematicCodec(ArcSchematicCacheSettings.defaults())
+                    .transform(entry, ArcSchematicTransform(0, true))
+                result.text shouldBe expectedText
+                entry.text shouldBe originalText
+                entry.native shouldBe source
+                verifyOrder {
+                    shared.clone()
+                    owned.mirror(Mirror.FRONT_BACK)
+                    owned.type = expected
+                    BukkitAdapter.adapt(owned)
+                    BlockTransformExtent.transform(mirrored, any<Transform>())
+                }
+                verify(exactly = 0) { shared.type = any(); shared.mirror(any()); shared.rotate(any()) }
+            }
         } finally {
             unmockkStatic(BukkitAdapter::class, BlockTransformExtent::class)
         }

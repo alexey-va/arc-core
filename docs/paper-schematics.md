@@ -120,7 +120,11 @@ Transforms mirror local X first, then rotate around the source origin. One
 positive quarter turn maps `(x,y,z)` to `(-z,y,x)`. The returned snapshot uses
 origin-relative positions and origin `(0,0,0)`. Native block properties rotate
 and mirror with the geometry through WorldEdit's `BlockTransformExtent`, including
-handed stair shapes and door hinges. The adapter's Bukkit `BlockData` is read-only:
+handed stair shapes. Mirrored doors and chests use Minecraft's native mirror on
+an owned clone before the WorldEdit rotation: upstream WorldEdit omits door
+hinges, while FAWE omits chest handedness. Chest pair sides are explicitly
+reflected on that clone because Minecraft's mirror also leaves them unchanged;
+single chests remain single. The adapter's Bukkit `BlockData` is read-only:
 FAWE may return a shared cached instance, so mutating it would corrupt later
 loads and transforms. NBT is preserved unchanged. Arbitrary embedded
 coordinates inside opaque custom NBT are not rewritten. The file hash remains
