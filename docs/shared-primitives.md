@@ -40,6 +40,7 @@ CI verifier reject missing modules and high-signal local duplicates.
 | Shared Paper SQL pools | `arc-core-paper-api`: `ArcSqlService`; `arc-core-paper`: `PaperSqlServices` | Install the plugin-local factory before creating any `SqlRuntime`; the ARC host owns matching pools and executors. Close stores before the binding. Exact settings, including credentials and limits, define compatibility. Accepted tasks, reserved durable completions, and held connections drain before physical close. See [shared Paper services](shared-paper-services.md). |
 | Shared Paper Redis transport | `arc-core-paper-api`: `ArcRedisService`; `arc-core-paper`: `PaperRedisClient` | Borrow an explicit connection and origin or the host primary profile. Each lease owns its listeners; close and unique-channel replacement never remove another plugin's subscription. Domain codecs and replay policy remain in the consumer. |
 | Shared Paper technical metrics | `arc-core-paper-api`: `ArcMetricsService`; `arc-core-paper`: `PaperArcMetrics` | Open one stable owner scope, declare bounded counters/gauges/timers, and close with the consumer. ARC owns the registry/exporter. Use stable labels, never player/request identifiers or free text. Handles survive registry reload; absent telemetry must not block gameplay. |
+| Async schematic libraries, native block transforms and bounded paste | `arc-core-paper-api`: `ArcSchematicService`, `ArcSchematicLibrary`; optional `arc-core-paper-schematics`: `PaperSchematicServiceProvider` | ArcCore owns one bounded worker/cache budget across consumer roots. Acquire and verify files asynchronously; retain compact immutable snapshots only for active work. Palette adaptation and native writes use aggregate primary-thread tick budgets. Preserve block-entity NBT; explicitly choose how to handle source entities/biomes. Native paste requires loaded chunks; fence/wall/pane repair follows the consumer's durable commit. See [schematics](paper-schematics.md). |
 | Strict JSON boundary | `arc-core-redis`: `RedisWireCodec`, `BoundedJsonCodec`, `JsonObjectContract`, `JsonArrayContract` | Use the minimal codec contract only for an explicit domain-to-wire adapter; otherwise prefer the bounded implementation, which rejects malformed/trailing data and resource-limit violations, validates an explicit object or array root, then runs domain validation. |
 | Atomic Redis hash transition | `arc-core-redis`: `RedisHashUpdater` | Return typed changed/unchanged/rejected/contended outcomes. Corrupt state fails closed; `consume` deletes only the exact value read. |
 | Pub/sub origin and replay safety | `arc-core-redis`: `OriginBoundRedisBus`, `RecentMessageDeduplicator` | Authorize transport origin before parse, match embedded origin when present, bound and deduplicate message ids, and never log raw rejected payloads. |
@@ -83,6 +84,7 @@ ru.arc.paper.chunk
 ru.arc.paper.teleport
 ru.arc.paper.playerstate
 ru.arc.paper.runtime
+ru.arc.paper.schematics
 ru.arc.telemetry
 ru.arc.menu
 ru.arc.paper.menu
@@ -213,6 +215,10 @@ inventory must be preserved.
   narrow injected seam and cover the new contract in `arc-core` tests.
 - Do not move gameplay state machines, GUI composition, or feature-specific
   repository schemas into core merely because two classes look similar.
+- Do not preload schematic folders, expose cached mutable WorldEdit clipboards,
+  or add a consumer-local schematic cache, disk hash, transform or native
+  connection-repair loop. Use `ArcSchematicLibrary`; keep book ownership,
+  payments, permissions and durable world-change journals in the consumer.
 - Do not hardcode reusable menu slots or raw-slot action routing in a Paper
   plugin. Declare a `MenuContract`, load a configured layout, and bind domain
   handlers through `PaperMenuContent`. Never put arbitrary commands in YAML.

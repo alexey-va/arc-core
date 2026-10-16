@@ -86,6 +86,15 @@ scope. Main sources must construct `PaperSqlServiceProvider`,
 cannot use this role on Velocity. Feature consumers keep the normal platform
 baseline and do not select this role.
 
+The optional `arc-core-paper-schematics` implementation belongs to the provider
+host. A feature consumer declares `paper-schematics`, compiles against
+`arc-core-paper-api`, and acquires `ArcSchematicService` from Paper's service
+registry. It must not embed the provider or maintain another permanent decoded
+schematic cache. Loading and transformation return futures; callers must never
+block the gameplay thread waiting for them. A delayed completion must recheck
+the consumer's lifecycle and the player's current request before showing a
+preview or starting a build.
+
 The `metrics` capability and `arc-core-metrics` module are optional. Keep the
 Prometheus listener in the central ARC/ProxyARC runtimes; ordinary add-on
 plugins expose technical counters, gauges and timers through `ArcMetricsService`
@@ -108,6 +117,7 @@ and exporter. See [shared Paper services](shared-paper-services.md).
 | `sql` | `arc-core-sql` plus `MySqlTestService` |
 | `integration-testing` | `arc-core-integration-testing` and one shared test service |
 | `backend-transfer` | `BackendTransfer` / `BungeeBackendTransfer` |
+| `paper-schematics` | `arc-core-paper-api` plus `ArcSchematicService` / `ArcSchematicLibrary`; shared asynchronous loading, bounded cache, transforms and placement |
 | `chunk-tickets` | `PaperChunkTicketRegistry`; one lifecycle-owned registry per plugin |
 | `paper-audience` | `PaperAudienceEffects` plus `RecordingPaperAudienceEffects` in platform tests |
 | `paper-teleport` | `PaperTeleportExecutor` plus `RecordingPaperTeleportExecutor` in platform tests |

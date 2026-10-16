@@ -1,4 +1,4 @@
-# Shared Paper SQL, Redis and technical metrics
+# Shared Paper services
 
 The ArcCore Paper plugin registers the SQL, Redis and technical-metrics services
 from `arc-core-paper-api` once per Paper JVM. It is packaged by the standalone
@@ -8,6 +8,16 @@ as `compileOnly` and depend on its runtime owner (existing domain consumers reac
 ArcCore through their ARC dependency). They keep local framework
 lifecycle/configuration objects. Do not share `Tasks`,
 `ConfigManager` or `ModuleRegistry` across plugin classloaders.
+
+When WorldEdit is installed, ArcCore also registers `ArcSchematicService` from
+the optional `arc-core-paper-schematics` module. This provider owns one bounded
+cache and asynchronous worker budget shared by every consumer. Libraries open
+an explicitly configured root and load extensionless IDs such as
+`civs/medieval/house1` on demand. Acquisition and transformations return futures;
+there is no synchronous loading API and no startup catalogue preload. See
+[the schematic contract](paper-schematics.md) for lifecycle, file limits,
+native transforms and bounded placement. ArcBuilder keeps its book identity,
+materials, protection and durable construction journal in its own plugin.
 
 ## SQL
 
@@ -88,7 +98,7 @@ storage contract. It is not replaced by arbitrary technical counters.
 
 ## Release and verification
 
-ArcCore embeds only `ArcSql*`, `ArcRedis*` and `ArcMetric*` under `ru.arc.paper.api`;
+ArcCore embeds only `ArcSql*`, `ArcRedis*`, `ArcMetric*` and `ArcSchematic*` under `ru.arc.paper.api`;
 the other Paper API types retain ARC as their runtime owner. Consumers compile
 against a compatible published API. The initial migration installs ArcCore 0.1.0 and ARC 1.4.395 in
 one restart batch, retaining the published 2.7.23 API and existing consumers.

@@ -150,6 +150,43 @@ class ProviderHost {
         self.assertIn("CONSUMER_CONTRACT_SUMMARY status=ok", output)
         self.assertIn("role=feature-consumer", output)
 
+    def test_schematics_consumer_requires_shared_api_and_service_evidence(self) -> None:
+        manifest = self.root / "arc-core-consumer.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace('"runtime"]', '"runtime", "paper-schematics"]'),
+            encoding="utf-8",
+        )
+        exit_code, output = self.verify()
+        self.assertEqual(1, exit_code)
+        self.assertIn("arc-core-paper-api", output)
+        self.assertIn("ArcSchematicService", output)
+
+        build = self.root / "build.gradle.kts"
+        build.write_text(
+            build.read_text(encoding="utf-8")
+            + '\ndependencies { compileOnly("ru.ruscrafting.arc:arc-core-paper-api:2.1.0") }\n',
+            encoding="utf-8",
+        )
+        self.write("src/main/kotlin/example/Schematics.kt", "class Schematics(val library: ArcSchematicLibrary)\n")
+        exit_code, output = self.verify()
+        self.assertEqual(0, exit_code, output)
+
+    def test_optional_schematics_provider_module_is_version_checked(self) -> None:
+        self.write_valid_provider_host()
+        build = self.root / "build.gradle.kts"
+        build.write_text(
+            build.read_text(encoding="utf-8")
+            + '\ndependencies { implementation("ru.ruscrafting.arc:arc-core-paper-schematics:2.0.0") }\n',
+            encoding="utf-8",
+        )
+        exit_code, output = self.verify()
+        self.assertEqual(1, exit_code)
+        self.assertIn("arc-core-paper-schematics", output)
+
+        build.write_text(build.read_text(encoding="utf-8").replace(":2.0.0", ":2.1.0"), encoding="utf-8")
+        exit_code, output = self.verify()
+        self.assertEqual(0, exit_code, output)
+
     def test_accepts_paper_provider_host_without_feature_consumer_baseline(self) -> None:
         self.write_valid_provider_host()
 
