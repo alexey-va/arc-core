@@ -29,7 +29,8 @@ import java.util.UUID
  * the latest pending frame. Unchanged frames send no packets.
  *
  * Visibility combines the handle's explicit audience, world, range and received
- * chunks. Client chunk eviction/respawn and connection replacement replay the
+ * chunks. Dead or detached players are omitted until their entity is valid again.
+ * Client chunk eviction/respawn and connection replacement replay the
  * current frame. Close destroys every possibly received ID, including after a
  * partial write failure, and cancels this owner's tasks/listeners. A visual is not
  * persistent state: callers retain their own durable anchor/crate meaning.
@@ -226,9 +227,12 @@ internal data class PacketDisplayViewer(
     val passengerEntityIds: List<Int> = emptyList(),
 )
 
-private object BukkitPacketDisplayAudience : PacketDisplayAudienceSource {
+internal object BukkitPacketDisplayAudience : PacketDisplayAudienceSource {
     override fun checkThread() { check(Bukkit.isPrimaryThread()) { "Packet display state must be accessed on the server thread" } }
-    override fun capture(): List<PacketDisplayViewer> = Bukkit.getOnlinePlayers().map { player ->
+    override fun capture(): List<PacketDisplayViewer> = Bukkit.getOnlinePlayers().mapNotNull { player ->
+        // Online players can outlive their chunk loader during death/respawn.
+        // Paper's validity includes both life and world tracking; capture stays on the server thread.
+        if (!player.isValid) return@mapNotNull null
         val location = player.location
         PacketDisplayViewer(
             player, player.uniqueId, player.world.uid, player.entityId,

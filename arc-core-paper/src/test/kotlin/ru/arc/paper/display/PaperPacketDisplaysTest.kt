@@ -1,5 +1,6 @@
 package ru.arc.paper.display
 
+import com.destroystokyo.paper.event.player.PlayerPostRespawnEvent
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FreeSpec
 import io.kotest.matchers.shouldBe
@@ -8,18 +9,79 @@ import net.kyori.adventure.text.Component
 import org.bukkit.Location
 import org.bukkit.block.data.BlockData
 import org.bukkit.entity.Player
+import org.bukkit.event.player.PlayerRespawnEvent
 import org.bukkit.inventory.ItemStack
 import org.bukkit.util.Transformation
 import org.joml.Quaternionf
 import org.joml.Vector3f
+import org.mockbukkit.mockbukkit.ServerMock
+import org.mockbukkit.mockbukkit.entity.PlayerMock
 import ru.arc.core.LifecycleTaskScope
 import ru.arc.core.TestTaskScheduler
 import ru.arc.paper.player.TestPaperPlugin
 import ru.arc.paper.testing.MockBukkitTestRuntime
+import ru.arc.paper.testing.failOnUnsupportedMockBukkitOperation
 import ru.arc.paper.testing.loadPlugin
 import java.util.UUID
 
 class PaperPacketDisplaysTest : FreeSpec({
+    "Bukkit audience skips an online player through death and respawn without interrupting another viewer" {
+        failOnUnsupportedMockBukkitOperation {
+            MockBukkitTestRuntime.open().use { paper ->
+                val plugin = paper.loadPlugin<TestPaperPlugin>()
+                val world = paper.addSimpleWorld("respawn-audience")
+                val player = RespawnAudiencePlayer(paper.server, "Respawning").also(paper.server::addPlayer)
+                val observer = RespawnAudiencePlayer(paper.server, "Observer").also(paper.server::addPlayer)
+                val location = Location(world, 1.0, 64.0, 1.0)
+                player.setLocation(location)
+                observer.setLocation(location)
+                val transport = RecordingTransport()
+                PaperPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), BukkitPacketDisplayAudience).use { displays ->
+                    val display = displays.spawnText(location, Component.text("Before death"))
+                    displays.refresh()
+                    transport.forPlayer(player).last().frames.single().entityId shouldBe display.entityId
+                    transport.forPlayer(observer).last().frames.single().entityId shouldBe display.entityId
+                    player.sentChunkReads shouldBe 1
+
+                    player.health = 0.0
+                    player.inWorld = false
+                    player.isOnline shouldBe true
+                    player.isDead shouldBe true
+                    display.text(Component.text("While dead"))
+                    displays.refresh()
+                    player.sentChunkReads shouldBe 1
+                    transport.forPlayer(player).last().frames shouldBe emptyList()
+                    transport.forPlayer(observer).last().frames.single().metadata.content shouldBe
+                        PacketDisplayContent.Text(Component.text("While dead"))
+
+                    // Native respawn restores life before reattaching the entity/chunk loader.
+                    player.respawn()
+                    player.setLocation(location)
+                    player.isDead shouldBe false
+                    player.isValid shouldBe false
+                    display.text(Component.text("While respawning"))
+                    displays.refresh()
+                    player.sentChunkReads shouldBe 1
+                    transport.forPlayer(player).last().frames shouldBe emptyList()
+                    transport.forPlayer(observer).last().frames.single().metadata.content shouldBe
+                        PacketDisplayContent.Text(Component.text("While respawning"))
+
+                    player.inWorld = true
+                    paper.callEvent(PlayerPostRespawnEvent(player, location, false, false, false, PlayerRespawnEvent.RespawnReason.DEATH))
+                    display.text(Component.text("After respawn"))
+                    displays.refresh()
+                    player.sentChunkReads shouldBe 2
+                    transport.forPlayer(player).last().resetAll shouldBe true
+                    transport.forPlayer(player).last().frames.single().entityId shouldBe display.entityId
+                    transport.forPlayer(player).last().frames.single().metadata.content shouldBe
+                        PacketDisplayContent.Text(Component.text("After respawn"))
+                    transport.forPlayer(observer).last().frames.single().metadata.content shouldBe
+                        PacketDisplayContent.Text(Component.text("After respawn"))
+                }
+            }
+        }
+    }
+
     "scene groups hide static and animated handles without publishing private cards" {
         MockBukkitTestRuntime.open().use { paper ->
             val plugin = paper.loadPlugin<TestPaperPlugin>()
@@ -293,6 +355,21 @@ private class MutableAudience : PacketDisplayAudienceSource {
     var values = emptyList<PacketDisplayViewer>()
     override fun checkThread() = Unit
     override fun capture() = values
+}
+
+private class RespawnAudiencePlayer(server: ServerMock, name: String) : PlayerMock(server, name) {
+    var inWorld = true
+    var sentChunkReads = 0
+
+    // CraftEntity on Purpur 1.21.11-2568 requires both isAlive() and Entity.valid;
+    // MockBukkit's default isValid() checks removal only.
+    override fun isValid(): Boolean = !isDead && inWorld
+    override fun getTrackedBy(): Set<Player> = emptySet()
+    override fun getSentChunkKeys(): Set<Long> {
+        sentChunkReads++
+        if (!inWorld) throw NullPointerException("Native player chunk loader is detached")
+        return setOf(0L)
+    }
 }
 
 private class RecordingTransport : PacketDisplayTransport {
