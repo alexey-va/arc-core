@@ -47,7 +47,9 @@ internal class NativeSchematicMutation private constructor(
         var minY = Int.MAX_VALUE
         var maxY = Int.MIN_VALUE
         for (cell in cells) {
-            needed += (cell.position.x shr 4) to (cell.position.z shr 4)
+            forEachSchematicMutationChunk(cell.position, source == null || options.repairConnections) { x, z ->
+                needed += x to z
+            }
             minY = minOf(minY, cell.position.y)
             maxY = maxOf(maxY, cell.position.y)
         }
@@ -89,9 +91,9 @@ internal class NativeSchematicMutation private constructor(
             if (cells.isNotEmpty() && (minimumY < world.minHeight || maximumY >= world.maxHeight)) {
                 failure(ArcSchematicFailure.LIMIT_EXCEEDED, "Schematic target exceeds the world's build height")
             }
-            if (SideEffect.VALIDATION !in WorldEdit.getInstance().platformManager.queryCapability(Capability.WORLD_EDITING).supportedSideEffects) {
-                failure(ArcSchematicFailure.UNSUPPORTED_FORMAT, "WorldEdit's native Paper adapter is unavailable")
-            }
+            requireNativeSchematicMutationAdapter(
+                WorldEdit.getInstance().platformManager.queryCapability(Capability.WORLD_EDITING).supportedSideEffects,
+            )
             var consumed = 0
             // Validate all target chunks before the first write; never cause sync chunk generation.
             while (chunkIndex < chunks.size && consumed < budget) {
@@ -140,6 +142,9 @@ internal class NativeSchematicMutation private constructor(
         val current = block.blockData
         if (current !is Fence && current !is Wall && current !is GlassPane) return
         if (current.asString != cell.blockData) { skipped++; return }
+        forEachSchematicMutationChunk(pos, true) { x, z ->
+            if (!world.isChunkLoaded(x, z)) failure(ArcSchematicFailure.WORLD_UNAVAILABLE, "Schematic repair neighbor chunk must already be loaded")
+        }
         // VALIDATION calls native Block.updateFromNeighbourShapes at this position.
         // NEIGHBORS/UPDATE stay off: no recursive physics outside the supplied scope.
         if (nativeWorld.setBlock(BlockVector3.at(pos.x, pos.y, pos.z), BukkitAdapter.adapt(current), REPAIR_EFFECTS)) changed++ else skipped++
@@ -170,5 +175,25 @@ internal class NativeSchematicMutation private constructor(
 
         fun repair(worldId: UUID, cells: List<ArcSchematicBlock>): NativeSchematicMutation =
             NativeSchematicMutation(worldId, cells, null, ArcSchematicPasteOptions(false, false, false))
+    }
+}
+
+internal inline fun forEachSchematicMutationChunk(position: ArcSchematicPoint, repairNeighbors: Boolean, action: (Int, Int) -> Unit) {
+    val x = position.x shr 4
+    val z = position.z shr 4
+    action(x, z)
+    if (!repairNeighbors) return
+    // Native shape validation reads cardinal neighbors. Chunk coordinates avoid block-coordinate overflow.
+    if (position.x and 15 == 0) action(x - 1, z)
+    if (position.x and 15 == 15) action(x + 1, z)
+    if (position.z and 15 == 0) action(x, z - 1)
+    if (position.z and 15 == 15) action(x, z + 1)
+}
+
+internal fun requireNativeSchematicMutationAdapter(supportedSideEffects: Set<SideEffect>) {
+    // Bukkit's no-adapter fallback advertises only NEIGHBORS. Native FAWE adapters advertise
+    // LIGHTING but omit VALIDATION even though WorldNativeAccess implements shape validation.
+    if (SideEffect.LIGHTING !in supportedSideEffects) {
+        failure(ArcSchematicFailure.UNSUPPORTED_FORMAT, "WorldEdit's native Paper adapter is unavailable")
     }
 }

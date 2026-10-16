@@ -168,6 +168,17 @@ world build height is rejected. If a chunk disappears later, the operation
 fails; its exception message includes partial change/skip counts. No implicit
 rollback occurs.
 
+Mutation requires the Bukkit platform's native `LIGHTING` capability. Its
+adapter-free fallback advertises only `NEIGHBORS` and is rejected before writes.
+FAWE's native adapter omits `VALIDATION` from its advertised set even though
+its native access implements that effect; connection repair still requests
+`VALIDATION` explicitly to recalculate shapes without recursive physics.
+Repair also requires loaded chunks for cardinal neighbors of the supplied
+scope. These chunks are checked before any writes and again before each native
+validation, because Minecraft's neighbor reads can otherwise load them
+synchronously. Paste without repair requires only its target chunks; neither
+operation loads chunks or adds tickets on the caller's behalf.
+
 `repairConnections(worldId, blocks)` accepts expected block-state strings at
 WORLD coordinates. Pass a stable list and do not mutate it while the request is
 pending. It touches only native fences, walls and glass panes, and skips a
