@@ -1,6 +1,7 @@
 package ru.arc.paper.schematics
 
 import com.sk89q.worldedit.bukkit.BukkitAdapter
+import com.sk89q.worldedit.extent.clipboard.io.ClipboardFormat
 import com.sk89q.worldedit.extent.clipboard.io.ClipboardFormats
 import com.sk89q.worldedit.math.BlockVector3
 import com.sk89q.worldedit.world.block.BlockState
@@ -12,6 +13,7 @@ import ru.arc.paper.api.ArcSchematicFailure
 import ru.arc.paper.api.ArcSchematicPoint
 import ru.arc.paper.api.ArcSchematicTransform
 import java.io.ByteArrayInputStream
+import java.io.IOException
 
 internal data class DecodedSchematic(
     val minimum: ArcSchematicPoint,
@@ -33,34 +35,37 @@ internal interface SchematicCodec {
 
 internal class WorldEditSchematicCodec(private val settings: ArcSchematicCacheSettings) : SchematicCodec {
     override fun decode(bytes: SchematicBytes): DecodedSchematic {
-        val format = ClipboardFormats.findByInputStream { ByteArrayInputStream(bytes.bytes) }
+        val format = findSchematicFormat(bytes.bytes)
             ?: failure(ArcSchematicFailure.UNSUPPORTED_FORMAT, "WorldEdit does not recognize this schematic")
         val clipboard = ByteArrayInputStream(bytes.bytes).use { input -> format.getReader(input).use { it.read() } }
-        val min = clipboard.minimumPoint
-        val max = clipboard.maximumPoint
-        val width = max.x().toLong() - min.x() + 1
-        val height = max.y().toLong() - min.y() + 1
-        val length = max.z().toLong() - min.z() + 1
-        val volume = width * height * length
-        if (width <= 0 || height <= 0 || length <= 0 || volume !in 1..settings.maximumVolume.toLong()) {
-            failure(ArcSchematicFailure.LIMIT_EXCEEDED, "Decoded schematic dimensions exceed the configured bound")
+        // FAWE may own file-backed resources; ordinary WorldEdit clipboards are not closeable.
+        return (clipboard as? AutoCloseable).use {
+            val min = clipboard.minimumPoint
+            val max = clipboard.maximumPoint
+            val width = max.x().toLong() - min.x() + 1
+            val height = max.y().toLong() - min.y() + 1
+            val length = max.z().toLong() - min.z() + 1
+            val volume = width * height * length
+            if (width <= 0 || height <= 0 || length <= 0 || volume !in 1..settings.maximumVolume.toLong()) {
+                failure(ArcSchematicFailure.LIMIT_EXCEEDED, "Decoded schematic dimensions exceed the configured bound")
+            }
+            val palette = linkedMapOf<BlockState, Int>()
+            val indices = IntArray(volume.toInt())
+            val entities = HashMap<Int, LinCompoundTag>()
+            var index = 0
+            // Keep the historical player-book hash order without sorting or retaining per-cell objects.
+            for (y in min.y()..max.y()) for (x in min.x()..max.x()) for (z in min.z()..max.z()) {
+                if (index % 16_384 == 0 && Thread.currentThread().isInterrupted) failure(ArcSchematicFailure.CLOSED, "Schematic decode interrupted")
+                val full = clipboard.getFullBlock(BlockVector3.at(x, y, z))
+                indices[index] = palette.getOrPut(full.toImmutableState()) { palette.size }
+                full.nbtReference?.value?.let { entities[index] = it }
+                index++
+            }
+            DecodedSchematic(
+                min.point(), max.point(), clipboard.origin.point(), palette.keys.toList(), indices,
+                entities, clipboard.hasBiomes(), clipboard.entities.size,
+            )
         }
-        val palette = linkedMapOf<BlockState, Int>()
-        val indices = IntArray(volume.toInt())
-        val entities = HashMap<Int, LinCompoundTag>()
-        var index = 0
-        // Keep the historical player-book hash order without sorting or retaining per-cell objects.
-        for (y in min.y()..max.y()) for (x in min.x()..max.x()) for (z in min.z()..max.z()) {
-            if (index % 16_384 == 0 && Thread.currentThread().isInterrupted) failure(ArcSchematicFailure.CLOSED, "Schematic decode interrupted")
-            val full = clipboard.getFullBlock(BlockVector3.at(x, y, z))
-            indices[index] = palette.getOrPut(full.toImmutableState()) { palette.size }
-            full.nbtReference?.value?.let { entities[index] = it }
-            index++
-        }
-        return DecodedSchematic(
-            min.point(), max.point(), clipboard.origin.point(), palette.keys.toList(), indices,
-            entities, clipboard.hasBiomes(), clipboard.entities.size,
-        )
     }
 
     override fun canonicalize(state: BlockState): SchematicPaletteEntry {
@@ -82,4 +87,13 @@ internal class WorldEditSchematicCodec(private val settings: ArcSchematicCacheSe
     }
 
     private fun BlockVector3.point(): ArcSchematicPoint = ArcSchematicPoint(x(), y(), z())
+}
+
+/** Uses the stream API shared by WorldEdit and FAWE without reopening the captured source file. */
+internal fun findSchematicFormat(bytes: ByteArray): ClipboardFormat? = ClipboardFormats.getAll().firstOrNull { format ->
+    try {
+        ByteArrayInputStream(bytes).use { format.isFormat(it) }
+    } catch (_: IOException) {
+        false
+    }
 }

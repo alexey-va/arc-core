@@ -19,6 +19,13 @@ dependencies {
     testImplementation("io.mockk:mockk:1.14.7")
 }
 
+// Run the same format regression against a descriptor-resolved live WE/FAWE JAR.
+providers.gradleProperty("worldEditTestJar").orNull?.let { runtimeJar ->
+    tasks.test {
+        classpath = files(runtimeJar) + classpath.filter { !it.name.startsWith("worldedit-") }
+    }
+}
+
 publishing {
     publications {
         create<MavenPublication>("maven") {
