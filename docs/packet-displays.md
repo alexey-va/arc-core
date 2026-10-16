@@ -97,6 +97,21 @@ Cleanup is ordered before replacement spawns and remains eligible after a failed
 batch. Entity IDs use Paper's `UnsafeValues.nextEntityId()` global allocator directly,
 without entity construction or per-ID reflection.
 
+For a shared scene gate (for example, a game's cached room line of sight), create
+`displays.createAudienceGroup { viewer -> policyAllows(viewer) }` and assign the
+same group to every scene handle's `audienceGroup` before the first frame. The
+predicate is evaluated on the server thread at most once per eligible viewer in
+each owner refresh. Explicit `showTo`/`hideFrom`, world, range, received chunks
+and carrier visibility remain independent restrictions: an allowed group never
+publishes a private card or control. Core owns per-refresh memoization only;
+the feature owns any expensive-query cache and its viewer lifecycle.
+
+A group belongs to exactly one display owner. Close it when the scene ends;
+closing releases its predicate and makes any still-attached handles invisible.
+The owner also closes all groups during shutdown. Removed handles release their
+group reference, while teleports and attach/detach preserve it. Without a group,
+the existing visibility policy is unchanged.
+
 No visual is written to the world, so new scenes cannot leave native orphan
 entities. A migrating plugin may remove old native entities only through its
 existing exact owner tags, including in chunks loaded after startup. Core does

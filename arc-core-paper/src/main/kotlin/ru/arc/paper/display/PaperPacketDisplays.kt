@@ -49,6 +49,7 @@ class PaperPacketDisplays internal constructor(
 
     private data class ViewerState(val connection: PacketDisplayConnection, val worldId: UUID)
     private val handles = linkedMapOf<Int, PacketDisplay>()
+    private val audienceGroups = mutableSetOf<PacketDisplayAudienceGroup>()
     private val viewers = mutableMapOf<UUID, ViewerState>()
     private val resetChunks = mutableMapOf<UUID, MutableSet<Long>>()
     private val resetViewers = mutableSetOf<UUID>()
@@ -75,10 +76,18 @@ class PaperPacketDisplays internal constructor(
         return PacketTextDisplay(this, transport.nextEntityId(), location, text).also { handles[it.entityId] = it }
     }
 
+    /** Creates a scene gate; configure it before the first frame and close it with the scene. */
+    fun createAudienceGroup(predicate: (Player) -> Boolean): PacketDisplayAudienceGroup {
+        checkThread()
+        check(!closed) { "Packet display owner is closed" }
+        return PacketDisplayAudienceGroup(this, predicate).also(audienceGroups::add)
+    }
+
     internal fun checkThread() = audience.checkThread()
     internal fun blockStateId(block: BlockData): Int = transport.blockStateId(block)
     internal fun itemSnapshot(item: ItemStack) = transport.itemSnapshot(item)
     internal fun remove(display: PacketDisplay) { handles.remove(display.entityId, display) }
+    internal fun remove(group: PacketDisplayAudienceGroup) { audienceGroups.remove(group) }
 
     private fun checkSpawn(location: Location) {
         checkThread()
@@ -106,13 +115,17 @@ class PaperPacketDisplays internal constructor(
         val present = currentAudience.mapTo(hashSetOf(), PacketDisplayViewer::id)
         (viewers.keys - present).forEach(::forgetViewer)
         currentAudience.forEach { viewer ->
+            val groupVisibility = mutableMapOf<PacketDisplayAudienceGroup, Boolean>()
             val desired = frames.asSequence()
                 .filter { (display, frame) ->
                     val targetId = display.attachmentTargetId
                     val carrier = targetId?.let(audienceById::get)
                     val carrierVisible = targetId == null || targetId == viewer.id ||
                         (carrier != null && viewer.id in carrier.trackedBy && viewer.player.canSee(carrier.player))
-                    carrierVisible && frame.chunkKey in viewer.sentChunks && display.visibleTo(viewer, frame)
+                    carrierVisible && frame.chunkKey in viewer.sentChunks && display.visibleTo(viewer, frame) &&
+                        (display.audienceGroup?.let { group ->
+                            groupVisibility.getOrPut(group) { group.allows(viewer.player) }
+                        } ?: true)
                 }
                 .map { it.second }.toList()
             val previous = viewers[viewer.id]
@@ -185,6 +198,7 @@ class PaperPacketDisplays internal constructor(
         closed = true
         tasks.close()
         HandlerList.unregisterAll(this)
+        audienceGroups.toList().forEach(PacketDisplayAudienceGroup::close)
         handles.values.toList().forEach(PacketDisplay::remove)
         viewers.keys.toList().forEach(::forgetViewer)
         resetChunks.clear()

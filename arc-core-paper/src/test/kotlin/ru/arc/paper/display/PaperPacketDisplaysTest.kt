@@ -20,6 +20,97 @@ import ru.arc.paper.testing.loadPlugin
 import java.util.UUID
 
 class PaperPacketDisplaysTest : FreeSpec({
+    "scene groups hide static and animated handles without publishing private cards" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val plugin = paper.loadPlugin<TestPaperPlugin>()
+            val world = paper.addSimpleWorld("scene-gates")
+            val player = paper.addPlayer("Seated")
+            val observer = paper.addPlayer("Observer")
+            val audience = MutableAudience().apply {
+                values = listOf(viewer(player, world.uid), viewer(observer, world.uid))
+            }
+            val transport = RecordingTransport()
+            PaperPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), audience).use { displays ->
+                var open = false
+                val calls = mutableMapOf<UUID, Int>()
+                val group = displays.createAudienceGroup {
+                    calls[it.uniqueId] = (calls[it.uniqueId] ?: 0) + 1
+                    open
+                }
+                val public = List(20) {
+                    displays.spawnText(Location(world, 1.0, 64.0, 1.0), Component.text("part-$it"))
+                        .apply { audienceGroup = group }
+                }
+                val card = displays.spawnText(Location(world, 1.0, 64.0, 1.0), Component.text("private"))
+                    .apply { audienceGroup = group; isVisibleByDefault = false; showTo(player) }
+                displays.refresh()
+                calls shouldBe mapOf(player.uniqueId to 1, observer.uniqueId to 1)
+                transport.connections shouldBe emptyMap()
+
+                open = true
+                displays.refresh()
+                calls.values.toSet() shouldBe setOf(2)
+                transport.forPlayer(player).last().frames.size shouldBe 21
+                transport.forPlayer(observer).last().frames.map { it.entityId } shouldBe public.map { it.entityId }
+                card.hideFrom(player)
+                public.first().teleport(Location(world, 2.0, 64.0, 1.0))
+                displays.refresh()
+                transport.forPlayer(player).last().frames.size shouldBe 20
+                card.showTo(player)
+                open = false
+                displays.refresh()
+                transport.forPlayer(player).last().frames shouldBe emptyList()
+                transport.forPlayer(observer).last().frames shouldBe emptyList()
+                open = true
+                displays.refresh()
+                transport.forPlayer(player).last().frames.size shouldBe 21
+                transport.forPlayer(observer).last().frames.size shouldBe 20
+
+                // World/chunk/range guards avoid even invoking a scene's expensive policy.
+                val before = calls.toMap()
+                audience.values = listOf(viewer(player, world.uid, chunks = emptySet()),
+                    viewer(observer, UUID.randomUUID()))
+                displays.refresh()
+                calls shouldBe before
+                audience.values = listOf(viewer(player, world.uid, x = 1000.0))
+                displays.refresh()
+                calls shouldBe before
+
+                group.close()
+                group.close()
+                audience.values = listOf(viewer(player, world.uid))
+                displays.refresh()
+                calls shouldBe before
+                transport.forPlayer(player).last().frames shouldBe emptyList()
+                shouldThrow<IllegalArgumentException> { public.first().audienceGroup = group }
+                public.first().audienceGroup = null
+                displays.refresh()
+                transport.forPlayer(player).last().frames.single().entityId shouldBe public.first().entityId
+            }
+        }
+    }
+
+    "groups are owner-bound and close with the display owner" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val plugin = paper.loadPlugin<TestPaperPlugin>()
+            val world = paper.addSimpleWorld("group-ownership")
+            val owner = PaperPacketDisplays(plugin, RecordingTransport(), LifecycleTaskScope(TestTaskScheduler()), MutableAudience())
+            val other = PaperPacketDisplays(plugin, RecordingTransport(), LifecycleTaskScope(TestTaskScheduler()), MutableAudience())
+            val group = owner.createAudienceGroup { true }
+            val handle = owner.spawnText(Location(world, 1.0, 64.0, 1.0), Component.empty())
+                .apply { audienceGroup = group }
+            handle.detach()
+            handle.audienceGroup shouldBe group
+            val foreign = other.spawnText(Location(world, 1.0, 64.0, 1.0), Component.empty())
+            shouldThrow<IllegalArgumentException> { foreign.audienceGroup = group }
+            owner.close()
+            group.isClosed shouldBe true
+            handle.audienceGroup shouldBe null
+            shouldThrow<IllegalStateException> { owner.createAudienceGroup { true } }
+            other.close()
+        }
+    }
+
     "visibility follows explicit viewers, worlds, range and received chunks without native spawns" {
         MockBukkitTestRuntime.open().use { paper ->
             val plugin = paper.loadPlugin<TestPaperPlugin>()

@@ -36,6 +36,14 @@ sealed class PacketDisplay protected constructor(
     val location: Location get() = position.clone()
     internal val attachmentTargetId: UUID? get() = attachedPlayerId
     var isVisibleByDefault: Boolean = true
+    /** Additional shared gate; never grants access denied by this handle's explicit audience. */
+    var audienceGroup: PacketDisplayAudienceGroup? = null
+        set(value) {
+            owner.checkThread()
+            require(value == null || value.owner === owner) { "Audience group must belong to the display owner" }
+            require(value == null || !value.isClosed) { "Audience group is closed" }
+            field = value
+        }
     var billboard: Display.Billboard = Display.Billboard.FIXED
     var brightness: Display.Brightness? = null
     var interpolationDelay: Int = 0
@@ -108,6 +116,7 @@ sealed class PacketDisplay protected constructor(
         if (!isValid) return
         isValid = false
         attachedPlayerId = null
+        audienceGroup = null
         owner.remove(this)
         visibleTo.clear()
         hiddenFrom.clear()
