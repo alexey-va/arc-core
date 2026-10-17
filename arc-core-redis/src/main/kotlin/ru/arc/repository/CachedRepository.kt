@@ -142,7 +142,8 @@ class CachedRepository<T : Entity>(
     }
 
     /**
-     * Shutdown the repository gracefully.
+     * Worker-only terminal flush. Persistence failure remains observable to the
+     * lifecycle drain; listeners, registry and owned scope are always released.
      */
     suspend fun shutdown() {
         log.info("Shutting down repository: ${config.id}")
@@ -151,7 +152,7 @@ class CachedRepository<T : Entity>(
         cleanupJob?.cancel()
         try {
             syncService?.stop()
-            saveDirty()
+            saveDirty().getOrThrow()
         } finally {
             unregister(this)
             scope.cancel()

@@ -52,6 +52,8 @@ class CachedRepositoryTest {
     @AfterEach
     fun teardown() =
         runTest {
+            // Failure injection belongs to the test operation, not fixture disposal.
+            storage.failOnSave = false
             repo.shutdown()
         }
 
