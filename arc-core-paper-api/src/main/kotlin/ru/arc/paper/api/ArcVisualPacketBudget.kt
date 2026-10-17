@@ -1,7 +1,7 @@
 package ru.arc.paper.api
 
 /**
- * Server-wide admission budget for opt-in plugin visuals, registered by ARC.
+ * Server-wide admission budget for opt-in plugin visuals, registered by ArcCore.
  *
  * Consumers compile against this API; only the host embeds it. All methods are
  * thread-safe and never inspect Bukkit state. [connection] is the connection

@@ -1,6 +1,6 @@
 # Server-wide visual packet budget
 
-`PaperVisualPacketRuntime` is the ARC-hosted admission service for opt-in,
+`PaperVisualPacketRuntime` is the ArcCore-hosted admission service for opt-in,
 replaceable plugin visuals such as client-only displays, glow changes, and short
 visual effects. It is not a limiter for vanilla gameplay traffic. Packet owners
 must keep their existing latest desired state and retry a deferred transaction;
@@ -8,29 +8,36 @@ the shared runtime does not queue packet history.
 
 ## Host setup
 
-Install one provider from ARC on the server thread after core scheduling is
-installed and before any packet owner is constructed:
+ArcCore installs one provider on the server thread before any packet owner is
+constructed. The provider owns its reporter scheduler and requires no ARC plugin
+or global `Tasks` installation. Host wiring supplies its validated configuration:
 
 ```kotlin
-val visualPacketRuntime = PaperVisualPacketRuntime.install(this)
+val visualPacketRuntime = PaperVisualPacketRuntime.install(this, hostConfig)
 ```
 
-The default config is loaded through `ConfigManager` from
-`plugins/ARC/modules/visual-packets.yml`. ARC should close the returned runtime
-after its visual owners have stopped. `PaperVisualPackets` resolves the provider
-through Bukkit's shared `ArcVisualPacketBudget` service and fails fast if ARC did
-not install it.
+ArcCore owns `plugins/ArcCore/visual-packets.yml`. On first startup it imports an
+existing `plugins/ARC/modules/visual-packets.yml` only if the host file is absent;
+otherwise it seeds bundled defaults. Existing host policy is never overwritten.
+ArcCore closes the runtime after its consumers stop. Consumer shutdown or a
+consumer scheduler reset must not close the shared provider. `PaperVisualPackets`
+resolves Bukkit's shared `ArcVisualPacketBudget` service and fails fast if ArcCore
+did not install it.
 
-The host embeds `arc-core-paper-api`; other plugins compile against that API and
-load it through ARC's classloader. A plugin that constructs these visual owners
-unconditionally must declare ARC in `depend`, and deployments must activate the
-new host together with upgraded consumers. No plugin creates a private fallback
-budget. Use feature names on `PaperPacketDisplays` and `PaperViewerEntityGlow` to
-keep traffic attribution useful.
+ArcCore embeds the exact `ArcVisualPacketBudget` and `VisualPacketAdmission` API
+classes, `PaperVisualPacketRuntime` and its nested classes, and the `MetricPoint`
+DTO. Consumers exclude those classes from their JARs and load them through
+ArcCore's classloader. A plugin that constructs these visual owners
+unconditionally declares ArcCore in `depend`. The owner migration requires a
+coordinated ArcCore/ARC restart: older ARC versions still try to install a second
+provider. No plugin creates a private fallback budget. Use feature names on
+`PaperPacketDisplays` and `PaperViewerEntityGlow` to keep attribution useful.
 
-On config reload, reload the `Config` from the same module path and call
-`visualPacketRuntime.reload(config)`. The full candidate is validated before
-application. Existing server and viewer token balances are refilled under the
+ARC's reload delegates to `ArcCoreServices.reloadVisualPacketConfig()`, which
+reloads the canonical host file. The host passes its own `Config` to
+`visualPacketRuntime.reload(config)`; consumer-local `Config` instances must not
+cross plugin classloaders. The full candidate is validated before application.
+Existing server and viewer token balances are refilled under the
 old rates, then retained under the new rates; reload never restores a full burst.
 Reload requires at least one recognized setting. Empty or unreadable configuration
 must not silently replace active limits with defaults; missing individual keys
@@ -44,7 +51,7 @@ still use their documented defaults.
 | `viewer-mbps` | `2` | `0.01`–`10000` | Shared payload budget per connection, across all plugins. |
 | `burst-ms` | `250` | `10`–`30000` | Token bucket capacity as rate multiplied by this duration. |
 | `log-interval-seconds` | `30` | `30`–`3600` | Interval for async metrics logging and bounded overload warnings. |
-| `verbose-logs` | `false` | boolean | Emit interval totals and one line for each active source. |
+| `verbose-logs` | `true` in the bundled host policy | boolean | Emit interval totals and one line for each active source; the library fallback for a missing key remains `false`. |
 
 Overload warnings are emitted at most once per configured reporting interval,
 with one recovery message after pressure subsides. Source names are bounded to

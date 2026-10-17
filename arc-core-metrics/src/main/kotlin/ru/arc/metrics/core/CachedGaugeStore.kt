@@ -11,7 +11,10 @@ data class MetricPoint(
     val description: String,
     val value: Double,
     val tags: Map<String, String> = emptyMap(),
-)
+) {
+    /** JVM-safe host/consumer call: no consumer-local Kotlin DefaultConstructorMarker crosses the boundary. */
+    constructor(name: String, description: String, value: Double) : this(name, description, value, emptyMap())
+}
 
 /**
  * Strongly retains gauge state and updates it only from scheduled snapshots.

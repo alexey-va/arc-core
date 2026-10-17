@@ -5,6 +5,7 @@ import org.bukkit.plugin.Plugin
 import org.bukkit.plugin.ServicePriority
 import ru.arc.config.Config
 import ru.arc.config.ConfigManager
+import ru.arc.core.BukkitTaskScheduler
 import ru.arc.core.LifecycleTaskScope
 import ru.arc.metrics.core.MetricPoint
 import ru.arc.observability.StructuredDebugLine
@@ -14,7 +15,7 @@ import java.util.WeakHashMap
 import kotlin.math.round
 
 /**
- * ARC-owned admission provider for replaceable visual packets. It is deliberately
+ * ArcCore-owned admission provider for replaceable visual packets. It is deliberately
  * independent of Bukkit player state: callers pass a connection identity and the
  * exact encoded, pre-compression payload size.
  */
@@ -31,7 +32,8 @@ class PaperVisualPacketRuntime internal constructor(
     private var closed = false
     private var overloaded = false
     private var lastReportNanos = nanoTime()
-    private val taskScope = hostPlugin?.let { LifecycleTaskScope() }
+    // The provider starts without ARC and outlives consumer scheduler resets.
+    private val taskScope = hostPlugin?.let { LifecycleTaskScope(BukkitTaskScheduler(it)) }
     private val debugLine = StructuredDebugLine("ARC_VISUAL_PACKETS", maxValueCharacters = 1_024)
 
     init {
@@ -577,7 +579,11 @@ class PaperVisualPacketRuntime internal constructor(
         private const val NANOS_PER_SECOND = 1_000_000_000.0
         private val SOURCE_PATTERN = Regex("[a-z0-9][a-z0-9_.:-]{0,127}")
 
-        /** Install once in ARC, before any visual packet owners are constructed. */
+        /**
+         * Install once in the ArcCore host on the server thread, before visual owners.
+         * The host owns configuration and closes this provider after its consumers stop.
+         * Its reporter owns an independent scheduler; global [ru.arc.core.Tasks] is not used.
+         */
         @JvmStatic
         @JvmOverloads
         fun install(
@@ -586,7 +592,7 @@ class PaperVisualPacketRuntime internal constructor(
         ): PaperVisualPacketRuntime {
             check(Bukkit.isPrimaryThread()) { "Visual packet budget must be installed on the server thread" }
             check(plugin.server.servicesManager.load(ArcVisualPacketBudget::class.java) == null) {
-                "An ARC visual packet budget is already registered; install the provider once per server"
+                "An ArcCore visual packet budget is already registered; install the provider once per server"
             }
             val runtime = PaperVisualPacketRuntime(Settings.from(config), hostPlugin = plugin)
             plugin.server.servicesManager.register(ArcVisualPacketBudget::class.java, runtime, plugin, ServicePriority.Normal)

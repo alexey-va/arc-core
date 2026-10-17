@@ -9,10 +9,10 @@ The host supplies PacketEvents **2.12.1** and Paper **1.21.11**. Declare
 `packetevents` as a plugin dependency and compile it only; do not shade it.
 Other consumers of `arc-core-paper` need no PacketEvents dependency unless they
 construct this service. Install core scheduling before construction.
-The ARC host must also install [the shared visual packet provider](visual-packets.md)
+The ArcCore host must also install [the shared visual packet provider](visual-packets.md)
 before constructing a visual owner. All plugin copies resolve the same
 `ArcVisualPacketBudget` API through Bukkit services; keep that API compile-only
-in consumers and supplied by ARC.
+in consumers and supplied by ArcCore.
 
 ```kotlin
 val displays = PaperPacketDisplays(plugin, "workshop-tables")

@@ -79,7 +79,7 @@ class PaperVisualPackets internal constructor(
             check(Bukkit.isPrimaryThread()) { "Visual packet sources must be constructed on the server thread" }
             require(feature.matches(Regex("[a-z0-9][a-z0-9_.-]{0,63}"))) { "Use a stable visual packet feature name" }
             return requireNotNull(plugin.server.servicesManager.load(ArcVisualPacketBudget::class.java)) {
-                "ARC visual packet budget is unavailable; install PaperVisualPacketRuntime before visual owners"
+                "ArcCore visual packet budget is unavailable; enable ArcCore before visual owners"
             }
         }
 
