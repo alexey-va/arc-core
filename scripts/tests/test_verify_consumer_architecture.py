@@ -3,11 +3,12 @@ from __future__ import annotations
 import tempfile
 import tomllib
 import unittest
+import zipfile
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 
-from scripts.verify_consumer_architecture import main
+from scripts.verify_consumer_architecture import main, verify_artifact
 
 
 PAPER_MODULES = (
@@ -143,6 +144,35 @@ class ProviderHost {
         with redirect_stdout(output):
             exit_code = main([str(self.root)])
         return exit_code, output.getvalue()
+
+    def test_optional_jar_rejects_new_host_provider_and_nested_classes(self) -> None:
+        jar = self.root / "build/plugin.jar"
+        jar.parent.mkdir(parents=True)
+        with zipfile.ZipFile(jar, "w") as archive:
+            archive.writestr("ru/arc/paper/runtime/PaperNativeCleanupServiceProvider.class", b"fixture")
+            archive.writestr("ru/arc/paper/runtime/PaperNativeCleanupServiceProvider$Cleanup.class", b"fixture")
+        failures = verify_artifact(jar, provider_host=False)
+        self.assertEqual(2, len(failures))
+        self.assertTrue(all(failure.rule == "artifact-owner" for failure in failures))
+        output = StringIO()
+        with redirect_stdout(output):
+            result = main([str(self.root), "--jar", str(jar)])
+        self.assertEqual(1, result)
+        self.assertIn("artifact-owner", output.getvalue())
+        self.assertEqual([], verify_artifact(jar, provider_host=True))
+
+    def test_optional_jar_accepts_consumer_runtime_and_reports_bad_input(self) -> None:
+        jar = self.root / "plugin.jar"
+        with zipfile.ZipFile(jar, "w") as archive:
+            archive.writestr("ru/arc/paper/runtime/PaperPluginRuntime.class", b"fixture")
+        self.assertEqual([], verify_artifact(jar, provider_host=False))
+        output = StringIO()
+        with redirect_stdout(output):
+            result = main([str(self.root), "--jar", "plugin.jar"])
+        self.assertEqual(0, result)
+        jar.write_text("not a zip")
+        self.assertEqual("artifact", verify_artifact(jar, provider_host=False)[0].rule)
+        self.assertEqual("artifact", verify_artifact(self.root / "missing.jar", provider_host=False)[0].rule)
 
     def test_accepts_canonical_paper_composition(self) -> None:
         exit_code, output = self.verify()

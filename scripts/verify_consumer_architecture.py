@@ -4,7 +4,8 @@
 The contract is intentionally dependency- and source-based.  A new plugin
 declares the infrastructure it needs in ``arc-core-consumer.toml``; this
 verifier then checks the matching Maven modules, canonical API evidence, and a
-small set of high-signal forbidden local implementations.
+small set of high-signal forbidden local implementations. Optional --jar also
+checks that a built consumer does not embed host-only provider implementations.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import argparse
 import re
 import sys
 import tomllib
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -587,6 +589,30 @@ def verify(root: Path, manifest_path: Path) -> list[Violation]:
     return violations
 
 
+HOST_IMPLEMENTATION_PREFIXES = (
+    "ru/arc/paper/runtime/PaperNativeCleanupServiceProvider",
+    "ru/arc/paper/packet/PaperVisualPacketRuntime",
+    "ru/arc/paper/sql/PaperSqlServiceProvider",
+    "ru/arc/paper/sql/SharedPaperSqlService",
+    "ru/arc/paper/redis/PaperRedisServiceProvider",
+    "ru/arc/paper/redis/SharedPaperRedisService",
+    "ru/arc/paper/metrics/PaperArcMetricsProvider",
+)
+
+
+def verify_artifact(jar: Path, provider_host: bool) -> list[Violation]:
+    try:
+        with zipfile.ZipFile(jar) as archive:
+            names = archive.namelist()
+    except (OSError, zipfile.BadZipFile) as failure:
+        return [Violation("artifact", f"cannot inspect JAR: {failure}", jar)]
+    if provider_host:
+        return []
+    embedded = sorted(name for name in names if name.endswith(".class") and name.startswith(HOST_IMPLEMENTATION_PREFIXES))
+    return [Violation("artifact-owner", f"host implementation must not be embedded by a feature consumer: {name}", jar)
+            for name in embedded]
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("repository", nargs="?", default=".", help="consumer plugin repository root")
@@ -595,6 +621,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default="arc-core-consumer.toml",
         help="manifest path relative to the repository root",
     )
+    parser.add_argument("--jar", help="optional built JAR path, relative to the repository or absolute")
     return parser.parse_args(argv)
 
 
@@ -613,6 +640,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     manifest = tomllib.loads(read_text(manifest_path))
+    if args.jar:
+        artifact_violations = verify_artifact((root / args.jar).resolve(), manifest.get("role", DEFAULT_ROLE) == "provider-host")
+        if artifact_violations:
+            for violation in artifact_violations:
+                print(violation.render(root))
+            print(f"CONSUMER_CONTRACT_SUMMARY status=failed violations={len(artifact_violations)}")
+            return 1
     dependencies = parse_dependencies(relevant_files(root)["gradle"])
     modules = sorted({dependency.module for dependency in dependencies if dependency.module in CORE_MODULES})
     capabilities = sorted(str(value) for value in manifest["capabilities"])
