@@ -3,6 +3,8 @@ package ru.arc.core
 import java.util.Collections
 import java.util.IdentityHashMap
 import java.util.concurrent.CompletionStage
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CancellationException
 
 /**
  * Owns scheduled callbacks for one reloadable runtime epoch.
@@ -24,7 +26,9 @@ class LifecycleTaskScope(
     private class Entry(
         val token: Token,
         val repeating: Boolean,
+        val promise: CompletableFuture<*>? = null,
     ) {
+        var started = false
         @Volatile
         var handle: ScheduledTask? = null
     }
@@ -62,6 +66,27 @@ class LifecycleTaskScope(
 
     fun runSync(token: Token, task: () -> Unit): ScheduledTask? =
         schedule(token, repeating = false, scheduler::runSync, task)
+
+    /**
+     * Calls the owning thread without a wait. Invalidating the scope completes
+     * queued promises exceptionally instead of silently abandoning a transaction
+     * continuation. Completion callbacks have no promised thread affinity.
+     */
+    fun <T> callSync(token: Token, operation: () -> T): CompletableFuture<T> {
+        val result = CompletableFuture<T>()
+        try {
+            val handle = schedule(token, false, scheduler::runSync, {
+                try { result.complete(operation()) }
+                catch (failure: Throwable) { result.completeExceptionally(failure) }
+            }, result)
+            if (handle == null) result.completeExceptionally(CancellationException("Lifecycle task is no longer current"))
+        } catch (failure: Throwable) { result.completeExceptionally(failure) }
+        return result
+    }
+
+    fun <T> callSync(operation: () -> T): CompletableFuture<T> =
+        currentToken()?.let { callSync(it, operation) }
+            ?: CompletableFuture.failedFuture(CancellationException("Lifecycle task scope is inactive"))
 
     fun runAsync(task: () -> Unit): ScheduledTask? = currentToken()?.let { runAsync(it, task) }
 
@@ -125,15 +150,20 @@ class LifecycleTaskScope(
         repeating: Boolean,
         submit: (Runnable) -> ScheduledTask,
         task: () -> Unit,
+        promise: CompletableFuture<*>? = null,
     ): ScheduledTask? {
-        val entry = Entry(token, repeating)
+        val entry = Entry(token, repeating, promise)
         synchronized(monitor) {
             if (!isCurrentLocked(token)) return null
             tracked += entry
         }
         val runnable = Runnable {
             try {
-                if (synchronized(monitor) { isCurrentLocked(token) }) task()
+                val claimed = synchronized(monitor) {
+                    if (isCurrentLocked(token)) { entry.started = true; true } else false
+                }
+                if (claimed) task()
+                else promise?.completeExceptionally(CancellationException("Lifecycle task is no longer current"))
             } finally {
                 if (!entry.repeating) synchronized(monitor) { tracked.remove(entry) }
             }
@@ -146,8 +176,9 @@ class LifecycleTaskScope(
         }
         entry.handle = handle
         val cancelledBeforeAttach = synchronized(monitor) { entry !in tracked || !isCurrentLocked(token) }
-        if (cancelledBeforeAttach) handle.cancel()
-        return handle.takeUnless { cancelledBeforeAttach }
+        val runningPromise = synchronized(monitor) { promise != null && entry.started }
+        if (cancelledBeforeAttach && !runningPromise) handle.cancel()
+        return handle.takeUnless { cancelledBeforeAttach && !runningPromise }
     }
 
     private fun cancelTracked(
@@ -163,10 +194,12 @@ class LifecycleTaskScope(
         var firstFailure: RuntimeException? = null
         cancelled.forEach { entry ->
             try {
-                entry.handle?.cancel()
+                if (entry.promise == null || !entry.started) entry.handle?.cancel()
             } catch (failure: RuntimeException) {
                 val previous = firstFailure
                 if (previous == null) firstFailure = failure else previous.addSuppressed(failure)
+            } finally {
+                if (!entry.started) entry.promise?.completeExceptionally(CancellationException("Lifecycle task was cancelled"))
             }
         }
         if (reactivate) synchronized(monitor) {

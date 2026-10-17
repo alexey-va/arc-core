@@ -9,6 +9,7 @@ import ru.arc.redis.ChannelListener
 import ru.arc.redis.RedisConnection
 import ru.arc.redis.RedisOperations
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CompletionStage
 
 /** Local RedisOperations adapter backed by ARC's shared service lease. */
 class PaperRedisClient private constructor(
@@ -18,7 +19,12 @@ class PaperRedisClient private constructor(
         /** Opens a lease for the supplied connection and wire origin. */
         @JvmStatic
         fun open(plugin: Plugin, connection: RedisConnection, origin: String): PaperRedisClient {
-            val service = requireService(plugin)
+            return open(requireService(plugin), plugin.name, connection, origin)
+        }
+
+        /** Worker-only acquisition; capture the typed service and owner on Paper first. */
+        @JvmStatic
+        fun open(service: ArcRedisService, owner: String, connection: RedisConnection, origin: String): PaperRedisClient {
             val settings =
                 ArcRedisSettings(
                     host = connection.host,
@@ -26,13 +32,18 @@ class PaperRedisClient private constructor(
                     username = connection.username,
                     password = connection.password,
                 )
-            return PaperRedisClient(service.acquire(plugin.name, settings, origin))
+            return PaperRedisClient(service.acquire(owner, settings, origin))
         }
 
         /** Opens a lease over the primary Redis connection configured by the ARC host. */
         @JvmStatic
         fun openPrimary(plugin: Plugin): PaperRedisClient =
-            PaperRedisClient(requireService(plugin).acquirePrimary(plugin.name))
+            openPrimary(requireService(plugin), plugin.name)
+
+        /** Worker-only acquisition without accessing Bukkit from the worker. */
+        @JvmStatic
+        fun openPrimary(service: ArcRedisService, owner: String): PaperRedisClient =
+            PaperRedisClient(service.acquirePrimary(owner))
 
         private fun requireService(plugin: Plugin): ArcRedisService =
             checkNotNull(plugin.server.servicesManager.load(ArcRedisService::class.java)) {
@@ -80,6 +91,24 @@ class PaperRedisClient private constructor(
     }
 
     override fun init() = lease.init()
+
+    /** Before the host stops, keep this lease usable until its owner's terminal flush. */
+    fun retainDuringShutdown() = lease.retainDuringShutdown()
+
+    fun closeAfter(drain: CompletionStage<*>): CompletableFuture<Void> {
+        lease.retainDuringShutdown()
+        val result = CompletableFuture<Void>()
+        drain.whenComplete { _, failure ->
+            try {
+                close()
+                if (failure == null) result.complete(null) else result.completeExceptionally(failure)
+            } catch (closeFailure: Throwable) {
+                if (failure != null) closeFailure.addSuppressed(failure)
+                result.completeExceptionally(closeFailure)
+            }
+        }
+        return result
+    }
 
     override fun close() {
         try {

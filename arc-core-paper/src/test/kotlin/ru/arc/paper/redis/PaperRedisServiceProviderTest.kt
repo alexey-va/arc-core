@@ -15,8 +15,82 @@ import ru.arc.redis.ChannelListener
 import ru.arc.redis.RedisConnection
 import ru.arc.redis.RedisManager
 import ru.arc.redis.RedisTelemetrySink
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.CompletableFuture
 
 class PaperRedisServiceProviderTest : FreeSpec({
+    "retained consumer terminal writes survive provider stop until their actual acknowledgement" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val factory = RecordingRedisFactory()
+            val provider = PaperRedisServiceProvider(paper.createSimplePlugin("RetainedRedisHost"), factory::create)
+            val service = checkNotNull(paper.server.servicesManager.load(ArcRedisService::class.java))
+            val client = PaperRedisClient.open(service, "consumer", RedisConnection("localhost", 6379), "survival")
+            val terminal = CompletableFuture<Unit>()
+            val released = client.closeAfter(terminal)
+            try {
+                val providerDrain = provider.closeAsync()
+                providerDrain.isDone shouldBe false
+                client.publish("arc:shutdown", "final-receipt")
+                verify(exactly = 1) { factory.handles.single().manager.publish("arc:shutdown", "final-receipt") }
+                verify(exactly = 0) { factory.handles.single().manager.close() }
+                shouldThrow<IllegalStateException> {
+                    service.acquire("late", ArcRedisSettings("localhost", 6379, null, null), "survival")
+                }
+                released.isDone shouldBe false
+                terminal.complete(Unit)
+                released.get(5, TimeUnit.SECONDS)
+                providerDrain.get(5, TimeUnit.SECONDS)
+                verify(exactly = 1) { factory.handles.single().manager.close() }
+            } finally {
+                terminal.complete(Unit)
+                client.close()
+                provider.closeAsync().get(5, TimeUnit.SECONDS)
+            }
+        }
+    }
+
+    "cold acquisition and transport close never hold the native diagnostics monitor" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val entered = CountDownLatch(1)
+            val unblock = CountDownLatch(1)
+            val closing = CountDownLatch(1)
+            val releaseClose = CountDownLatch(1)
+            val manager = mockk<RedisManager>(relaxed = true)
+            every { manager.close() } answers {
+                closing.countDown()
+                check(releaseClose.await(5, TimeUnit.SECONDS))
+            }
+            val provider = PaperRedisServiceProvider(paper.createSimplePlugin("ColdRedisHost")) { _, _ ->
+                entered.countDown()
+                check(unblock.await(5, TimeUnit.SECONDS))
+                manager
+            }
+            val service = checkNotNull(paper.server.servicesManager.load(ArcRedisService::class.java))
+            val acquiring = CompletableFuture.supplyAsync {
+                service.acquire("consumer", ArcRedisSettings("localhost", 6379, null, null), "survival")
+            }
+            try {
+                entered.await(5, TimeUnit.SECONDS) shouldBe true
+                provider.diagnostics().activeLeases shouldBe 0
+                val drain = provider.closeAsync()
+                drain.isDone shouldBe false
+                unblock.countDown()
+                shouldThrow<Exception> { acquiring.get(5, TimeUnit.SECONDS) }
+                closing.await(5, TimeUnit.SECONDS) shouldBe true
+                provider.diagnostics().connectionGroups shouldBe 0
+                drain.isDone shouldBe false
+                releaseClose.countDown()
+                drain.get(5, TimeUnit.SECONDS)
+                verify(exactly = 1) { manager.close() }
+            } finally {
+                unblock.countDown()
+                releaseClose.countDown()
+                provider.closeAsync().get(5, TimeUnit.SECONDS)
+            }
+        }
+    }
+
     "connection groups include every credential and origin field and primary changes only future leases" {
         MockBukkitTestRuntime.open().use { paper ->
             val host = paper.createSimplePlugin("ArcHost")
@@ -60,6 +134,7 @@ class PaperRedisServiceProviderTest : FreeSpec({
                 (leases + firstPrimary + secondPrimary).forEach(AutoCloseable::close)
                 provider.diagnostics().activeLeases shouldBe 0
                 provider.diagnostics().connectionGroups shouldBe 0
+                provider.closeAsync().get(5, TimeUnit.SECONDS)
                 factory.handles.forEach { handle -> verify(exactly = 1) { handle.manager.close() } }
             }
         }
@@ -119,6 +194,7 @@ class PaperRedisServiceProviderTest : FreeSpec({
 
                 first.close()
                 verify(exactly = 1) { manager.unregisterChannel("arc:events", any()) }
+                provider.closeAsync().get(5, TimeUnit.SECONDS)
                 verify(exactly = 1) { manager.close() }
                 provider.diagnostics().activeChannels shouldBe 0
             }
@@ -141,6 +217,7 @@ class PaperRedisServiceProviderTest : FreeSpec({
             verify(exactly = 1) { factory.handles.single().manager.publish("arc:shutdown", "withdraw") }
             verify(exactly = 0) { factory.handles.single().manager.close() }
             activeClient.close()
+            provider.closeAsync().get(5, TimeUnit.SECONDS)
             verify(exactly = 1) { factory.handles.single().manager.close() }
             provider.close()
             service.diagnostics().activeLeases shouldBe 0

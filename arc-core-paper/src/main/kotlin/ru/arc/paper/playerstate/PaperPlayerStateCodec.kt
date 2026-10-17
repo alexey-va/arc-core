@@ -52,7 +52,10 @@ class PaperPlayerStateCodec(
         require(maxItemBlobBytes in 1..maxPayloadBytes) { "Player-state item payload limit is invalid" }
     }
 
-    fun encode(snapshot: PaperPlayerStateSnapshot): PaperPlayerStateEnvelope {
+    fun encode(snapshot: PaperPlayerStateSnapshot): PaperPlayerStateEnvelope = wrapPayload(encodePayload(snapshot))
+
+    /** Native item encoding stays on Paper; capture one bounded player per native slice. */
+    fun encodePayload(snapshot: PaperPlayerStateSnapshot): ByteArray {
         snapshot.validated()
         val payload = ByteArrayOutputStream().use { bytes ->
             DataOutputStream(bytes).use { output ->
@@ -98,13 +101,29 @@ class PaperPlayerStateCodec(
             bytes.toByteArray()
         }
         require(payload.size <= maxPayloadBytes) { "Encoded player-state payload exceeds its configured size limit" }
+        return payload
+    }
+
+    /** Pure Base64/checksum work on a detached payload; invoke on the caller's worker. */
+    fun wrapPayload(payload: ByteArray): PaperPlayerStateEnvelope {
+        require(payload.size in 1..maxPayloadBytes) { "Player-state payload has an invalid size" }
         return PaperPlayerStateEnvelope(
             payloadBase64 = Base64.getEncoder().encodeToString(payload),
             sha256 = sha256(payload),
         )
     }
 
-    fun decode(envelope: PaperPlayerStateEnvelope): PaperPlayerStateSnapshot {
+    fun decode(envelope: PaperPlayerStateEnvelope): PaperPlayerStateSnapshot = readEnvelope(envelope, decodeNativeItems = true)
+
+    /**
+     * Worker-safe envelope/metadata/outer binary validation, returning its player.
+     * Item blobs are opaque: their bounds and authenticated bytes are checked,
+     * but native item contents and slot counts are checked by [decode] on Paper
+     * before mutation. This method does not claim a restorable native inventory.
+     */
+    fun validateEnvelope(envelope: PaperPlayerStateEnvelope): UUID = readEnvelope(envelope, decodeNativeItems = false).playerId
+
+    private fun readEnvelope(envelope: PaperPlayerStateEnvelope, decodeNativeItems: Boolean): PaperPlayerStateSnapshot {
         require(envelope.formatVersion == PaperPlayerStateSnapshot.CURRENT_FORMAT_VERSION) {
             "Unsupported player-state envelope format"
         }
@@ -135,10 +154,10 @@ class PaperPlayerStateCodec(
                 capturedAtMillis = input.readLong(),
                 location = input.readLocation(),
                 compassTarget = input.readLocation(),
-                storage = input.readItemList(PaperPlayerStateSnapshot.STORAGE_SLOT_COUNT),
-                armor = input.readItemList(PaperPlayerStateSnapshot.ARMOR_SLOT_COUNT),
-                offHand = input.readNullableItem(),
-                cursor = input.readNullableItem(),
+                storage = input.readItemList(PaperPlayerStateSnapshot.STORAGE_SLOT_COUNT, decodeNativeItems),
+                armor = input.readItemList(PaperPlayerStateSnapshot.ARMOR_SLOT_COUNT, decodeNativeItems),
+                offHand = input.readNullableItem(decodeNativeItems),
+                cursor = input.readNullableItem(decodeNativeItems),
                 selectedSlot = input.readInt(),
                 health = input.readDouble(),
                 absorption = input.readDouble(),
@@ -196,20 +215,29 @@ class PaperPlayerStateCodec(
 
     private fun DataOutputStream.writeItemList(items: List<ItemStack?>) = writeBlob(itemCodec.encodeItems(items))
 
-    private fun DataInputStream.readItemList(expectedSize: Int): List<ItemStack?> =
-        itemCodec.decodeItems(readBlob()).also { items ->
+    private fun DataInputStream.readItemList(expectedSize: Int, nativeItems: Boolean): List<ItemStack?> {
+        if (!nativeItems) { skipBlob(); return List(expectedSize) { null } }
+        return itemCodec.decodeItems(readBlob()).also { items ->
             require(items.size == expectedSize) { "Player-state item container has an invalid slot count" }
         }
+    }
+
+    private fun DataInputStream.skipBlob() {
+        val length = readInt()
+        require(length in 1..maxItemBlobBytes) { "Player-state item payload has an invalid size" }
+        skipNBytes(length.toLong())
+    }
 
     private fun DataOutputStream.writeNullableItem(item: ItemStack?) {
         val normalized = item?.takeUnless(ItemStack::isEmpty)
         if (normalized == null) writeInt(-1) else writeBlob(itemCodec.encodeItem(normalized))
     }
 
-    private fun DataInputStream.readNullableItem(): ItemStack? {
+    private fun DataInputStream.readNullableItem(nativeItems: Boolean): ItemStack? {
         val length = readInt()
         if (length == -1) return null
         require(length in 1..maxItemBlobBytes) { "Player-state item payload has an invalid size" }
+        if (!nativeItems) { skipNBytes(length.toLong()); return null }
         return itemCodec.decodeItem(ByteArray(length).also(::readFully)).takeUnless(ItemStack::isEmpty)
     }
 

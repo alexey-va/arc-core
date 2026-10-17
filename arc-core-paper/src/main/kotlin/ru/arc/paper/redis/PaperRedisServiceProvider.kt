@@ -3,6 +3,8 @@ package ru.arc.paper.redis
 import org.bukkit.plugin.Plugin
 import org.bukkit.plugin.ServicePriority
 import org.bukkit.plugin.ServicesManager
+import ru.arc.core.BoundedAsyncExecutor
+import ru.arc.core.JvmShutdownDrain
 import ru.arc.paper.api.ArcRedisDiagnostics
 import ru.arc.paper.api.ArcRedisLease
 import ru.arc.paper.api.ArcRedisListener
@@ -37,10 +39,19 @@ class PaperRedisServiceProvider private constructor(
     ) : this(plugin, SharedPaperRedisService(managerFactory))
 
     init {
-        check(services.load(ArcRedisService::class.java) == null) {
-            "An ArcRedisService provider is already registered"
+        var registered = false
+        try {
+            check(services.load(ArcRedisService::class.java) == null) {
+                "An ArcRedisService provider is already registered"
+            }
+            services.register(ArcRedisService::class.java, service, plugin, ServicePriority.Normal)
+            registered = true
+            JvmShutdownDrain("arc-redis-provider", service.drainFuture()) { service.closeAsync() }
+        } catch (failure: Throwable) {
+            if (registered) services.unregister(ArcRedisService::class.java, service)
+            service.closeAsync()
+            throw failure
         }
-        services.register(ArcRedisService::class.java, service, plugin, ServicePriority.Normal)
     }
 
     /** Selects the host's default connection for future [PaperRedisClient.openPrimary] calls. */
@@ -58,6 +69,12 @@ class PaperRedisServiceProvider private constructor(
         services.unregister(ArcRedisService::class.java, service)
         service.close()
     }
+
+    /** Unregister on Paper immediately; physical transport cleanup drains on its worker. */
+    fun closeAsync(): CompletableFuture<Unit> {
+        close()
+        return service.closeAsync()
+    }
 }
 
 private class SharedPaperRedisService(
@@ -65,6 +82,12 @@ private class SharedPaperRedisService(
 ) : ArcRedisService {
     private val monitor = Any()
     private val groups = linkedMapOf<ConnectionIdentity, RedisGroup>()
+    private val creating = linkedMapOf<ConnectionIdentity, CompletableFuture<Unit>>()
+    private val cleanup = BoundedAsyncExecutor("arc-redis-close", 1, MAX_CONNECTION_GROUPS, false)
+    private val drained = CompletableFuture<Unit>()
+    private var drainScheduled = false
+    private var retiring = 0
+    private var cleanupFailure: Throwable? = null
     private var primary: ConnectionIdentity? = null
     private var telemetrySink: RedisTelemetrySink = NoOpRedisTelemetrySink
     private var closed = false
@@ -72,11 +95,45 @@ private class SharedPaperRedisService(
     override fun acquire(owner: String, settings: ArcRedisSettings, origin: String): ArcRedisLease {
         require(owner.isNotBlank()) { "Redis lease owner cannot be blank" }
         require(origin.isNotBlank()) { "Redis origin cannot be blank" }
-        synchronized(monitor) {
-            check(!closed) { "ArcRedisService is closed" }
-            val identity = ConnectionIdentity(settings, origin)
-            val group = groups[identity] ?: createGroup(identity).also { groups[identity] = it }
-            return Lease(group, owner).also { group.leases += it }
+        val identity = ConnectionIdentity(settings, origin)
+        while (true) {
+            var creator = false
+            val prepared = synchronized(monitor) {
+                check(!closed) { "ArcRedisService is closed" }
+                groups[identity]?.let { group ->
+                    return Lease(group, owner).also { group.leases += it }
+                }
+                creating[identity] ?: run {
+                    check(groups.size + creating.size + retiring < MAX_CONNECTION_GROUPS) {
+                        "ArcRedisService connection capacity reached"
+                    }
+                    CompletableFuture<Unit>().also { creating[identity] = it; creator = true }
+                }
+            }
+            if (!creator) {
+                // This is a worker-only cold acquisition, never a diagnostics/native lock.
+                prepared.join()
+                continue
+            }
+            try {
+                val group = createGroup(identity)
+                synchronized(monitor) {
+                    if (closed) retire(group) else {
+                        group.manager.installTelemetry(telemetrySink)
+                        groups[identity] = group
+                    }
+                    creating.remove(identity, prepared)
+                    completeDrain()
+                }
+                prepared.complete(Unit)
+            } catch (failure: Throwable) {
+                synchronized(monitor) {
+                    creating.remove(identity, prepared)
+                    completeDrain()
+                }
+                prepared.completeExceptionally(failure)
+                throw failure
+            }
         }
     }
 
@@ -115,23 +172,51 @@ private class SharedPaperRedisService(
     }
 
     override fun close() {
-        synchronized(monitor) {
+        val closing = synchronized(monitor) {
             if (closed) return
             closed = true
             primary = null
             telemetrySink = NoOpRedisTelemetrySink
-            groups.values.forEach { group ->
-                group.leases.forEach { lease ->
-                    lease.open = false
-                    lease.listeners.clear()
-                }
-                group.listeners.clear()
-                group.dispatchers.clear()
-                group.manager.installTelemetry(NoOpRedisTelemetrySink)
-                group.manager.close()
-            }
-            groups.clear()
+            groups.values.flatMap { it.leases }.filterNot { it.retainedDuringShutdown }
         }
+        closing.forEach(::release)
+        synchronized(monitor) { completeDrain() }
+    }
+
+    fun drainFuture(): CompletableFuture<Unit> = drained.copy()
+
+    fun closeAsync(): CompletableFuture<Unit> {
+        close()
+        return drained.copy()
+    }
+
+    /** Only short bookkeeping is performed under monitor; no socket close can enter it. */
+    private fun retire(group: RedisGroup) {
+        group.listeners.clear()
+        group.dispatchers.clear()
+        retiring++
+        cleanup.submit {
+            group.manager.installTelemetry(NoOpRedisTelemetrySink)
+            group.manager.close()
+        }.whenComplete { _, failure ->
+            synchronized(monitor) {
+                retiring--
+                if (failure != null) {
+                    cleanupFailure?.addSuppressed(failure) ?: run { cleanupFailure = failure }
+                }
+                completeDrain()
+            }
+        }
+    }
+
+    private fun completeDrain() {
+        if (!closed || groups.isNotEmpty() || creating.isNotEmpty() || retiring != 0 || drainScheduled) return
+        drainScheduled = true
+        val failure = cleanupFailure
+        cleanup.execute {
+            if (failure == null) drained.complete(Unit) else drained.completeExceptionally(failure)
+        }
+        cleanup.close()
     }
 
     private fun createGroup(identity: ConnectionIdentity): RedisGroup {
@@ -141,7 +226,7 @@ private class SharedPaperRedisService(
                 RedisConnection(settings.host, settings.port, settings.username, settings.password),
                 identity.origin,
             )
-        return RedisGroup(identity, manager).also { manager.installTelemetry(telemetrySink) }
+        return RedisGroup(identity, manager)
     }
 
     private fun register(
@@ -198,11 +283,9 @@ private class SharedPaperRedisService(
         lease.group.manager.reconcileSubscriptions()
         if (lease.group.leases.isEmpty()) {
             groups.remove(lease.group.identity, lease.group)
-            lease.group.listeners.clear()
-            lease.group.dispatchers.clear()
-            lease.group.manager.installTelemetry(NoOpRedisTelemetrySink)
-            lease.group.manager.close()
+            retire(lease.group)
         }
+        completeDrain()
     }
 
     private fun dispatch(
@@ -225,7 +308,7 @@ private class SharedPaperRedisService(
     }
 
     private fun checkLeaseOpen(lease: Lease) {
-        check(!closed && lease.open) { "Redis lease for ${lease.owner} is closed" }
+        check((!closed || lease.retainedDuringShutdown) && lease.open) { "Redis lease for ${lease.owner} is closed" }
     }
 
     private fun <T> failedLeaseOperation(lease: Lease): CompletableFuture<T> =
@@ -237,8 +320,16 @@ private class SharedPaperRedisService(
     ) : ArcRedisLease {
         @Volatile
         var open = true
+        var retainedDuringShutdown = false
 
         val listeners = linkedMapOf<String, ArcRedisListener>()
+
+        override fun retainDuringShutdown() = synchronized(monitor) {
+            if (!retainedDuringShutdown) {
+                check(!closed && open) { "Redis lease cannot begin a drain after provider shutdown" }
+                retainedDuringShutdown = true
+            }
+        }
 
         override fun publish(channel: String, message: String) {
             synchronized(monitor) { checkLeaseOpen(this) }
@@ -292,7 +383,7 @@ private class SharedPaperRedisService(
 
         override fun close() = release(this)
 
-        private fun isOpen(): Boolean = synchronized(monitor) { !closed && open }
+        private fun isOpen(): Boolean = synchronized(monitor) { (!closed || retainedDuringShutdown) && open }
     }
 
     private inner class RedisGroup(
@@ -310,6 +401,7 @@ private class SharedPaperRedisService(
     )
 
     private companion object {
+        const val MAX_CONNECTION_GROUPS = 128
         val LOGGER: java.util.logging.Logger = java.util.logging.Logger.getLogger(SharedPaperRedisService::class.java.name)
     }
 }

@@ -25,6 +25,8 @@ fun interface ArcRedisListener {
 
 /** A caller-owned view over a provider-owned Redis connection group. */
 interface ArcRedisLease : AutoCloseable {
+    /** Retain an existing lease for the consumer's terminal async flush; close it after the flush. */
+    fun retainDuringShutdown() = Unit
     fun publish(channel: String, message: String)
 
     fun saveMap(key: String, map: Map<String, String>)
@@ -67,6 +69,7 @@ interface ArcRedisLease : AutoCloseable {
 
 /** Runtime service installed by the Paper host and resolved through Bukkit ServicesManager. */
 interface ArcRedisService : AutoCloseable {
+    /** Cold transport construction is worker-only; capture this service through Paper before dispatch. */
     fun acquire(owner: String, settings: ArcRedisSettings, origin: String): ArcRedisLease
 
     /** Acquires the host-configured primary group without disclosing its settings to the borrower. */

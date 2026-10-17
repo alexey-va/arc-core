@@ -2,6 +2,8 @@ package ru.arc.paper.sql
 
 import org.bukkit.plugin.Plugin
 import org.bukkit.plugin.ServicePriority
+import ru.arc.core.BoundedAsyncExecutor
+import ru.arc.core.JvmShutdownDrain
 import ru.arc.paper.api.ArcSqlGroupSnapshot
 import ru.arc.paper.api.ArcSqlLease
 import ru.arc.paper.api.ArcSqlService
@@ -17,12 +19,9 @@ import java.sql.Connection
 import java.sql.SQLException
 import java.sql.SQLFeatureNotSupportedException
 import java.util.concurrent.CompletableFuture
-import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executor
-import java.util.concurrent.ForkJoinPool
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.logging.Logger
 import java.util.IdentityHashMap
@@ -47,17 +46,32 @@ class PaperSqlServiceProvider private constructor(
     ) : this(plugin, SharedPaperSqlService(runtimeFactory, plugin.logger, shutdownTimeoutMs))
 
     init {
-        check(services.load(ArcSqlService::class.java) == null) {
-            "An ArcSqlService provider is already registered"
+        var registered = false
+        try {
+            check(services.load(ArcSqlService::class.java) == null) {
+                "An ArcSqlService provider is already registered"
+            }
+            services.register(ArcSqlService::class.java, service, plugin, ServicePriority.Normal)
+            registered = true
+            JvmShutdownDrain("arc-sql-provider", service.drainFuture()) { service.shutdownAsync() }
+        } catch (failure: Throwable) {
+            if (registered) services.unregister(ArcSqlService::class.java, service)
+            service.shutdownAsync()
+            throw failure
         }
-        services.register(ArcSqlService::class.java, service, plugin, ServicePriority.Normal)
     }
 
     fun snapshot(): List<ArcSqlGroupSnapshot> = service.snapshot()
 
     override fun close() {
         services.unregister(ArcSqlService::class.java, service)
-        service.shutdown()
+        service.shutdownAsync()
+    }
+
+    /** Detach on Paper immediately; completion observes accepted work and physical pool drain. */
+    fun closeAsync(): CompletableFuture<Unit> {
+        close()
+        return service.shutdownAsync()
     }
 }
 
@@ -78,11 +92,13 @@ private class SharedPaperSqlService(
 
     private val monitor = Any()
     private val groups = LinkedHashMap<ArcSqlSettings, SqlGroup>()
+    private val creating = LinkedHashMap<ArcSqlSettings, CompletableFuture<Unit>>()
     private val acceptedLease = ThreadLocal<Lease?>()
     private val shutdownComplete = CompletableFuture<Unit>()
+    private val cleanup = BoundedAsyncExecutor("arc-sql-close", 1, MAX_CONNECTION_GROUPS, false)
+    private var drainScheduled = false
     private var closed = false
     private var nextGroupId = 1L
-    private var shutdownDeadlineNanos: Long? = null
     private var retiringGroups = 0L
     private var cleanupFailures = 0L
 
@@ -94,20 +110,57 @@ private class SharedPaperSqlService(
         require(owner.isNotBlank() && owner.length <= MAX_OWNER_LENGTH) {
             "SQL lease owner must contain 1 to $MAX_OWNER_LENGTH characters"
         }
-        synchronized(monitor) {
-            check(!closed) { "ArcSqlService is closed" }
-            val group = groups[settings] ?: createGroup(settings).also { groups[settings] = it }
-            val lease = Lease(group, owner)
-            group.borrowers++
-            group.leases += lease
-            if (owner in group.owners || group.owners.size < MAX_OWNER_LABELS) {
-                group.owners[owner] = (group.owners[owner] ?: 0) + 1
-                lease.ownerTracked = true
-            } else {
-                group.unattributedBorrowers++
+        while (true) {
+            var createId: Long? = null
+            val prepared = synchronized(monitor) {
+                check(!closed) { "ArcSqlService is closed" }
+                groups[settings]?.let { group -> return newLease(group, owner) }
+                creating[settings] ?: run {
+                    check(groups.size + creating.size + retiringGroups < MAX_CONNECTION_GROUPS) {
+                        "ArcSqlService connection capacity reached"
+                    }
+                    CompletableFuture<Unit>().also {
+                        creating[settings] = it
+                        createId = nextGroupId++
+                    }
+                }
             }
-            return lease
+            if (createId == null) {
+                // Only acquisition workers wait; diagnostics and shutdown never share this wait.
+                prepared.join()
+                continue
+            }
+            try {
+                val group = createGroup(settings, createId)
+                synchronized(monitor) {
+                    if (closed) maybeRetire(group) else groups[settings] = group
+                    creating.remove(settings, prepared)
+                    completeShutdownIfDrained()
+                }
+                prepared.complete(Unit)
+            } catch (failure: Throwable) {
+                synchronized(monitor) {
+                    creating.remove(settings, prepared)
+                    completeShutdownIfDrained()
+                }
+                prepared.completeExceptionally(failure)
+                throw failure
+            }
         }
+    }
+
+    /** Caller holds monitor; no pool or native operations occur here. */
+    private fun newLease(group: SqlGroup, owner: String): ArcSqlLease {
+        val lease = Lease(group, owner)
+        group.borrowers++
+        group.leases += lease
+        if (owner in group.owners || group.owners.size < MAX_OWNER_LABELS) {
+            group.owners[owner] = (group.owners[owner] ?: 0) + 1
+            lease.ownerTracked = true
+        } else {
+            group.unattributedBorrowers++
+        }
+        return lease
     }
 
     override fun snapshot(): List<ArcSqlGroupSnapshot> = synchronized(monitor) {
@@ -131,36 +184,27 @@ private class SharedPaperSqlService(
             }
     }
 
-    fun shutdown() {
+    fun drainFuture(): CompletableFuture<Unit> = shutdownComplete.copy()
+
+    fun shutdownAsync(): CompletableFuture<Unit> {
         val leases = synchronized(monitor) {
-            if (closed) {
-                emptyList()
-            } else {
-                closed = true
-                shutdownDeadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(shutdownTimeoutMs)
-                groups.values.flatMap { it.leases }
-            }
+            if (closed) return shutdownComplete.copy()
+            closed = true
+            groups.values.flatMap { it.leases }.filterNot { it.retainedDuringShutdown }
         }
         leases.forEach(Lease::close)
-        val deadline = synchronized(monitor) {
+        synchronized(monitor) {
+            groups.values.toList().forEach(::maybeRetire)
             completeShutdownIfDrained()
-            shutdownDeadlineNanos ?: System.nanoTime()
         }
-        val remainingNanos = (deadline - System.nanoTime()).coerceAtLeast(0L)
-        try {
-            shutdownComplete.get(remainingNanos, TimeUnit.NANOSECONDS)
-        } catch (_: TimeoutException) {
-            warnShutdownPending("timed out")
-        } catch (_: InterruptedException) {
-            Thread.currentThread().interrupt()
-            warnShutdownPending("was interrupted")
-        } catch (_: ExecutionException) {
-            warnShutdownPending("could not close all pools")
+        CompletableFuture.delayedExecutor(shutdownTimeoutMs, TimeUnit.MILLISECONDS).execute {
+            if (!shutdownComplete.isDone) warnShutdownPending("is still draining")
         }
+        return shutdownComplete.copy()
     }
 
-    private fun createGroup(settings: ArcSqlSettings): SqlGroup {
-        val id = nextGroupId++
+    /** Blocking worker-only construction, deliberately outside the provider monitor. */
+    private fun createGroup(settings: ArcSqlSettings, id: Long): SqlGroup {
         val runtimeName = "arc-sql-$id"
         val runtime = runtimeFactory(settings.toSqlConnectionConfig(), runtimeName)
         return try {
@@ -178,7 +222,7 @@ private class SharedPaperSqlService(
 
     private fun execute(lease: Lease, command: Runnable, completion: Boolean) {
         synchronized(monitor) {
-            if (closed || !lease.open || lease.group.retiring) {
+            if ((closed && !lease.retainedDuringShutdown) || !lease.open || lease.group.retiring) {
                 throw RejectedExecutionException("SQL lease is closed")
             }
             val group = lease.group
@@ -229,7 +273,7 @@ private class SharedPaperSqlService(
 
     private fun beginConnection(lease: Lease) {
         synchronized(monitor) {
-            if (lease.group.retiring || (closed && acceptedLease.get() !== lease) ||
+            if (lease.group.retiring || (closed && !lease.retainedDuringShutdown && acceptedLease.get() !== lease) ||
                 (!lease.open && acceptedLease.get() !== lease)
             ) {
                 throw SQLException("SQL lease is closed")
@@ -276,8 +320,7 @@ private class SharedPaperSqlService(
         group.retiring = true
         if (groups[group.settings] === group) groups.remove(group.settings)
         retiringGroups++
-        CompletableFuture.runAsync(
-            {
+        cleanup.execute {
                 var success = true
                 try {
                     try {
@@ -299,16 +342,19 @@ private class SharedPaperSqlService(
                         completeShutdownIfDrained()
                     }
                 }
-            },
-            ForkJoinPool.commonPool(),
-        )
+        }
     }
 
-    /** Called only while holding [monitor]. */
+    /** Called only while holding [monitor]; arbitrary future continuations run outside it. */
     private fun completeShutdownIfDrained() {
-        if (closed && groups.isEmpty() && retiringGroups == 0L && cleanupFailures == 0L) {
-            shutdownComplete.complete(Unit)
+        if (!closed || groups.isNotEmpty() || creating.isNotEmpty() || retiringGroups != 0L || drainScheduled) return
+        drainScheduled = true
+        val failures = cleanupFailures
+        cleanup.execute {
+            if (failures == 0L) shutdownComplete.complete(Unit)
+            else shutdownComplete.completeExceptionally(IllegalStateException("Shared SQL pool cleanup failed"))
         }
+        cleanup.close()
     }
 
     private fun warnShutdownPending(reason: String) {
@@ -339,12 +385,21 @@ private class SharedPaperSqlService(
         @Volatile
         var open = true
 
+        var retainedDuringShutdown = false
+
         var ownerTracked = false
         val connections = IdentityHashMap<Connection, TrackedConnection>()
 
         override val dataSource: DataSource = LeaseDataSource(this)
         override val executor = Executor { command -> execute(this, command, completion = false) }
         override val completionExecutor = Executor { command -> execute(this, command, completion = true) }
+
+        override fun retainDuringShutdown() = synchronized(monitor) {
+            if (!retainedDuringShutdown) {
+                check(!closed && open) { "SQL lease cannot begin a drain after provider shutdown" }
+                retainedDuringShutdown = true
+            }
+        }
 
         override fun close() = release(this)
 
@@ -492,6 +547,7 @@ private class SharedPaperSqlService(
         )
 
     private companion object {
+        const val MAX_CONNECTION_GROUPS = 128
         const val MAX_OWNER_LABELS = 32
         const val MAX_OWNER_LENGTH = 64
         const val COMPLETION_THREADS = 2

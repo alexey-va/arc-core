@@ -1,5 +1,6 @@
 package ru.arc.paper.schematics
 
+import org.bukkit.Bukkit
 import org.bukkit.plugin.Plugin
 import org.bukkit.plugin.ServicePriority
 import ru.arc.core.BukkitTaskScheduler
@@ -34,23 +35,37 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /** Optional WorldEdit integration, installed and closed once by the ArcCore host. */
-class PaperSchematicServiceProvider(plugin: Plugin, settings: ArcSchematicCacheSettings) : AutoCloseable {
+class PaperSchematicServiceProvider(
+    plugin: Plugin,
+    settings: CompletableFuture<ArcSchematicCacheSettings>,
+) : AutoCloseable {
+    constructor(plugin: Plugin, settings: ArcSchematicCacheSettings) : this(plugin, CompletableFuture.completedFuture(settings))
+
     private val services = plugin.server.servicesManager
-    private val scheduler: TaskScheduler
-    private val service: SharedSchematicService
+    private val scheduler: TaskScheduler = BukkitTaskScheduler(plugin)
+    private val service = PreparingSchematicService()
+    private val closed = AtomicBoolean()
 
     init {
-        check(services.load(ArcSchematicService::class.java) == null) { "An ArcSchematicService provider is already registered" }
-        scheduler = BukkitTaskScheduler(plugin)
         try {
-            service = SharedSchematicService(settings, scheduler, WorldEditSchematicCodec(settings), System::nanoTime)
-            try {
-                services.register(ArcSchematicService::class.java, service, plugin, ServicePriority.Normal)
-            } catch (problem: Throwable) {
-                service.close()
-                throw problem
+            check(services.load(ArcSchematicService::class.java) == null) { "An ArcSchematicService provider is already registered" }
+            services.register(ArcSchematicService::class.java, service, plugin, ServicePriority.Normal)
+            settings.whenComplete { prepared, preparationFailure ->
+                if (preparationFailure != null) service.fail(preparationFailure)
+                else if (!closed.get()) {
+                    val attach = Runnable {
+                        if (!closed.get()) {
+                            try {
+                                service.attach(SharedSchematicService(prepared, scheduler, WorldEditSchematicCodec(prepared), System::nanoTime))
+                            } catch (problem: Throwable) { service.fail(problem) }
+                        }
+                    }
+                    if (Bukkit.isPrimaryThread()) attach.run()
+                    else try { scheduler.runSync(attach) } catch (problem: Throwable) { service.fail(problem) }
+                }
             }
         } catch (problem: Throwable) {
+            service.close()
             scheduler.close()
             throw problem
         }
@@ -59,6 +74,7 @@ class PaperSchematicServiceProvider(plugin: Plugin, settings: ArcSchematicCacheS
     fun diagnostics(): ArcSchematicDiagnostics = service.diagnostics()
 
     override fun close() {
+        if (!closed.compareAndSet(false, true)) return
         services.unregister(ArcSchematicService::class.java, service)
         try { service.close() } finally { scheduler.close() }
     }

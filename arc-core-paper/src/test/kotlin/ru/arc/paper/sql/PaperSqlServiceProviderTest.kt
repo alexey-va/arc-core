@@ -21,9 +21,71 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.CompletableFuture
 import javax.sql.DataSource
 
 class PaperSqlServiceProviderTest : StringSpec({
+    "consumer terminal drain retains an existing SQL lease across provider shutdown" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val runtime = mockRuntime(mockk())
+            every { runtime.executor.execute(any()) } answers { firstArg<Runnable>().run() }
+            val provider = PaperSqlServiceProvider(paper.createSimplePlugin("DrainSqlHost")) { _, _ -> runtime }
+            val terminal = CompletableFuture<Void>()
+            val binding = PaperSqlServices.installConsumer(paper.createSimplePlugin("DrainConsumer"), terminal)
+            val borrowed = SqlRuntime.create(SqlConnectionConfig(
+                host = "localhost", database = "arc_test", username = "test", password = "secret",
+                sslMode = SqlSslMode.DISABLED, minimumIdle = 0, maximumPoolSize = 2,
+            ), "drain-consumer-test")
+            try {
+                binding.close()
+                val drain = provider.closeAsync()
+                drain.isDone shouldBe false
+                var completed = false
+                borrowed.executor.execute { completed = true }
+                completed shouldBe true
+                provider.snapshot().single().borrowers shouldBe 1
+                terminal.complete(null)
+                drain.get(5, TimeUnit.SECONDS)
+                shouldThrow<RejectedExecutionException> { borrowed.executor.execute {} }
+                verify(exactly = 1) { runtime.close() }
+            } finally {
+                terminal.complete(null)
+                borrowed.close()
+                binding.close()
+                provider.closeAsync().get(5, TimeUnit.SECONDS)
+            }
+        }
+    }
+
+    "cold acquisition cannot hold diagnostics or shutdown and its late pool is reclaimed" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val entered = CountDownLatch(1)
+            val unblock = CountDownLatch(1)
+            val runtime = mockRuntime(mockk())
+            val provider = PaperSqlServiceProvider(paper.createSimplePlugin("ColdSqlHost")) { _, _ ->
+                entered.countDown()
+                check(unblock.await(5, TimeUnit.SECONDS))
+                runtime
+            }
+            val service = checkNotNull(paper.server.servicesManager.load(ArcSqlService::class.java))
+            val acquiring = CompletableFuture.supplyAsync { service.acquire("consumer", settings()) }
+            try {
+                entered.await(5, TimeUnit.SECONDS) shouldBe true
+                provider.snapshot() shouldBe emptyList()
+                val drain = provider.closeAsync()
+                drain.isDone shouldBe false
+                unblock.countDown()
+                shouldThrow<Exception> { acquiring.get(5, TimeUnit.SECONDS) }
+                drain.get(5, TimeUnit.SECONDS)
+                verify(exactly = 1) { runtime.close() }
+                provider.snapshot() shouldBe emptyList()
+            } finally {
+                unblock.countDown()
+                provider.closeAsync().get(5, TimeUnit.SECONDS)
+            }
+        }
+    }
+
     "identical full settings share one pool and leases close independently" {
         MockBukkitTestRuntime.open().use { paper ->
             val runtime = mockRuntime(mockk())
@@ -82,7 +144,7 @@ class PaperSqlServiceProviderTest : StringSpec({
         }
     }
 
-    "provider close drains accepted queued completion work and rejects later work" {
+    "provider close returns immediately while accepted completion work drains" {
         MockBukkitTestRuntime.open().use { paper ->
             val runtimeClosed = CountDownLatch(1)
             val runtime = mockRuntime(mockk())
@@ -116,7 +178,7 @@ class PaperSqlServiceProviderTest : StringSpec({
                 closeReturned.set(true)
                 delayedRelease.join(5_000)
 
-                returnedBeforeDrain.get() shouldBe false
+                returnedBeforeDrain.get() shouldBe true
                 finished.await(5, TimeUnit.SECONDS) shouldBe true
                 shouldThrow<RejectedExecutionException> { lease.completionExecutor.execute { } }
                 runtimeClosed.await(5, TimeUnit.SECONDS) shouldBe true

@@ -31,6 +31,7 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.time.Duration
 import java.util.Optional
+import java.util.IdentityHashMap
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
@@ -64,6 +65,7 @@ open class Config(
     private val comments = ConcurrentHashMap<String, String>()
 
     private val nodeLock = ReentrantReadWriteLock()
+    private var mutationRevision = 0L
 
     @Volatile
     var version: Int = 0
@@ -753,16 +755,25 @@ open class Config(
 
     // ── Load / Save / Reload ───────────────────────────────────────────────
 
-    open fun reload(): Unit =
+    open fun reload() {
+        val expectedRevision = nodeLock.read { mutationRevision }
+        val candidate = prepareReload()
         nodeLock.write {
-            rootNode = loadNode()
+            check(mutationRevision == expectedRevision) { "Config changed during reload preparation; candidate was not applied" }
+            rootNode = candidate
+            mutationRevision++
             version++
         }
+    }
+
+    /** Blocking worker preparation; publication never holds a node lock across I/O. */
+    protected open fun prepareReload(): MappingNode = loadNode()
 
     /** Removes a key from the YAML tree (no-op if missing). */
     open fun removeKey(path: String) {
         nodeLock.write {
             removeKeyFromNode(rootNode, path.split("."))
+            mutationRevision++
         }
     }
 
@@ -835,7 +846,9 @@ open class Config(
                 .filterNot { tuple -> (tuple.keyNode as? ScalarNode)?.value in excludedRootKeys }
                 .toMutableList(),
         )
-        val changed = nodeLock.write { mergeMissingMappings(rootNode, filteredDefaults) }
+        val changed = nodeLock.write {
+            mergeMissingMappings(rootNode, filteredDefaults).also { if (it) mutationRevision++ }
+        }
         if (changed) saveStrict()
         return changed
     }
@@ -920,6 +933,7 @@ open class Config(
         keyPath: String,
         value: Any,
     ) = nodeLock.write {
+        mutationRevision++
         val parts = keyPath.split(".")
         var current = rootNode
         for (i in 0 until parts.size - 1) {
@@ -944,27 +958,52 @@ open class Config(
         current.value.addAll(newTuples)
     }
 
-    private fun serializeYaml(): String =
-        nodeLock.write {
-            applyComments(rootNode, "")
-            val writer = StringWriter()
-            val streamWriter =
-                object : StreamDataWriter {
-                    override fun write(str: String) = writer.write(str)
+    private fun serializeYaml(): String {
+        // Readers may continue while a detached tree is captured; YAML
+        // comment application/emission never owns the live tree's write lock.
+        val snapshot = nodeLock.read { copyNode(rootNode, IdentityHashMap()) as MappingNode }
+        applyComments(snapshot, "")
+        val writer = StringWriter()
+        val streamWriter =
+            object : StreamDataWriter {
+                override fun write(str: String) = writer.write(str)
 
-                    override fun write(
-                        str: String,
-                        off: Int,
-                        len: Int,
-                    ) = writer.write(str, off, len)
+                override fun write(
+                    str: String,
+                    off: Int,
+                    len: Int,
+                ) = writer.write(str, off, len)
 
-                    override fun flush() = writer.flush()
-                }
-            val emitter = Emitter(dumpSettings, streamWriter)
-            val serialize = Serialize(dumpSettings)
-            for (event in serialize.serializeOne(rootNode)) emitter.emit(event)
-            writer.toString()
+                override fun flush() = writer.flush()
+            }
+        val emitter = Emitter(dumpSettings, streamWriter)
+        val serialize = Serialize(dumpSettings)
+        for (event in serialize.serializeOne(snapshot)) emitter.emit(event)
+        return writer.toString()
+    }
+
+    private fun copyNode(node: Node, copies: IdentityHashMap<Node, Node>): Node {
+        copies[node]?.let { return it }
+        val copy = when (node) {
+            is ScalarNode -> ScalarNode(node.tag, node.value, node.scalarStyle)
+            is MappingNode -> MappingNode(node.tag, mutableListOf(), node.flowStyle)
+            is SequenceNode -> SequenceNode(node.tag, mutableListOf(), node.flowStyle)
+            else -> error("Unsupported YAML node: ${node.nodeType}")
         }
+        copies[node] = copy
+        when {
+            node is MappingNode && copy is MappingNode -> node.value.forEach {
+                copy.value.add(NodeTuple(copyNode(it.keyNode, copies), copyNode(it.valueNode, copies)))
+            }
+            node is SequenceNode && copy is SequenceNode -> node.value.forEach { copy.value.add(copyNode(it, copies)) }
+        }
+        copy.anchor = node.anchor
+        copy.isRecursive = node.isRecursive
+        copy.blockComments = node.blockComments?.toList()
+        copy.inLineComments = node.inLineComments?.toList()
+        copy.endComments = node.endComments?.toList()
+        return copy
+    }
 
     private fun validateStructuredValue(
         value: Any,

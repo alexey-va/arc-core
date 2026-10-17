@@ -11,6 +11,8 @@ import ru.arc.paper.testing.MockBukkitTestRuntime
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.UUID
+import ru.arc.core.BoundedAsyncExecutor
+import java.util.concurrent.TimeUnit
 
 class PaperPlayerStateCodecTest : FreeSpec({
     lateinit var paper: MockBukkitTestRuntime
@@ -36,6 +38,29 @@ class PaperPlayerStateCodecTest : FreeSpec({
         envelope.formatVersion shouldBe 1
         envelope.sha256.length shouldBe 64
         codec.decode(envelope) shouldBe snapshot
+    }
+
+    "worker validation authenticates the complete outer structure without decoding native items" {
+        val native = PaperPlayerStateCodec()
+        val state = snapshot()
+        val payload = native.encodePayload(state)
+        val noNativeAccess = object : PaperItemStackBinaryCodec {
+            override fun encodeItems(items: List<ItemStack?>): ByteArray = error("native encode")
+            override fun decodeItems(payload: ByteArray): List<ItemStack?> = error("native decode")
+            override fun encodeItem(item: ItemStack): ByteArray = error("native encode")
+            override fun decodeItem(payload: ByteArray): ItemStack = error("native decode")
+        }
+        val pure = PaperPlayerStateCodec(noNativeAccess)
+        BoundedAsyncExecutor("player-envelope-test").use { worker ->
+            worker.submit {
+                val envelope = pure.wrapPayload(payload)
+                pure.validateEnvelope(envelope) shouldBe state.playerId
+                shouldThrow<IllegalArgumentException> { pure.validateEnvelope(envelope.copy(sha256 = "0".repeat(64))) }
+                shouldThrow<IllegalArgumentException> { pure.validateEnvelope(pure.wrapPayload(payload + byteArrayOf(1))) }
+                shouldThrow<Exception> { pure.validateEnvelope(pure.wrapPayload(payload.copyOf(60))) }
+                envelope
+            }.get(5, TimeUnit.SECONDS).let { native.decode(it) shouldBe state }
+        }
     }
 
     "rejects checksum mismatch, malformed Base64 and unsupported envelope versions" {

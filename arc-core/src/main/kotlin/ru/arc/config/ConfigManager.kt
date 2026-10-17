@@ -3,13 +3,16 @@ package ru.arc.config
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 object ConfigManager {
     /** Subdirectory of the plugin data folder where feature YAML files live (matches `/modules/` in the JAR). */
     const val MODULE_YAML_DIR = "modules"
 
-    private var version = 0
+    private val version = AtomicInteger()
     private val configMap = ConcurrentHashMap<String, Config>()
+    private data class ModulePath(val root: Path, val file: String)
+    private val modulePaths = ConcurrentHashMap<ModulePath, String>()
 
     @JvmStatic
     fun get(name: String): Config? = configMap[name]
@@ -26,6 +29,8 @@ object ConfigManager {
     /**
      * Path relative to [dataRoot] for a feature YAML file: `modules/name.yml` when that file exists
      * or when neither exists (new install), otherwise legacy `name.yml` at the data root.
+     * Cold resolution performs filesystem I/O and must be prepared on a worker.
+     * Ready reads are memory-only; [reloadAll] refreshes known paths on its worker.
      */
     @JvmStatic
     fun moduleYamlRelative(
@@ -35,6 +40,12 @@ object ConfigManager {
         require(fileName.endsWith(".yml") || fileName.endsWith(".yaml")) {
             "Expected *.yml / *.yaml file name, got: $fileName"
         }
+        val key = ModulePath(dataRoot, fileName)
+        return modulePaths.getOrPut(key) { resolveModulePath(key) }
+    }
+
+    private fun resolveModulePath(key: ModulePath): String {
+        val (dataRoot, fileName) = key
         val modular = dataRoot.resolve(MODULE_YAML_DIR).resolve(fileName)
         val legacy = dataRoot.resolve(fileName)
         return try {
@@ -74,18 +85,26 @@ object ConfigManager {
 
     @JvmStatic
     fun reloadAll() {
-        version++
+        // Worker-only: prepare a newly selected legacy/modular file before
+        // publishing its path, so warm owning-thread getters never touch disk.
+        modulePaths.keys.forEach { key ->
+            val relative = resolveModulePath(key)
+            of(key.root, relative)
+            modulePaths[key] = relative
+        }
         configMap.values.forEach { it.load() }
+        version.incrementAndGet()
     }
 
     @JvmStatic
-    fun getVersion(): Int = version
+    fun getVersion(): Int = version.get()
 
     /** Clears all cached configs. Used in tests to ensure clean state. */
     @JvmStatic
     fun clear() {
         configMap.clear()
-        version = 0
+        modulePaths.clear()
+        version.set(0)
     }
 
     /** Returns an empty config that returns defaults for all reads. Used in tests. */

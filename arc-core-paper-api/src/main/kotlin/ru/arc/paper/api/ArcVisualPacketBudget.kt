@@ -33,4 +33,6 @@ enum class VisualPacketAdmission {
     VIEWER_RATE,
     SERVER_RATE,
     CLOSED,
+    /** The host has registered the provider and is preparing its configured policy. */
+    STARTING,
 }

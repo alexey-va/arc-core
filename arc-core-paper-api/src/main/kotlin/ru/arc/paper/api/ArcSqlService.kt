@@ -67,6 +67,14 @@ interface ArcSqlLease : AutoCloseable {
     /** Reserved lane for durable completion work that must progress under pool saturation. */
     val completionExecutor: Executor
 
+    /**
+     * Before provider shutdown, retain this existing lease for an asynchronous
+     * terminal store drain. No new pool is acquired. The consumer MUST close
+     * the lease after its drain completes; native gameplay admission is already
+     * stopped by the consumer. Legacy providers retain their old close behavior.
+     */
+    fun retainDuringShutdown() = Unit
+
     /** Aborts a connection issued by this lease so the provider pool cannot reuse an uncertain session. */
     fun evictConnection(connection: Connection)
 
@@ -75,6 +83,7 @@ interface ArcSqlLease : AutoCloseable {
 
 /** Host-owned SQL service registered through the platform service manager. */
 interface ArcSqlService {
+    /** Cold acquisition may connect/migrate/create workers; invoke on an I/O worker, never a tick thread. */
     fun acquire(owner: String, settings: ArcSqlSettings): ArcSqlLease
 
     /** Secret-free snapshot of currently borrowed pool groups. */

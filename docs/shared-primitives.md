@@ -18,7 +18,9 @@ CI verifier reject missing modules and high-signal local duplicates.
 | Pixel padding and measured component alignment | `arc-core`: `PixelSpacing`, `ComponentTextLayout`, `GlyphWidths`, `TextAlignment` | [Contract and examples](component-text-layout.md). Standalone padding selects existing pack glyphs. Alignment adds verified font advances and bounded wrapping. Handle typed unsupported results; subtract widget padding and verify the loaded pack and client pixels. |
 | Additive bundled config upgrade | `arc-core`: `Config.mergeMissingFromBundled` | Copy only missing mapping entries recursively, preserve operator and unknown values, optionally exclude environment-owned root sections, persist atomically, and leave explicit type conflicts for feature validation. |
 | Player/backend identifiers at a network boundary | `arc-core`: `NetworkPlayerName`, `BackendServerId` | Validate once, then pass the typed value. Widen the explicit policy only for a verified external namespace. |
-| Reload-safe scheduled work | `arc-core`: `LifecycleTaskScope`, `whenCompleteSync` | One scope owns one lifecycle. `restart()` cancels old work and stale epoch tokens cannot schedule or execute work. |
+| Reload-safe scheduled work | `arc-core`: `LifecycleTaskScope`, `whenCompleteSync` | One scope owns one lifecycle. `restart()` cancels old work and stale epoch tokens cannot schedule or execute work. `callSync` completes queued native promises exceptionally on cancellation; a fire-and-forget callback may intentionally be dropped. |
+| Bounded I/O and pure computation | `arc-core`: `BoundedAsyncExecutor`, `JvmShutdownDrain` | Explicit owned workers, bounded admission and rejection without inline fallback. Nonwaiting close drains accepted work; `closeAsync(finalizer)` reserves the first close's terminal flush on a worker after all accepted work. A cancelled observer does not undo an accepted write. The owner must close on disable; the JVM hook waits up to 120 seconds without sealing a consumer's still-needed terminal lane. Forced termination still requires durable recovery. Shared cleanup lanes disable their individual hook and are protected by the provider's full drain instead. |
+| Aggregate native tick work | `arc-core`: `BudgetedTaskQueue` | One round-robin count/time budget per runtime across requests. `submit` is owning-thread only; `call` marshals a bounded stage from a worker. Fence resumption by operation/lifecycle; close the queue before its scope. One native call cannot be preempted. |
 | Bounded crash-safe local state | `arc-core`: `AtomicFileStore` | Resolve below a trusted root, reject traversal/symlinks, validate before and after an atomic replacement, and bound bytes. |
 | Durable per-record recovery | `arc-core`: `DurableRecordJournal` | Commit one bounded record per safe identifier, verify the durable readback, list deterministically, and acknowledge idempotently. Keep domain transitions in the consumer. |
 | Durable recovery call order | `arc-core`: `DurableRecoveryWorkflow` | Commit and compare the durable readback before mutation; restore and verify before exact acknowledgement. Storage, executors, and domain transitions remain injected. |
@@ -40,8 +42,8 @@ CI verifier reject missing modules and high-signal local duplicates.
 | One-shot viewer dust effects | `arc-core-paper`: `PaperViewerParticles` | Capture dust values on the Paper thread and send one viewer-only packet through `PaperVisualPackets`; pressure, closed channels, owner close, and invalidated session/target effects are dropped without retry or history. Caller owns audience and cadence. See [visual packet budgets](visual-packets.md). |
 | Viewer-only entity glow | `arc-core-paper`: `PaperViewerEntityGlow` | Create one lifecycle owner after PacketEvents initializes. Set or clear a viewer/entity pair on Paper's primary thread; Core overrides only the common entity-flags glow bit on that viewer's outbound metadata and never changes native entity state. `set(..., false)`, viewer disconnect, and `close()` restore or clear the override. |
 | Shared per-viewer inspection card | `arc-core-paper-api`: `ArcInspectionService`, `ArcInspectionProvider`, `ArcInspectionFrame`; `arc-core-paper`: `PaperArcInspectionService` | One Paper owner arbitrates sources by priority and renders one client-only hologram or bossbar per viewer. `null` falls through; an empty frame occupies the target and suppresses lower sources. The host supplies polling/preferences; providers supply hit resolution, content and an optional immutable `InspectionHologramAnchor` at the target top. Anchored cards stay upright in world space and ignore viewer-relative offsets. |
-| Shared Paper SQL pools | `arc-core-paper-api`: `ArcSqlService`; `arc-core-paper`: `PaperSqlServices` | Install the plugin-local factory before creating any `SqlRuntime`; the ARC host owns matching pools and executors. Close stores before the binding. Exact settings, including credentials and limits, define compatibility. Accepted tasks, reserved durable completions, and held connections drain before physical close. See [shared Paper services](shared-paper-services.md). |
-| Shared Paper Redis transport | `arc-core-paper-api`: `ArcRedisService`; `arc-core-paper`: `PaperRedisClient` | Borrow an explicit connection and origin or the host primary profile. Each lease owns its listeners; close and unique-channel replacement never remove another plugin's subscription. Domain codecs and replay policy remain in the consumer. |
+| Shared Paper SQL pools | `arc-core-paper-api`: `ArcSqlService`; `arc-core-paper`: `PaperSqlServices` | Install the plugin-local factory on Paper before creating any `SqlRuntime` on a worker; the host owns matching pools and executors. `installConsumer(plugin, terminalDrain)` retains existing leases through the consumer's actual terminal flush even if the host stops first; close seals new acquisitions immediately. Complete the terminal drain on failure too. Exact settings, including credentials and limits, define compatibility. Accepted tasks, reserved durable completions, and held connections drain before physical close. See [shared Paper services](shared-paper-services.md). |
+| Shared Paper Redis transport | `arc-core-paper-api`: `ArcRedisService`; `arc-core-paper`: `PaperRedisClient` | Capture the typed service/owner on Paper and use the service overload to acquire on a worker. Borrow an explicit connection and origin or the host primary profile. Before host shutdown, use `retainDuringShutdown`/`closeAfter(actualTerminalDrain)` for a consumer that still needs terminal writes; a detached observer or fire-and-forget save is not a durable acknowledgement. Each lease owns its listeners; close and unique-channel replacement never remove another plugin's subscription. Domain codecs and replay policy remain in the consumer. |
 | Shared Paper technical metrics | `arc-core-paper-api`: `ArcMetricsService`; `arc-core-paper`: `PaperArcMetrics` | Open one stable owner scope, declare bounded counters/gauges/timers, and close with the consumer. ARC owns the registry/exporter. Use stable labels, never player/request identifiers or free text. Handles survive registry reload; absent telemetry must not block gameplay. |
 | Cross-plugin protected blocks | `arc-core-paper-api`: `ArcBlockProtectionService`; `arc-core-paper`: `PaperBlockProtection` | Feature owners register bounded, memory-only spatial checks with Bukkit ServicesManager. Automated editors consult all registered providers before every world mutation; no provider is bypassed by service priority. Off-thread calls and provider failures deny edits. ArcCore hosts the shared contract class. |
 | Async schematic libraries, native block transforms and bounded paste | `arc-core-paper-api`: `ArcSchematicService`, `ArcSchematicLibrary`; optional `arc-core-paper-schematics`: `PaperSchematicServiceProvider` | ArcCore owns one bounded worker/cache budget across consumer roots. Acquire and verify files asynchronously; retain compact immutable snapshots only for active work. Palette adaptation and native writes use aggregate primary-thread tick budgets. Preserve block-entity NBT; explicitly choose how to handle source entities/biomes. Native paste requires loaded chunks; fence/wall/pane repair follows the consumer's durable commit. See [schematics](paper-schematics.md). |
@@ -264,3 +266,33 @@ Tests for a new shared primitive must cover its typed success outcomes, every
 rejection branch, bounds, lifecycle cleanup, races where applicable, and an
 integration test at the platform or storage seam. A test-only seam must keep
 the production default bound to the native exact-version API.
+
+## Execution boundaries during cold preparation
+
+`Config` construction, merge, reload and save are blocking worker operations.
+Prepare all cold `ConfigManager.of/ofModule` lookups before publishing a native
+runtime. Ready module resolution is cached; `reloadAll` refreshes known legacy/
+modular paths on its worker. YAML reads and emission do not own the live getter
+write lock; a reload candidate racing with a setter/save is rejected by mutation
+revision instead of erasing the acknowledged edit. Config snapshots contain raw data; binding Bukkit material, item,
+registry, world or menu objects still belongs to the owning thread.
+
+Install `PaperSqlServices.installConsumer` on Paper once so its factory captures
+service identity there. `SqlRuntime.create` and `ArcSqlService.acquire` are
+blocking worker-only cold operations. SQL/Redis groups prepare outside the
+native diagnostics monitor and reject late acquisitions after close. Physical
+transport/pool close runs on owned drain workers; provider `closeAsync` observes
+it without a main-thread wait. At most 128 physical connection groups (including
+preparing/retiring groups) bound each provider's resources and cleanup admission.
+
+ArcCore may publish the visual/schematic providers while preparing its host
+configuration. Visual admission returns `STARTING` until the validated policy
+is attached; deferred schematic libraries wait for configured limits within
+bounded admission. No default policy grants a temporary startup bypass.
+
+`PaperPlayerStateCodec.encodePayload` captures native item bytes on Paper, one
+bounded player per native slice. `wrapPayload` performs detached Base64/checksum
+work on a worker. `validateEnvelope` checks metadata and the complete outer
+binary envelope without native item deserialization; item contents and container
+slot counts remain a native `decode` check before any restore/mutation. Native
+`Player.saveData` remains an indivisible owning-thread durability barrier.

@@ -1,0 +1,112 @@
+package ru.arc.core
+
+import java.util.ArrayDeque
+import java.util.concurrent.CancellationException
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.RejectedExecutionException
+
+/**
+ * One round-robin count/time budget for an owning thread's resumable native work.
+ * Share one queue across the runtime's requests; each step must have a fixed small
+ * bound. The clock is checked between steps and cannot preempt a native call.
+ *
+ * Construct, submit and close on the owning thread. Close this queue before
+ * restarting/closing [scope]; a scope alone cannot complete abandoned futures.
+ * [submit] never runs a step inline, including on rejection. Completion means the
+ * last step finished, not that any consumer-specific persistence is durable.
+ */
+class BudgetedTaskQueue @JvmOverloads constructor(
+    private val scope: LifecycleTaskScope,
+    private val maximumSteps: Int = 128,
+    private val maximumNanos: Long = 2_000_000L,
+    private val nanoTime: () -> Long = System::nanoTime,
+    private val maximumPending: Int = 4096,
+) : AutoCloseable {
+    private data class Work(
+        val current: () -> Boolean,
+        val step: () -> Boolean,
+        val result: CompletableFuture<Unit>,
+    )
+
+    private val pending = ArrayDeque<Work>()
+    private var scheduled = false
+    private var closed = false
+    private var executing = false
+
+    init {
+        require(maximumSteps > 0 && maximumNanos > 0 && maximumPending > 0)
+    }
+
+    /** A step returns true when its operation is complete, otherwise it yields. */
+    fun submit(isCurrent: () -> Boolean, step: () -> Boolean): CompletableFuture<Unit> {
+        if (closed) return CompletableFuture.failedFuture(CancellationException("Native work queue is closed"))
+        if (pending.size + (if (executing) 1 else 0) >= maximumPending) {
+            return CompletableFuture.failedFuture(RejectedExecutionException("Native work queue is full"))
+        }
+        val result = CompletableFuture<Unit>()
+        pending.addLast(Work(isCurrent, step, result))
+        schedule()
+        return result
+    }
+
+    /** A single bounded native stage, admitted from any thread through the lifecycle scope. */
+    fun <T> call(isCurrent: () -> Boolean, operation: () -> T): CompletableFuture<T> =
+        scope.callSync {
+            val result = CompletableFuture<T>()
+            var value: T? = null
+            submit(isCurrent) { value = operation(); true }.whenComplete { _, failure ->
+                if (failure != null) result.completeExceptionally(failure)
+                else result.complete(value)
+            }
+            result
+        }.thenCompose { it }
+
+    private fun schedule() {
+        if (scheduled || closed || pending.isEmpty()) return
+        scheduled = true
+        try {
+            checkNotNull(scope.runLater(1L, ::tick)) { "Native work queue was not scheduled" }
+        } catch (failure: Throwable) {
+            scheduled = false
+            failAll(failure)
+        }
+    }
+
+    private fun tick() {
+        scheduled = false
+        val started = nanoTime()
+        var steps = 0
+        while (!closed && pending.isNotEmpty() && steps < maximumSteps && nanoTime() - started < maximumNanos) {
+            val work = pending.removeFirst()
+            steps++
+            if (work.result.isDone) continue
+            executing = true
+            try {
+                if (!work.current()) {
+                    work.result.completeExceptionally(CancellationException("Native work context changed"))
+                } else if (work.step()) {
+                    work.result.complete(Unit)
+                } else if (!closed && !work.result.isDone) {
+                    pending.addLast(work)
+                } else if (!work.result.isDone) {
+                    work.result.completeExceptionally(CancellationException("Native work queue is closed"))
+                }
+            } catch (failure: Throwable) {
+                work.result.completeExceptionally(failure)
+            } finally {
+                executing = false
+            }
+        }
+        schedule()
+    }
+
+    private fun failAll(failure: Throwable) {
+        while (pending.isNotEmpty()) pending.removeFirst().result.completeExceptionally(failure)
+    }
+
+    override fun close() {
+        if (closed) return
+        closed = true
+        failAll(CancellationException("Native work queue is closed"))
+    }
+}

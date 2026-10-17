@@ -30,6 +30,7 @@ class PaperVisualPacketRuntime internal constructor(
     private val viewerBuckets = WeakHashMap<Any, TokenBucket>()
     private val sources = LinkedHashMap<String, SourceCounters>()
     private var closed = false
+    private var ready = true
     private var overloaded = false
     private var lastReportNanos = nanoTime()
     // The provider starts without ARC and outlives consumer scheduler resets.
@@ -58,6 +59,7 @@ class PaperVisualPacketRuntime internal constructor(
 
             if (cleanup && !writable) return deferred(sourceCounters, VisualPacketAdmission.CHANNEL_BACKPRESSURE)
             if (!cleanup && closed) return deferred(sourceCounters, VisualPacketAdmission.CLOSED)
+            if (!cleanup && !ready) return deferred(sourceCounters, VisualPacketAdmission.STARTING)
             if (!writable) return deferred(sourceCounters, VisualPacketAdmission.CHANNEL_BACKPRESSURE)
 
             val now = nanoTime()
@@ -126,6 +128,7 @@ class PaperVisualPacketRuntime internal constructor(
                 bucket.update(candidate.viewerRateBitsPerSecond, candidate.viewerCapacityBits, now)
             }
             settings = candidate
+            ready = true
             if (previous.logIntervalSeconds != candidate.logIntervalSeconds) {
                 restartReporter(candidate.logIntervalSeconds)
             }
@@ -397,6 +400,7 @@ class PaperVisualPacketRuntime internal constructor(
         val viewerRate: Long = 0,
         val serverRate: Long = 0,
         val closed: Long = 0,
+        val starting: Long = 0,
     ) {
         operator fun plus(other: CounterSnapshot) =
             CounterSnapshot(
@@ -411,6 +415,7 @@ class PaperVisualPacketRuntime internal constructor(
                 viewerRate = viewerRate + other.viewerRate,
                 serverRate = serverRate + other.serverRate,
                 closed = closed + other.closed,
+                starting = starting + other.starting,
             )
 
         fun deferred(reason: VisualPacketAdmission): Long =
@@ -420,17 +425,18 @@ class PaperVisualPacketRuntime internal constructor(
                 VisualPacketAdmission.VIEWER_RATE -> viewerRate
                 VisualPacketAdmission.SERVER_RATE -> serverRate
                 VisualPacketAdmission.CLOSED -> closed
+                VisualPacketAdmission.STARTING -> starting
             }
 
         internal fun hasActivity(): Boolean =
             attempts != 0L || admitted != 0L || cleanupAdmitted != 0L || sentBytes != 0L || sentPackets != 0L ||
                 cleanupBytes != 0L || cleanupPackets != 0L || channelBackpressure != 0L ||
-                viewerRate != 0L || serverRate != 0L || closed != 0L
+                viewerRate != 0L || serverRate != 0L || closed != 0L || starting != 0L
 
         internal fun hasRateOrBackpressureDeferrals(): Boolean =
             channelBackpressure != 0L || viewerRate != 0L || serverRate != 0L
 
-        internal fun deferredTotal(): Long = channelBackpressure + viewerRate + serverRate + closed
+        internal fun deferredTotal(): Long = channelBackpressure + viewerRate + serverRate + closed + starting
 
         internal fun pressureDeferredTotal(): Long = channelBackpressure + viewerRate + serverRate
     }
@@ -475,6 +481,7 @@ class PaperVisualPacketRuntime internal constructor(
         var viewerRate = 0L
         var serverRate = 0L
         var closed = 0L
+        var starting = 0L
 
         fun defer(reason: VisualPacketAdmission) {
             when (reason) {
@@ -483,6 +490,7 @@ class PaperVisualPacketRuntime internal constructor(
                 VisualPacketAdmission.VIEWER_RATE -> viewerRate++
                 VisualPacketAdmission.SERVER_RATE -> serverRate++
                 VisualPacketAdmission.CLOSED -> closed++
+                VisualPacketAdmission.STARTING -> starting++
             }
         }
 
@@ -508,6 +516,7 @@ class PaperVisualPacketRuntime internal constructor(
                 viewerRate = viewerRate,
                 serverRate = serverRate,
                 closed = closed,
+                starting = starting,
             )
 
         fun drain(): CounterSnapshot = snapshot().also {
@@ -522,6 +531,7 @@ class PaperVisualPacketRuntime internal constructor(
             viewerRate = 0
             serverRate = 0
             closed = 0
+            starting = 0
         }
     }
 
@@ -590,11 +600,21 @@ class PaperVisualPacketRuntime internal constructor(
             plugin: Plugin,
             config: Config = ConfigManager.of(plugin.dataFolder.toPath().resolve(ConfigManager.MODULE_YAML_DIR), CONFIG_FILE),
         ): PaperVisualPacketRuntime {
+            return installPrepared(plugin, Settings.from(config), true)
+        }
+
+        /** Register immediately; defer replaceable visuals until worker-prepared policy is applied. */
+        @JvmStatic
+        fun installPending(plugin: Plugin): PaperVisualPacketRuntime =
+            installPrepared(plugin, Settings.from(ConfigManager.empty()), false)
+
+        private fun installPrepared(plugin: Plugin, settings: Settings, ready: Boolean): PaperVisualPacketRuntime {
             check(Bukkit.isPrimaryThread()) { "Visual packet budget must be installed on the server thread" }
             check(plugin.server.servicesManager.load(ArcVisualPacketBudget::class.java) == null) {
                 "An ArcCore visual packet budget is already registered; install the provider once per server"
             }
-            val runtime = PaperVisualPacketRuntime(Settings.from(config), hostPlugin = plugin)
+            val runtime = PaperVisualPacketRuntime(settings, hostPlugin = plugin)
+            runtime.ready = ready
             plugin.server.servicesManager.register(ArcVisualPacketBudget::class.java, runtime, plugin, ServicePriority.Normal)
             try {
                 runtime.startReporter()
