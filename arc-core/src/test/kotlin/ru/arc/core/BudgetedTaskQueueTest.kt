@@ -4,6 +4,46 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 
 class BudgetedTaskQueueTest : FunSpec({
+    test("explicit pumps and scheduled callbacks share one allowance for the authoritative tick") {
+        val scheduler = TestTaskScheduler()
+        val scope = LifecycleTaskScope(scheduler)
+        var tick = 10L
+        val queue = BudgetedTaskQueue(scope, maximumSteps = 8, nanoTime = { 0 })
+        var first = 0
+        var second = 0
+        val a = queue.submit({ true }) { ++first == 10 }
+        val b = queue.submit({ true }) { ++second == 10 }
+        first + second shouldBe 0
+        queue.drainAvailable { tick }
+        first shouldBe 4; second shouldBe 4
+        queue.drainAvailable { tick }
+        scheduler.tick() // Even a scheduled drain cannot reset this platform tick's allowance.
+        first + second shouldBe 8
+        tick++
+        queue.drainAvailable { tick }
+        first + second shouldBe 16
+        tick++
+        scheduler.tick()
+        a.isDone shouldBe true; b.isDone shouldBe true
+        queue.close(); scope.close()
+    }
+
+    test("explicit pumps retain time spent by earlier pumps in the same tick") {
+        val scheduler = TestTaskScheduler()
+        val scope = LifecycleTaskScope(scheduler)
+        var tick = 0L
+        var nanos = 0L
+        val queue = BudgetedTaskQueue(scope, nanoTime = { nanos })
+        var calls = 0
+        queue.submit({ true }) { calls++; nanos += 1_000_000; false }
+        queue.drainAvailable { tick }
+        queue.drainAvailable { tick }
+        calls shouldBe 2
+        tick++
+        scheduler.tick()
+        calls shouldBe 4
+        queue.close(); scope.close()
+    }
     test("one count budget is shared fairly by simultaneous operations") {
         val scheduler = TestTaskScheduler()
         val scope = LifecycleTaskScope(scheduler)

@@ -79,6 +79,14 @@ internal interface PacketDisplayConnection {
         return CompletableFuture.completedFuture(null)
     }
 
+    /** Camera-dependent cosmetic work stays on Netty; existing audience and cleanup semantics are unchanged. */
+    fun submitViewAsync(
+        desired: List<PacketDisplayFrame>, view: PacketDisplayView?,
+        resetChunks: Set<Long> = emptySet(), resetAll: Boolean = false,
+        desiredPassengers: Map<Int, List<Int>> = emptyMap(), nativePassengerSnapshots: Map<Int, List<Int>> = emptyMap(),
+        liveVehicleIds: Set<Int>? = null,
+    ): CompletableFuture<Void> = submitAsync(desired, resetChunks, resetAll, desiredPassengers, nativePassengerSnapshots, liveVehicleIds)
+
     fun closeAsync(): CompletableFuture<Void> {
         submit(emptyList())
         return CompletableFuture.completedFuture(null)
@@ -367,6 +375,8 @@ internal class PacketDisplayAttachment internal constructor(
     private var cleanupIds: Set<Int> = emptySet()
     private var failureLogged = false
     private var resumeEntityId: Int? = null
+    private val suspended = mutableSetOf<Int>()
+    private var submittedView: PacketDisplayView? = null
 
     override val identity: Any get() = attachmentIdentity
 
@@ -389,10 +399,16 @@ internal class PacketDisplayAttachment internal constructor(
     override fun submitAsync(
         desired: List<PacketDisplayFrame>, resetChunks: Set<Long>, resetAll: Boolean,
         desiredPassengers: Map<Int, List<Int>>, nativePassengerSnapshots: Map<Int, List<Int>>, liveVehicleIds: Set<Int>?,
+    ): CompletableFuture<Void> = submitViewAsync(desired, null, resetChunks, resetAll,
+        desiredPassengers, nativePassengerSnapshots, liveVehicleIds)
+
+    override fun submitViewAsync(
+        desired: List<PacketDisplayFrame>, view: PacketDisplayView?, resetChunks: Set<Long>, resetAll: Boolean,
+        desiredPassengers: Map<Int, List<Int>>, nativePassengerSnapshots: Map<Int, List<Int>>, liveVehicleIds: Set<Int>?,
     ): CompletableFuture<Void> {
         if (closing.get()) return CompletableFuture.failedFuture(CancellationException("Packet display connection is closing"))
         return enqueue {
-            submit(desired, resetChunks, resetAll, desiredPassengers, nativePassengerSnapshots, liveVehicleIds)
+            prepareSubmission(desired, resetChunks, resetAll, desiredPassengers, nativePassengerSnapshots, liveVehicleIds, view)
         }
     }
 
@@ -440,6 +456,12 @@ internal class PacketDisplayAttachment internal constructor(
         desiredPassengers: Map<Int, List<Int>>,
         nativePassengerSnapshots: Map<Int, List<Int>>,
         liveVehicleIds: Set<Int>?,
+    ) = prepareSubmission(desired, resetChunks, resetAll, desiredPassengers, nativePassengerSnapshots, liveVehicleIds, null)
+
+    private fun prepareSubmission(
+        desired: List<PacketDisplayFrame>, resetChunks: Set<Long>, resetAll: Boolean,
+        desiredPassengers: Map<Int, List<Int>>, nativePassengerSnapshots: Map<Int, List<Int>>, liveVehicleIds: Set<Int>?,
+        view: PacketDisplayView?,
     ) {
         clean = false
         val resetSnapshot = resetChunks.toSet()
@@ -462,15 +484,16 @@ internal class PacketDisplayAttachment internal constructor(
             }.toSet()
             val next = Pending(
                 frames, resetSnapshot, resetAll, snapTargets, passengerSnapshot, nativeSnapshot, liveSnapshot,
-                invalidatedSnapshot,
+                invalidatedSnapshot, view,
             ).bounded()
             if (valid && !scheduled && previous == null && next.resetChunks.isEmpty() && !next.resetAll &&
-                next.resyncVehicles.isEmpty() && submitted == next.frames && submittedPassengers == next.desiredPassengers
+                next.resyncVehicles.isEmpty() && submitted == next.frames && submittedPassengers == next.desiredPassengers &&
+                submittedView == next.view
             ) {
                 return
             }
             if (scheduled && previous != null && previous.frames == next.frames &&
-                previous.desiredPassengers == next.desiredPassengers &&
+                previous.desiredPassengers == next.desiredPassengers && previous.view == next.view &&
                 next.resyncVehicles.all(previous.resyncVehicles::contains) &&
                 next.resetChunks.all { it in previous.resetChunks } && (!next.resetAll || previous.resetAll)
             ) {
@@ -628,15 +651,31 @@ internal class PacketDisplayAttachment internal constructor(
                 }
                 wrote = true
                 destroys.forEach(acknowledged::remove)
+                suspended.removeAll(destroys)
             }
             // Admit each entity's spawn+metadata/update atomically. Large scenes
             // can progressively appear even when their total size exceeds a burst.
             val frames = batch.desired.values.toList()
             val start = frames.indexOfFirst { it.entityId == resumeEntityId }.coerceAtLeast(0)
             for (offset in frames.indices) {
-                val current = frames[(start + offset) % frames.size]
-                val id = current.entityId
+                val desired = frames[(start + offset) % frames.size]
+                val id = desired.entityId
                 val old = acknowledged[id]
+                val wasSuspended = id in suspended
+                // AFK pauses cosmetics, including initial spawns. Lifecycle removals above and
+                // attachment relation changes still reconcile so paused state cannot retain links.
+                if (work.view?.afk == true && (old == null || old.attachmentVehicleId == desired.attachmentVehicleId)) {
+                    if (old != null) suspended.add(id)
+                    continue
+                }
+                // Retain the client's last admitted pose. If either pose intersects the view, send the
+                // change so a moving object cannot leave a stale visible copy at its previous position.
+                if (old != null && work.view?.let { it.behind(old, wasSuspended) && it.behind(desired, wasSuspended) } == true) {
+                    suspended.add(id)
+                    continue
+                }
+                val current = if (wasSuspended) desired.copy(metadata = desired.metadata.copy(
+                    interpolationDelay = 0, interpolationDuration = 0, teleportDuration = 0)) else desired
                 val packets = if (old == null) {
                     listOf(spawnPacket(current), metadataPacket(current, metadataFor(current)))
                 } else {
@@ -658,6 +697,7 @@ internal class PacketDisplayAttachment internal constructor(
                     wrote = true
                 }
                 acknowledged[id] = current
+                suspended.remove(id)
             }
             resumeEntityId = null
             val mountUpdates = work.desiredPassengers.mapValues { (vehicleId, displayIds) ->
@@ -678,6 +718,7 @@ internal class PacketDisplayAttachment internal constructor(
             if (wrote) backend.flush(channel)
             synchronized(lock) {
                 submitted = acknowledged.toMap()
+                submittedView = work.view
                 if (!failed) cleanupIds = emptySet()
             }
         }
@@ -694,6 +735,8 @@ internal class PacketDisplayAttachment internal constructor(
             cleanupIds = emptySet()
             submitted = emptyMap()
             submittedPassengers = emptyMap()
+            suspended.clear()
+            submittedView = null
         }
         return true
     }
@@ -875,6 +918,7 @@ internal class PacketDisplayAttachment internal constructor(
         val nativePassengerSnapshots: Map<Int, List<Int>> = emptyMap(),
         val liveVehicleIds: Set<Int>? = null,
         val resyncVehicles: Set<Int> = emptySet(),
+        val view: PacketDisplayView? = null,
     ) {
         fun merge(next: Pending): Pending {
             val mergedChunks = resetChunks + next.resetChunks
@@ -883,12 +927,12 @@ internal class PacketDisplayAttachment internal constructor(
             return if (resetAll || next.resetAll || mergedChunks.size > MAX_RESET_CHUNKS) {
                 Pending(
                     next.frames, emptySet(), true, snaps, next.desiredPassengers,
-                    next.nativePassengerSnapshots, next.liveVehicleIds, resyncVehicles + next.resyncVehicles,
+                    next.nativePassengerSnapshots, next.liveVehicleIds, resyncVehicles + next.resyncVehicles, next.view,
                 )
             } else {
                 Pending(
                     next.frames, mergedChunks, false, snaps, next.desiredPassengers,
-                    next.nativePassengerSnapshots, next.liveVehicleIds, resyncVehicles + next.resyncVehicles,
+                    next.nativePassengerSnapshots, next.liveVehicleIds, resyncVehicles + next.resyncVehicles, next.view,
                 )
             }
         }

@@ -11,6 +11,7 @@ import org.bukkit.block.data.BlockData
 import org.bukkit.entity.Player
 import org.bukkit.event.player.PlayerRespawnEvent
 import org.bukkit.inventory.ItemStack
+import org.bukkit.plugin.ServicePriority
 import org.bukkit.util.Transformation
 import org.joml.Quaternionf
 import org.joml.Vector3f
@@ -18,6 +19,7 @@ import org.mockbukkit.mockbukkit.ServerMock
 import org.mockbukkit.mockbukkit.entity.PlayerMock
 import ru.arc.core.LifecycleTaskScope
 import ru.arc.core.TestTaskScheduler
+import ru.arc.paper.api.ArcAfkProvider
 import ru.arc.paper.player.TestPaperPlugin
 import ru.arc.paper.testing.MockBukkitTestRuntime
 import ru.arc.paper.testing.failOnUnsupportedMockBukkitOperation
@@ -25,6 +27,40 @@ import ru.arc.paper.testing.loadPlugin
 import java.util.UUID
 
 class PaperPacketDisplaysTest : FreeSpec({
+    "Bukkit captures optional canonical AFK status once per viewer into detached snapshots" {
+        failOnUnsupportedMockBukkitOperation {
+            MockBukkitTestRuntime.open().use { paper ->
+                val plugin = paper.loadPlugin<TestPaperPlugin>()
+                val world = paper.addSimpleWorld("afk-audience")
+                val viewers = List(2) { index ->
+                    RespawnAudiencePlayer(paper.server, "AFK-$index").also {
+                        paper.server.addPlayer(it)
+                        it.setLocation(Location(world, 1.0, 64.0, 1.0))
+                    }
+                }
+                fun capture(): List<PacketDisplayViewer> = buildList {
+                    BukkitPacketDisplayAudience.captureSteps { add(it) }.forEach { }
+                }
+                capture().map { it.view?.afk } shouldBe listOf(false, false)
+                var calls = 0
+                val provider = object : ArcAfkProvider {
+                    override fun isAfk(playerId: UUID): Boolean {
+                        org.bukkit.Bukkit.isPrimaryThread() shouldBe true
+                        calls++
+                        paper.server.servicesManager.unregister(ArcAfkProvider::class.java, this)
+                        return playerId in viewers.map { it.uniqueId }
+                    }
+                }
+                paper.server.servicesManager.register(ArcAfkProvider::class.java, provider, plugin, ServicePriority.Normal)
+                val paused = capture()
+                calls shouldBe 2 // Resolve the provider once for the whole capture, not for every viewer.
+                paused.map { it.view?.afk } shouldBe listOf(true, true)
+                capture().map { it.view?.afk } shouldBe listOf(false, false)
+                paused.map { it.view?.afk } shouldBe listOf(true, true)
+            }
+        }
+    }
+
     "Bukkit audience skips an online player through death and respawn without interrupting another viewer" {
         failOnUnsupportedMockBukkitOperation {
             MockBukkitTestRuntime.open().use { paper ->

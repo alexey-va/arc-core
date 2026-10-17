@@ -21,6 +21,45 @@ import java.util.concurrent.CompletionStage
 import java.util.function.BooleanSupplier
 
 class PaperPacketDisplayBudgetTest : FreeSpec({
+    "short frames use the current tick allowance and async admission completes without a native polling tick" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val plugin = paper.loadPlugin<TestPaperPlugin>()
+            val player = paper.addPlayer("FastViewer")
+            val world = paper.addSimpleWorld("short-frames")
+            val scheduler = TestTaskScheduler()
+            val work = BudgetedTaskQueue(LifecycleTaskScope(scheduler), nanoTime = { 0 })
+            val cleanup = QueueCleanup()
+            val transport = BudgetTransport()
+            var tick = 0L
+            val displays = PaperPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()),
+                fixedAudience(player, world.uid), work, false, cleanup, java.util.function.LongSupplier { tick })
+            val handle = displays.spawnText(Location(world, 0.0, 64.0, 0.0), Component.text("moving"))
+            displays.refresh().isDone shouldBe true
+            transport.frames.size shouldBe 1
+            repeat(3) {
+                tick++
+                scheduler.tick()
+                handle.teleport(Location(world, tick.toDouble(), 64.0, 0.0))
+                displays.refresh().isDone shouldBe true
+                transport.frames.size shouldBe tick.toInt() + 1
+            }
+            tick++
+            transport.admission = CompletableFuture()
+            val pending = displays.refresh()
+            pending.isDone shouldBe false
+            val sent = transport.frames.size
+            handle.teleport(Location(world, 10.0, 64.0, 0.0))
+            (pending === displays.refresh()) shouldBe true
+            transport.frames.size shouldBe sent
+            transport.admission.complete(null)
+            pending.isDone shouldBe true // No scheduler.tick() is needed to release the capture gate.
+            tick++
+            displays.refresh().isDone shouldBe true
+            transport.frames.last().single().x shouldBe 10.0
+            val closing = displays.closeAsync(); cleanup.drain(closing); work.close()
+        }
+    }
+
     "two owners share the same native budget and coalesce a partially captured sweep" {
         MockBukkitTestRuntime.open().use { paper ->
             val plugin = paper.loadPlugin<TestPaperPlugin>()

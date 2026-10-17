@@ -17,6 +17,7 @@ import org.bukkit.inventory.ItemStack
 import org.bukkit.plugin.Plugin
 import ru.arc.core.LifecycleTaskScope
 import ru.arc.core.BudgetedTaskQueue
+import ru.arc.paper.api.ArcAfkProvider
 import ru.arc.paper.api.ArcNativeCleanupService
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
@@ -49,18 +50,21 @@ class PaperPacketDisplays internal constructor(
     private val work: BudgetedTaskQueue = BudgetedTaskQueue(tasks),
     private val ownsWork: Boolean = true,
     private val cleanup: ArcNativeCleanupService = requireNotNull(plugin.server.servicesManager.load(ArcNativeCleanupService::class.java)) { "ArcNativeCleanupService is unavailable" },
+    private val currentTick: java.util.function.LongSupplier? = null,
 ) : AutoCloseable, Listener {
     constructor(plugin: Plugin) : this(plugin, "displays")
 
     /** [source] is a stable feature name for the server-wide visual traffic budget. */
     constructor(plugin: Plugin, source: String) : this(
         plugin, PacketEventsDisplayTransport(plugin, source), LifecycleTaskScope(), BukkitPacketDisplayAudience,
+        currentTick = java.util.function.LongSupplier { Bukkit.getCurrentTick().toLong() },
     )
 
     /** Share the consumer runtime's aggregate native budget across visuals and other work. */
     constructor(plugin: Plugin, source: String, work: BudgetedTaskQueue) : this(
         plugin, PacketEventsDisplayTransport(plugin, source), LifecycleTaskScope(), BukkitPacketDisplayAudience,
         work, false,
+        currentTick = java.util.function.LongSupplier { Bukkit.getCurrentTick().toLong() },
     )
 
     private data class ViewerState(val connection: PacketDisplayConnection, val worldId: UUID)
@@ -133,9 +137,13 @@ class PaperPacketDisplays internal constructor(
             resetChunks.clear(); resetViewers.clear()
             return CompletableFuture.completedFuture(Unit)
         }
-        val steps = captureSteps()
-        return work.submit({ !closed }) {
-            if (steps.hasNext()) { steps.next(); false } else submissions.isEmpty()
+        val admissions = arrayListOf<CompletableFuture<Void>>()
+        val steps = captureSteps(admissions)
+        val result = work.submit({ !closed }) {
+            if (steps.hasNext()) { steps.next(); false } else true
+        }.thenCompose {
+            // Keep one prepared sweep while Netty admits it, without spending native quanta polling.
+            CompletableFuture.allOf(*admissions.toTypedArray()).thenApply { Unit }
         }.also { result ->
             capture = result
             result.whenComplete { _, failure ->
@@ -144,6 +152,8 @@ class PaperPacketDisplays internal constructor(
                 }
             }
         }
+        currentTick?.let(work::drainAvailable)
+        return result
     }
 
     private fun track(submission: CompletableFuture<Void>) {
@@ -155,7 +165,7 @@ class PaperPacketDisplays internal constructor(
         }
     }
 
-    private fun captureSteps(): Iterator<Unit> = sequence {
+    private fun captureSteps(admissions: MutableList<CompletableFuture<Void>>): Iterator<Unit> = sequence {
         val currentAudience = arrayListOf<PacketDisplayViewer>()
         val audienceById = hashMapOf<UUID, PacketDisplayViewer>()
         val passengerSnapshots = hashMapOf<Int, List<Int>>()
@@ -179,7 +189,7 @@ class PaperPacketDisplays internal constructor(
             yield(Unit)
         }
         for (id in viewers.keys) {
-            if (id !in audienceById) forgetViewer(id)
+            if (id !in audienceById) forgetViewer(id)?.let(admissions::add)
             yield(Unit)
         }
         for (viewer in currentAudience) {
@@ -211,12 +221,15 @@ class PaperPacketDisplays internal constructor(
                 yield(Unit); continue
             }
             val connection = transport.connection(viewer.player)
-            if (connection == null) { forgetViewer(viewer.id); yield(Unit); continue }
-            if (previous != null && previous.connection.identity !== connection.identity) track(previous.connection.closeAsync())
+            if (connection == null) { forgetViewer(viewer.id)?.let(admissions::add); yield(Unit); continue }
+            if (previous != null && previous.connection.identity !== connection.identity) {
+                previous.connection.closeAsync().also { admissions.add(it); track(it) }
+            }
             // These collections are detached and never mutated after handoff. Sorting/copies/merge run on Netty.
-            track(connection.submitAsync(desired, resetChunks.remove(viewer.id).orEmpty(),
+            connection.submitViewAsync(desired, viewer.view, resetChunks.remove(viewer.id).orEmpty(),
                 resetViewers.remove(viewer.id) || (previous != null && previous.worldId != viewer.worldId),
-                desiredPassengers, nativePassengers, liveVehiclesByWorld[viewer.worldId].orEmpty()))
+                desiredPassengers, nativePassengers, liveVehiclesByWorld[viewer.worldId].orEmpty())
+                .also { admissions.add(it); track(it) }
             viewers[viewer.id] = ViewerState(connection, viewer.worldId)
             yield(Unit)
         }
@@ -256,10 +269,11 @@ class PaperPacketDisplays internal constructor(
         transport.forget(event.player)
     }
 
-    private fun forgetViewer(id: UUID) {
-        viewers.remove(id)?.connection?.let { track(it.closeAsync()) }
+    private fun forgetViewer(id: UUID): CompletableFuture<Void>? {
+        val admission = viewers.remove(id)?.connection?.closeAsync()?.also(::track)
         resetChunks.remove(id)
         resetViewers.remove(id)
+        return admission
     }
 
     /** Detach an owner's native handles first, then retire them through the same host lifetime. */
@@ -349,6 +363,7 @@ internal data class PacketDisplayViewer(
     val z: Double,
     val sentChunks: Set<Long>,
     val passengerEntityIds: List<Int> = emptyList(),
+    val view: PacketDisplayView? = null,
 )
 
 internal object BukkitPacketDisplayAudience : PacketDisplayAudienceSource {
@@ -356,6 +371,7 @@ internal object BukkitPacketDisplayAudience : PacketDisplayAudienceSource {
         viewer.player.world.uid == viewer.worldId && viewer.player.entityId == viewer.entityId
     override fun checkThread() { check(Bukkit.isPrimaryThread()) { "Packet display state must be accessed on the server thread" } }
     override fun captureSteps(accept: (PacketDisplayViewer) -> Unit): Iterator<Unit> = sequence {
+        val afk = Bukkit.getServicesManager().load(ArcAfkProvider::class.java)
         // Paper's collection is a live view. If its iterator is invalidated, the owner discards
         // the incomplete sweep and retries; no partially captured audience is published.
         for (player in Bukkit.getOnlinePlayers()) {
@@ -368,9 +384,13 @@ internal object BukkitPacketDisplayAudience : PacketDisplayAudienceSource {
             val passengers = arrayListOf<Int>()
             for (passenger in player.passengers) { passengers.add(passenger.entityId); yield(Unit) }
             if (player.isValid && player.world.uid == worldId && player.entityId == entityId) {
+                val eye = player.eyeLocation
+                val direction = eye.direction
                 // Paper's sent-chunk snapshot is one indivisible native getter.
                 accept(PacketDisplayViewer(player, player.uniqueId, worldId, entityId, tracked,
-                    location.x, location.y, location.z, player.sentChunkKeys, passengers))
+                    location.x, location.y, location.z, player.sentChunkKeys, passengers,
+                    PacketDisplayView(eye.x, eye.y, eye.z, direction.x, direction.y, direction.z,
+                        afk?.isAfk(player.uniqueId) == true)))
             }
             yield(Unit)
         }

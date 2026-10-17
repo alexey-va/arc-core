@@ -4,6 +4,7 @@ import java.util.ArrayDeque
 import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.RejectedExecutionException
+import java.util.function.LongSupplier
 
 /**
  * One round-robin count/time budget for an owning thread's resumable native work.
@@ -32,6 +33,10 @@ class BudgetedTaskQueue @JvmOverloads constructor(
     private var scheduled = false
     private var closed = false
     private var executing = false
+    private var tickClock: LongSupplier? = null
+    private var budgetTick = 0L
+    private var usedSteps = 0
+    private var usedNanos = 0L
 
     init {
         require(maximumSteps > 0 && maximumNanos > 0 && maximumPending > 0)
@@ -47,6 +52,22 @@ class BudgetedTaskQueue @JvmOverloads constructor(
         pending.addLast(Work(isCurrent, step, result))
         schedule()
         return result
+    }
+
+    /**
+     * Explicit low-latency pump on the owning thread. [submit] itself still never executes inline.
+     * The first caller supplies the platform's tick identity for this queue's lifetime.
+     * Every pump and scheduled continuation then spends the SAME count/time allowance for that tick;
+     * a later caller cannot reset it. Existing queued requests retain round-robin ordering.
+     */
+    fun drainAvailable(currentTick: LongSupplier) {
+        if (closed || executing) return
+        if (tickClock == null) {
+            tickClock = currentTick
+            budgetTick = currentTick.asLong
+            // Retain any allowance already consumed before opting into explicit tick accounting.
+        }
+        drain()
     }
 
     /** A single bounded native stage, admitted from any thread through the lifecycle scope. */
@@ -74,11 +95,21 @@ class BudgetedTaskQueue @JvmOverloads constructor(
 
     private fun tick() {
         scheduled = false
+        drain()
+    }
+
+    private fun drain() {
+        val now = tickClock?.asLong
+        if (now == null || now != budgetTick) {
+            if (now != null) budgetTick = now
+            usedSteps = 0
+            usedNanos = 0L
+        }
         val started = nanoTime()
-        var steps = 0
-        while (!closed && pending.isNotEmpty() && steps < maximumSteps && nanoTime() - started < maximumNanos) {
+        while (!closed && pending.isNotEmpty() && usedSteps < maximumSteps &&
+            nanoTime() - started < maximumNanos - usedNanos) {
             val work = pending.removeFirst()
-            steps++
+            usedSteps++
             if (work.result.isDone) continue
             executing = true
             try {
@@ -97,6 +128,7 @@ class BudgetedTaskQueue @JvmOverloads constructor(
                 executing = false
             }
         }
+        usedNanos += (nanoTime() - started).coerceIn(0L, maximumNanos - usedNanos)
         schedule()
     }
 

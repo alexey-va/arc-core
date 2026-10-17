@@ -26,6 +26,153 @@ class PacketDisplayTransportTest : FreeSpec({
     beforeSpec { PacketEvents.setAPI(TestPacketEventsApi()) }
     afterSpec { PacketEvents.setAPI(previousApi) }
 
+    "AFK pauses front-facing motion content and new spawns but preserves privacy removal and latest resume" {
+        val backend = RecordingPacketBackend()
+        val connection = PacketDisplayAttachment(Any(), Logger.getAnonymousLogger(), backend)
+        val active = PacketDisplayView(0.0, 64.0, 0.0, 0.0, 0.0, 1.0)
+        val afk = active.copy(afk = true)
+        val first = frame().copy(z = 8.0, metadata = frame().metadata.copy(interpolationDuration = 1, teleportDuration = 1))
+        val removed = first.copy(entityId = 2, uuid = UUID(0, 2))
+        connection.submitViewAsync(listOf(first, removed), active); backend.runAll(); backend.clear()
+        val latest = first.copy(x = 2.0, metadata = first.metadata.copy(content = PacketDisplayContent.Block(2)))
+        val added = latest.copy(entityId = 3, uuid = UUID(0, 3))
+        connection.submitViewAsync(listOf(latest, added), afk); backend.runAll()
+        backend.writes.filterIsInstance<WrapperPlayServerDestroyEntities>().single().entityIds.toList() shouldBe listOf(2)
+        backend.writes.size shouldBe 1
+        backend.clear()
+        connection.submitViewAsync(listOf(latest, added), active); backend.runAll()
+        backend.writes.filterIsInstance<WrapperPlayServerSpawnEntity>().map { it.entityId } shouldBe listOf(3)
+        backend.writes.filterIsInstance<WrapperPlayServerEntityTeleport>().single().position.x shouldBe 2.0
+        backend.writes.filterIsInstance<WrapperPlayServerEntityMetadata>().single { it.entityId == first.entityId }.let {
+            it.metadataValue(9) shouldBe 0
+            it.metadataValue(10) shouldBe 0
+            it.metadataValue(23) shouldBe 2
+        }
+        backend.clear()
+        connection.submitViewAsync(listOf(latest, added), active); backend.runAll()
+        backend.writes.filterIsInstance<WrapperPlayServerEntityMetadata>().single().metadataValue(9) shouldBe 1
+    }
+
+    "AFK initial scenes and chunk replays defer spawns while reset and terminal cleanup remain active" {
+        val backend = RecordingPacketBackend()
+        val connection = PacketDisplayAttachment(Any(), Logger.getAnonymousLogger(), backend)
+        val active = PacketDisplayView(0.0, 64.0, 0.0, 0.0, 0.0, 1.0)
+        val afk = active.copy(afk = true)
+        val initial = frame().copy(z = 8.0)
+        connection.submitViewAsync(listOf(initial), afk); backend.runAll()
+        backend.writes shouldBe emptyList()
+        val latest = initial.copy(x = 2.0)
+        connection.submitViewAsync(listOf(latest), active); backend.runAll()
+        backend.writes.filterIsInstance<WrapperPlayServerSpawnEntity>().single().entityId shouldBe initial.entityId
+        backend.clear()
+        connection.submitViewAsync(listOf(latest), afk, resetAll = true); backend.runAll()
+        backend.writes.filterIsInstance<WrapperPlayServerDestroyEntities>().single()
+        backend.writes.size shouldBe 1
+        backend.clear()
+        connection.submitViewAsync(listOf(latest), active); backend.runAll()
+        backend.writes.filterIsInstance<WrapperPlayServerSpawnEntity>().single()
+        backend.clear()
+        connection.submitViewAsync(listOf(latest.copy(x = 3.0)), afk); backend.runAll()
+        connection.closeAsync(); backend.runAll()
+        backend.writes.filterIsInstance<WrapperPlayServerDestroyEntities>().single().entityIds.toList() shouldBe listOf(initial.entityId)
+        backend.writes.size shouldBe 1
+    }
+
+    "rear motion freezes admitted state and returns directly to the newest pose without entity churn" {
+        val backend = RecordingPacketBackend()
+        // The transport intentionally holds channels weakly. This test owns the connection
+        // while first-use item registry initialization may trigger garbage collection.
+        val channel = Any()
+        val connection = PacketDisplayAttachment(channel, Logger.getAnonymousLogger(), backend)
+        val away = PacketDisplayView(0.0, 64.0, 0.0, 0.0, 0.0, 1.0)
+        val toward = away.copy(directionZ = -1.0)
+        val initial = frame(content = itemContent(TestItem.DIAMOND)).copy(z = -3.0,
+            metadata = PacketDisplayMetadata(itemContent(TestItem.DIAMOND),
+                transform = DisplayTransform(scale = DisplayVector(0.51f, 0.51f, 0.51f)),
+                interpolationDuration = 1, teleportDuration = 1, billboard = 3))
+        val spawn = connection.submitViewAsync(listOf(initial), away)
+        backend.runAll(); spawn.join()
+        backend.writes.filterIsInstance<WrapperPlayServerSpawnEntity>().single().entityId shouldBe initial.entityId
+        backend.clear()
+        val latest = initial.copy(x = 0.3, metadata = initial.metadata.copy(
+            transform = initial.metadata.transform.copy(leftRotation = DisplayRotation(0f, 0.5f, 0f, 0.8660254f))))
+        connection.submitViewAsync(listOf(initial.copy(x = 0.1)), away)
+        connection.submitViewAsync(listOf(latest), away)
+        backend.runAll()
+        backend.writes shouldBe emptyList()
+
+        val resume = connection.submitViewAsync(listOf(latest), toward)
+        backend.runAll(); resume.join()
+        backend.writes.filterIsInstance<WrapperPlayServerSpawnEntity>() shouldBe emptyList()
+        backend.writes.filterIsInstance<WrapperPlayServerDestroyEntities>() shouldBe emptyList()
+        backend.writes.filterIsInstance<WrapperPlayServerEntityTeleport>().single().position.x shouldBe 0.3
+        backend.writes.filterIsInstance<WrapperPlayServerEntityMetadata>().single().let {
+            it.metadataValue(9) shouldBe 0
+            it.metadataValue(10) shouldBe 0
+        }
+        backend.clear()
+        connection.submitViewAsync(listOf(latest), toward); backend.runAll()
+        backend.writes.filterIsInstance<WrapperPlayServerEntityMetadata>().single().let {
+            it.metadataValue(9) shouldBe 1
+            it.metadataValue(10) shouldBe 1
+        }
+        backend.writes.filterIsInstance<WrapperPlayServerEntityTeleport>() shouldBe emptyList()
+        backend.clear()
+        connection.submitViewAsync(listOf(latest), toward); backend.runAll()
+        backend.writes shouldBe emptyList()
+        java.lang.ref.Reference.reachabilityFence(channel)
+    }
+
+    "either visible endpoint advances once and hidden cleanup or chunk replay is never culled" {
+        val backend = RecordingPacketBackend()
+        val connection = PacketDisplayAttachment(Any(), Logger.getAnonymousLogger(), backend)
+        val view = PacketDisplayView(0.0, 64.0, 0.0, 0.0, 0.0, 1.0)
+        val back = frame().copy(z = -8.0)
+        val front = back.copy(z = 8.0)
+        connection.submitViewAsync(listOf(back), view); backend.runAll(); backend.clear()
+        connection.submitViewAsync(listOf(front), view); backend.runAll()
+        backend.writes.filterIsInstance<WrapperPlayServerEntityTeleport>().single().position.z shouldBe 8.0
+        backend.clear()
+        connection.submitViewAsync(listOf(back), view); backend.runAll()
+        backend.writes.filterIsInstance<WrapperPlayServerEntityTeleport>().single().position.z shouldBe -8.0
+        backend.clear()
+        val moved = back.copy(x = 0.25)
+        connection.submitViewAsync(listOf(moved), view); backend.runAll()
+        backend.writes shouldBe emptyList()
+        connection.submitViewAsync(listOf(moved), view, resetChunks = setOf(back.chunkKey)); backend.runAll()
+        backend.writes.filterIsInstance<WrapperPlayServerDestroyEntities>().single()
+        backend.writes.filterIsInstance<WrapperPlayServerSpawnEntity>().single().entityId shouldBe back.entityId
+        backend.clear()
+        connection.submitViewAsync(emptyList(), view); backend.runAll()
+        backend.writes.filterIsInstance<WrapperPlayServerDestroyEntities>().single().entityIds.toList() shouldBe listOf(back.entityId)
+    }
+
+    "rear suspension is per viewer and denied resumption retains the last admitted baseline" {
+        val hiddenBackend = RecordingPacketBackend()
+        val visibleBackend = RecordingPacketBackend()
+        val hidden = PacketDisplayAttachment(Any(), Logger.getAnonymousLogger(), hiddenBackend)
+        val visible = PacketDisplayAttachment(Any(), Logger.getAnonymousLogger(), visibleBackend)
+        val away = PacketDisplayView(0.0, 64.0, 0.0, 0.0, 0.0, 1.0)
+        val toward = away.copy(directionZ = -1.0)
+        val first = frame().copy(z = -8.0, metadata = frame().metadata.copy(interpolationDuration = 1, teleportDuration = 1))
+        hidden.submitViewAsync(listOf(first), away); hiddenBackend.runAll(); hiddenBackend.clear()
+        visible.submitViewAsync(listOf(first), toward); visibleBackend.runAll(); visibleBackend.clear()
+        val next = first.copy(x = 0.2)
+        hidden.submitViewAsync(listOf(next), away); hiddenBackend.runAll()
+        visible.submitViewAsync(listOf(next), toward); visibleBackend.runAll()
+        hiddenBackend.writes shouldBe emptyList()
+        visibleBackend.writes.filterIsInstance<WrapperPlayServerEntityTeleport>().single().position.x shouldBe 0.2
+        hiddenBackend.ordinaryTransactions = 0
+        hidden.submitViewAsync(listOf(next), toward)
+        hiddenBackend.tasks.removeFirst().invoke() // admit immutable view
+        hiddenBackend.tasks.removeFirst().invoke() // budget denies the snap transaction
+        hiddenBackend.writes shouldBe emptyList()
+        hiddenBackend.ordinaryTransactions = Int.MAX_VALUE
+        hiddenBackend.runAll()
+        hiddenBackend.writes.filterIsInstance<WrapperPlayServerEntityTeleport>().single().position.x shouldBe 0.2
+        hiddenBackend.writes.filterIsInstance<WrapperPlayServerEntityMetadata>().single().metadataValue(9) shouldBe 0
+    }
+
     "async admission touches frames only on the event loop and terminal cleanup waits for admission" {
         val backend = RecordingPacketBackend()
         val connection = PacketDisplayAttachment(Any(), Logger.getAnonymousLogger(), backend)

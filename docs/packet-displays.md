@@ -55,6 +55,15 @@ scenes may take multiple ticks to capture; geometry, population and visibility
 limits are unchanged. Paper's sent-chunk snapshot getter remains one indivisible
 native call.
 
+Short sweeps explicitly spend the queue's remaining allowance in the current
+Paper tick, without first waiting for a delayed task. `drainAvailable` binds the
+queue to Paper's tick identity: all display owners and scheduled continuations
+share the same 128-step/2 ms allowance, including repeated calls within one tick.
+Exhausted work resumes on a later tick. Completing capture waits asynchronously
+for that sweep's Netty admissions instead of polling their futures with native
+steps. Slow Netty still holds the single-capture gate, so immutable snapshots do
+not accumulate ahead of the connection queue.
+
 Only detached protocol snapshots cross to Netty. Collection sorting/copies,
 frame merging, encoding, delta calculation and packet writes happen there.
 Main does not acquire the connection's frame-processing monitor. Each connection
@@ -135,6 +144,43 @@ The owner also closes all groups during shutdown. Removed handles release their
 group reference, while teleports and attach/detach preserve it. Without a group,
 the existing visibility policy is unchanged.
 
+Core also suppresses cosmetic updates to already spawned displays that are
+definitely behind the viewer's server-reported eye/look direction. This is a
+conservative rear cone, not the client's exact frustum: FOV and third-person
+camera mode are unavailable. Pure sphere/cone checks run on Netty. Both the last
+admitted pose and the newest pose must lie beyond the rear margin before updates
+pause, so an object crossing the view cannot leave its old visible pose behind.
+The margin uses 125 degrees to pause and 115 degrees to resume, with a 0.75-block
+near guard outside the object's radius. Attachments always keep normal updates.
+
+Bounds include transform translation/scale, authored display width/height and
+shadow radius. Blocks use their unit geometry; ordinary items without declared
+bounds use a padded 1.5-model-unit sphere multiplied by the largest scale.
+Oversized resource-pack item meshes must declare suitably large display bounds;
+Core cannot discover arbitrary client model geometry. Text without authored
+bounds remains uncullable. Rotation and billboard changes do not shrink the
+spherical envelope.
+
+Rear suppression retains entity IDs and the actual last admitted frame; it does
+not destroy/spawn on camera turns or advance the packet baseline for skipped
+updates. On returning, the latest pose is sent with zero teleport/transform
+duration once, and the next refresh restores the caller's interpolation. Initial
+spawns, privacy loss, chunk/world replay, replacement and terminal cleanup keep
+their normal lifecycle, even while the display is behind the viewer. No wall
+occlusion or ray tracing is performed.
+
+The optional `ru.arc.paper.api.ArcAfkProvider` supplies the server's canonical
+AFK state. The main-thread audience capture resolves it once and reads one
+bounded, in-memory Boolean per viewer; no provider means no AFK pause. Core does
+not infer AFK from native idle duration or evaluate placeholders. While AFK,
+ordinary pose/content updates and new cosmetic spawns pause even in front of the
+viewer. Existing IDs retain their admitted state; return snaps to the newest
+state and creates any deferred displays. Privacy removals, chunk/reset
+invalidation, terminal cleanup and attachment relation changes still reconcile.
+An AFK chunk replay removes stale IDs immediately and defers their fresh spawn
+until the player returns. Providers register through Bukkit services using the
+host's API class and unregister at their own lifecycle boundary.
+
 No visual is written to the world, so new scenes cannot leave native orphan
 entities. A migrating plugin may remove old native entities only through its
 existing exact owner tags, including in chunks loaded after startup. Core does
@@ -147,7 +193,8 @@ Focused checks:
 ./gradlew :arc-core-paper:test --tests 'ru.arc.paper.display.*'
 ```
 
-The tests cover immutable capture, audience/chunk/connection lifecycle, delta
-and coalescing behavior, ordered cleanup and write failure recovery. They do not
+The tests cover immutable capture, audience/chunk/connection lifecycle, rear
+bounds and hysteresis, canonical AFK snapshots, pause/resume packet deltas,
+coalescing, ordered cleanup and write failure recovery. They do not
 prove client appearance or wire compatibility on a running Minecraft client;
 those remain separate deployment checks.
