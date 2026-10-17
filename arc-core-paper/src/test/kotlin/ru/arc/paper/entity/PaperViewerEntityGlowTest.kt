@@ -21,8 +21,12 @@ import ru.arc.paper.testing.MockBukkitTestRuntime
 import ru.arc.paper.testing.failOnUnsupportedMockBukkitOperation
 import ru.arc.paper.testing.loadPlugin
 import ru.arc.paper.api.VisualPacketAdmission
+import ru.arc.paper.runtime.PaperNativeCleanupServiceProvider
 import java.util.UUID
 import java.util.logging.Logger
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class PaperViewerEntityGlowTest : FreeSpec({
     val previousPacketEventsApi = PacketEvents.getAPI()
@@ -49,6 +53,26 @@ class PaperViewerEntityGlowTest : FreeSpec({
         withViewerGlow(listOf(EntityData(0, EntityDataTypes.BYTE, withGlowBit(flags, true)))) shouldBe null
     }
 
+    "viewer and entity removal preserve other viewer indexes and detach cannot clear a replacement" {
+        val state = ViewerEntityGlowSelections()
+        val entity = mockk<Entity>()
+        val viewers = List(300) { UUID.randomUUID() }
+        viewers.forEach { viewer -> repeat(3) { id -> state.select(ViewerEntityGlowKey(viewer, id), entity) } }
+        state.forgetViewer(viewers[0])
+        state.forgetEntities(viewers[1], intArrayOf(0, 2))
+        state.isSelected(viewers[0], 0) shouldBe false
+        state.isSelected(viewers[1], 0) shouldBe false
+        state.isSelected(viewers[1], 1) shouldBe true
+        state.isSelected(viewers[2], 0) shouldBe true
+        state.size shouldBe 895
+        val old = state.detach()
+        state.size shouldBe 0
+        state.select(ViewerEntityGlowKey(viewers[0], 7), entity)
+        old.asSequence().count() shouldBe 895
+        state.isSelected(viewers[0], 7) shouldBe true
+        state.size shouldBe 1
+    }
+
     "selection is viewer-specific, false restores native glow, and close restores remaining viewers" {
         MockBukkitTestRuntime.open().use { paper ->
             val plugin = paper.loadPlugin<TestPaperPlugin>()
@@ -56,7 +80,8 @@ class PaperViewerEntityGlowTest : FreeSpec({
             val firstViewer = paper.addPlayer("First")
             val secondViewer = paper.addPlayer("Second")
             val transport = RecordingTransport()
-            val glow = PaperViewerEntityGlow(plugin, transport)
+            val cleanup = paper.glowCleanup()
+            val glow = PaperViewerEntityGlow(plugin, transport, cleanup)
 
             target.isGlowing = false
             val nativeUnlit = transport.nativeFlags(target)
@@ -80,11 +105,13 @@ class PaperViewerEntityGlowTest : FreeSpec({
 
             glow.close()
             glow.close()
+            paper.performTicks(1)
             transport.sent.last().viewerId shouldBe secondViewer.uniqueId
             transport.sent.last().flags shouldBe nativeLit
             transport.sent.last().cleanup shouldBe true
             glow.trackedSelectionCount() shouldBe 0
             transport.unregistered shouldBe true
+            cleanup.close()
         }
     }
 
@@ -94,13 +121,17 @@ class PaperViewerEntityGlowTest : FreeSpec({
             val target = paper.addPlayer("Target")
             val viewer = paper.addPlayer("Viewer")
             val transport = RecordingTransport()
-            val glow = PaperViewerEntityGlow(plugin, transport)
+            val cleanup = paper.glowCleanup()
+            val glow = PaperViewerEntityGlow(plugin, transport, cleanup)
 
             glow.set(viewer, target, glowing = true)
             transport.failNativeFlags = true
 
-            runCatching { glow.close() }.isFailure shouldBe true
+            val closing = glow.closeAsync()
+            paper.performTicks(1)
+            closing.isCompletedExceptionally shouldBe true
             transport.unregistered shouldBe true
+            cleanup.close()
         }
     }
 
@@ -110,16 +141,113 @@ class PaperViewerEntityGlowTest : FreeSpec({
             val target = paper.addPlayer("Target")
             val viewer = paper.addPlayer("Viewer")
             val transport = RecordingTransport().apply { deferCleanups = true }
-            val glow = PaperViewerEntityGlow(plugin, transport)
+            val cleanup = paper.glowCleanup()
+            val glow = PaperViewerEntityGlow(plugin, transport, cleanup)
 
             glow.set(viewer, target, glowing = true)
             glow.close()
+            paper.performTicks(1)
             transport.unregistered shouldBe false
 
             val user = mockk<User>()
             every { user.uuid } returns viewer.uniqueId
             every { user.channel } returns Any()
             transport.fireDisconnect(UserDisconnectEvent(user))
+            paper.performTicks(1)
+            transport.unregistered shouldBe true
+            cleanup.close()
+        }
+    }
+
+    "selective restoration observer preserves the live owner and cannot cancel accepted work" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val plugin = paper.createSimplePlugin("GlowConsumer")
+            val viewer = paper.addPlayer("Viewer")
+            val target = paper.addPlayer("Target")
+            val transport = RecordingTransport().apply { deferCleanups = true }
+            paper.glowCleanup().use { cleanup ->
+                val glow = PaperViewerEntityGlow(plugin, transport, cleanup)
+                glow.set(viewer, target, true)
+                glow.set(viewer, target, false)
+                val observer = glow.cleanupDrained()
+                observer.cancel(false) shouldBe true
+                val next = glow.cleanupDrained()
+                next.isDone shouldBe false
+                val user = mockk<User> {
+                    every { uuid } returns viewer.uniqueId
+                    every { channel } returns Any()
+                }
+                transport.fireDisconnect(UserDisconnectEvent(user))
+                next.join() shouldBe null
+                transport.unregistered shouldBe false
+                glow.set(viewer, target, true)
+                glow.isSelectedFor(viewer.uniqueId, target.entityId) shouldBe true
+                transport.deferCleanups = false
+                glow.close()
+                paper.performTicks(1)
+            }
+        }
+    }
+
+    "close detaches immediately and restores large selections on the host budget after consumer disable" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val plugin = paper.createSimplePlugin("GlowConsumer")
+            val viewer = paper.addPlayer("Viewer")
+            val transport = RecordingTransport()
+            paper.glowCleanup(7).use { cleanup ->
+                val glow = PaperViewerEntityGlow(plugin, transport, cleanup)
+                val entities = (1..300).map { id -> mockk<Entity> {
+                    every { entityId } returns id
+                    every { isValid } returns true
+                    every { isGlowing } returns false
+                } }
+                entities.forEach { glow.set(viewer, it, true) }
+                transport.sent.clear()
+                val observer = glow.closeAsync()
+                observer.cancel(false) shouldBe true
+                val actualObserver = glow.closeAsync()
+                glow.trackedSelectionCount() shouldBe 0
+                transport.sent.size shouldBe 0
+                actualObserver.isDone shouldBe false
+                paper.server.pluginManager.disablePlugin(plugin)
+                paper.performTicks(1)
+                transport.sent.size shouldBe 7
+                actualObserver.isDone shouldBe false
+                repeat(43) {
+                    val before = transport.sent.size
+                    paper.performTicks(1)
+                    (transport.sent.size - before <= 7) shouldBe true
+                }
+                actualObserver.join() shouldBe null
+                transport.sent.size shouldBe 300
+                transport.sent.map { it.entityId }.toSet().size shouldBe 300
+                transport.sent.all { it.cleanup } shouldBe true
+                transport.unregistered shouldBe true
+            }
+        }
+    }
+
+    "host stop fails a partial cleanup and never reports its remaining pairs as restored" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val plugin = paper.createSimplePlugin("GlowConsumer")
+            val viewer = paper.addPlayer("Viewer")
+            val transport = RecordingTransport().apply { deferCleanups = true }
+            val cleanup = paper.glowCleanup(1)
+            val glow = PaperViewerEntityGlow(plugin, transport, cleanup)
+            val entities = (1..3).map { id -> mockk<Entity> {
+                every { entityId } returns id
+                every { isValid } returns true
+                every { isGlowing } returns false
+            } }
+            entities.forEach { glow.set(viewer, it, true) }
+            transport.sent.clear()
+            val closing = glow.closeAsync()
+            paper.performTicks(1)
+            transport.sent.size shouldBe 1
+            cleanup.close()
+            closing.isCompletedExceptionally shouldBe true
+            paper.performTicks(5)
+            transport.sent.size shouldBe 1
             transport.unregistered shouldBe true
         }
     }
@@ -291,7 +419,8 @@ class PaperViewerEntityGlowTest : FreeSpec({
                 val viewer = paper.addPlayer("Viewer")
                 val target = paper.addPlayer("Target")
                 val transport = RecordingTransport()
-                val glow = PaperViewerEntityGlow(plugin, transport)
+                val cleanup = paper.glowCleanup()
+                val glow = PaperViewerEntityGlow(plugin, transport, cleanup)
                 glow.set(viewer, target, glowing = true)
 
                 val statusUser = mockk<User>()
@@ -306,10 +435,40 @@ class PaperViewerEntityGlowTest : FreeSpec({
                 transport.firePacketSend(statusPacket)
                 glow.isSelectedFor(viewer.uniqueId, target.entityId) shouldBe true
                 glow.close()
+                paper.performTicks(1)
+                cleanup.close()
             }
         }
     }
+
+    "blocked packet write cannot hold native admission and cleanup completion waits for the accepted write" {
+        val backend = RecordingGlowQueueBackend().apply { ordinaryAdmission = VisualPacketAdmission.ALLOWED }
+        val queue = ViewerEntityGlowPacketQueue(backend, Logger.getAnonymousLogger())
+        val channel = Any()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        backend.duringNextWrite = { entered.countDown(); check(release.await(5, TimeUnit.SECONDS)) }
+        queue.submit(channel, 1, 0x20.toByte(), true)
+        val writing = CompletableFuture.runAsync { backend.runImmediate() }
+        try {
+            entered.await(5, TimeUnit.SECONDS) shouldBe true
+            queue.submit(channel, 2, 0x20.toByte(), true)
+            queue.retire()
+            var drained = false
+            queue.whenCleanupsDrained { drained = true }
+            drained shouldBe false
+            release.countDown()
+            writing.get(5, TimeUnit.SECONDS)
+            drained shouldBe false
+            backend.runImmediate()
+            drained shouldBe true
+            backend.flushes shouldBe 2
+        } finally { release.countDown(); writing.get(5, TimeUnit.SECONDS) }
+    }
 })
+
+private fun MockBukkitTestRuntime.glowCleanup(steps: Int = 128) =
+    PaperNativeCleanupServiceProvider(createSimplePlugin("GlowCleanupHost"), steps, 2_000_000L) { 0L }
 
 private class RecordingTransport : ViewerEntityGlowPacketTransport {
     override fun nativeFlags(entity: Entity): Byte {

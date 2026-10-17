@@ -25,11 +25,13 @@ import org.bukkit.plugin.Plugin
 import java.lang.ref.WeakReference
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.WeakHashMap
 import java.util.logging.Level
 import java.util.logging.Logger
 import ru.arc.paper.api.VisualPacketAdmission
+import ru.arc.paper.api.ArcNativeCleanupService
 import ru.arc.paper.packet.PaperVisualPackets
 
 /**
@@ -49,6 +51,9 @@ import ru.arc.paper.packet.PaperVisualPackets
 class PaperViewerEntityGlow internal constructor(
     plugin: Plugin,
     private val transport: ViewerEntityGlowPacketTransport,
+    private val cleanup: ArcNativeCleanupService = requireNotNull(plugin.server.servicesManager.load(ArcNativeCleanupService::class.java)) {
+        "ArcCore native cleanup service is unavailable; enable ArcCore before visual owners"
+    },
 ) : AutoCloseable, Listener {
     /** Creates an owner backed by the already initialized PacketEvents plugin. */
     constructor(plugin: Plugin) : this(plugin, PacketEventsViewerEntityGlowPacketTransport(plugin, "entity-glow"))
@@ -57,8 +62,11 @@ class PaperViewerEntityGlow internal constructor(
     constructor(plugin: Plugin, feature: String) : this(plugin, PacketEventsViewerEntityGlowPacketTransport(plugin, feature))
 
     private val selections = ViewerEntityGlowSelections()
+    private val server = plugin.server
+    private val cleanupOwner = "${plugin.name}:entity-glow"
     @Volatile private var closed = false
     private val listenerUnregistered = AtomicBoolean()
+    private var completion: CompletableFuture<Void>? = null
 
     private val packetListener = object : PacketListenerAbstract(PacketListenerPriority.HIGHEST) {
         override fun onPacketSend(event: PacketSendEvent) {
@@ -141,23 +149,83 @@ class PaperViewerEntityGlow internal constructor(
         selections.forgetViewer(event.player.uniqueId)
     }
 
-    override fun close() {
+    /**
+     * Observes accepted restoration packets without retiring this shared owner. Call on Paper
+     * after issuing the desired clears. Later calls can enqueue more work; this is not a barrier
+     * for future updates. A closing owner instead returns its complete native/packet retirement.
+     * Completion has the same write/flush invocation boundary as [closeAsync].
+     */
+    fun cleanupDrained(): CompletableFuture<Void> {
         checkPrimaryThread()
-        if (closed) return
+        completion?.let { return it.copy() }
+        val result = CompletableFuture<Void>()
+        try { transport.whenCleanupsDrained { result.complete(null) } }
+        catch (failure: Throwable) { result.completeExceptionally(failure) }
+        return result.copy()
+    }
+
+    /**
+     * Seals overrides and restores one viewer/entity pair per host native step. Completion
+     * includes native capture and the existing PacketEvents queue's successful write/flush
+     * invocation (or a superseding native packet/disconnect), not client/socket delivery.
+     * The host owns this cursor after consumer disable; host stop fails its observation.
+     * Returned futures are copies: cancelling an observer cannot cancel accepted cleanup.
+     */
+    fun closeAsync(): CompletableFuture<Void> {
+        checkPrimaryThread()
+        completion?.let { return it.copy() }
+        val result = CompletableFuture<Void>()
+        completion = result
         closed = true
         HandlerList.unregisterAll(this)
         transport.retire()
-
+        val cursor = selections.detach()
+        val drained = AtomicBoolean()
+        var observing = false
+        var nativeFailure: Throwable? = null
         try {
-            selections.drain().forEach { (key, reference) ->
-                val viewer = Bukkit.getPlayer(key.viewerId)?.takeIf(Player::isOnline) ?: return@forEach
-                val entity = reference.get()?.takeIf { it.isValid && it.entityId == key.entityId } ?: return@forEach
-                transport.send(viewer, key.entityId, transport.nativeFlags(entity), cleanup = true)
+            cleanup.submit(cleanupOwner) {
+                if (cursor.hasNext()) {
+                    val (key, reference) = cursor.next()
+                    try {
+                        val viewer = server.getPlayer(key.viewerId)?.takeIf(Player::isOnline)
+                        val entity = reference.get()?.takeIf { it.isValid && it.entityId == key.entityId }
+                        if (viewer != null && entity != null)
+                            transport.send(viewer, key.entityId, transport.nativeFlags(entity), cleanup = true)
+                    } catch (failure: Throwable) {
+                        if (nativeFailure == null) nativeFailure = failure
+                        else if (nativeFailure !== failure) nativeFailure!!.addSuppressed(failure)
+                    }
+                    false
+                } else {
+                    if (!observing) {
+                        observing = true
+                        transport.whenCleanupsDrained { drained.set(true) }
+                    }
+                    if (drained.get()) {
+                        nativeFailure?.let { throw it }
+                        true
+                    } else false
+                }
+            }.whenComplete { _, failure ->
+                var terminal = failure
+                try { unregisterPacketListener() } catch (unregisterFailure: Throwable) {
+                    if (terminal == null) terminal = unregisterFailure
+                    else if (terminal !== unregisterFailure) terminal.addSuppressed(unregisterFailure)
+                }
+                if (terminal == null) result.complete(null) else result.completeExceptionally(terminal)
             }
-        } finally {
-            transport.whenCleanupsDrained(::unregisterPacketListener)
+        } catch (failure: Throwable) {
+            try { unregisterPacketListener() } catch (unregisterFailure: Throwable) {
+                if (failure !== unregisterFailure) failure.addSuppressed(unregisterFailure)
+            }
+            result.completeExceptionally(failure)
         }
+        return result.copy()
     }
+
+    /** Dispatch-only compatibility entry point; [closeAsync] observes the actual cleanup. */
+    override fun close() { closeAsync() }
 
     internal fun isSelectedFor(viewerId: UUID, entityId: Int): Boolean =
         selections.isSelected(viewerId, entityId)
@@ -181,33 +249,46 @@ internal data class ViewerEntityGlowKey(val viewerId: UUID, val entityId: Int)
 
 /** Concurrent because PacketEvents observes metadata on connection event loops. */
 internal class ViewerEntityGlowSelections {
-    private val selected = ConcurrentHashMap<ViewerEntityGlowKey, WeakReference<Entity>>()
+    @Volatile private var selected = ConcurrentHashMap<UUID, ConcurrentHashMap<Int, WeakReference<Entity>>>()
 
-    val size: Int get() = selected.size
+    /** Test diagnostic only; gameplay operations never traverse other viewers. */
+    val size: Int get() = selected.values.sumOf { it.size }
 
     fun select(key: ViewerEntityGlowKey, entity: Entity) {
-        selected[key] = WeakReference(entity)
+        selected.compute(key.viewerId) { _, existing ->
+            (existing ?: ConcurrentHashMap()).also { it[key.entityId] = WeakReference(entity) }
+        }
     }
 
     fun clear(key: ViewerEntityGlowKey) {
-        selected.remove(key)
+        selected.computeIfPresent(key.viewerId) { _, targets ->
+            targets.remove(key.entityId)
+            targets.takeUnless { it.isEmpty() }
+        }
     }
 
     fun isSelected(viewerId: UUID, entityId: Int): Boolean =
-        selected.containsKey(ViewerEntityGlowKey(viewerId, entityId))
+        selected[viewerId]?.containsKey(entityId) == true
 
     fun forgetViewer(viewerId: UUID) {
-        selected.keys.removeIf { it.viewerId == viewerId }
+        selected.remove(viewerId)
     }
 
     fun forgetEntities(viewerId: UUID, entityIds: IntArray) {
         if (entityIds.isEmpty()) return
-        val removed = entityIds.toHashSet()
-        selected.keys.removeIf { it.viewerId == viewerId && it.entityId in removed }
+        for (entityId in entityIds) clear(ViewerEntityGlowKey(viewerId, entityId))
     }
 
-    fun drain(): List<Pair<ViewerEntityGlowKey, WeakReference<Entity>>> =
-        selected.entries.map { it.key to it.value }.also { selected.clear() }
+    /** Native owner only; old packet observers can only remove from their captured old map. */
+    fun detach(): Iterator<Pair<ViewerEntityGlowKey, WeakReference<Entity>>> {
+        val previous = selected
+        selected = ConcurrentHashMap()
+        return sequence {
+            for ((viewer, targets) in previous) {
+                for ((entityId, reference) in targets) yield(ViewerEntityGlowKey(viewer, entityId) to reference)
+            }
+        }.iterator()
+    }
 }
 
 /** Exact PacketEvents boundary used by the native implementation and deterministic tests. */
@@ -287,8 +368,10 @@ internal class ViewerEntityGlowPacketQueue(
     private val logger: Logger,
 ) {
     private class ConnectionState {
-        val pending = linkedMapOf<Int, ViewerEntityGlowDelivery>()
-        val inFlight = linkedMapOf<Int, ViewerEntityGlowDelivery>()
+        var pending = linkedMapOf<Int, ViewerEntityGlowDelivery>()
+        var pendingCleanups = 0
+        var inFlightCleanups = 0
+        var active = true
         var scheduled = false
         var failureLogged = false
     }
@@ -296,7 +379,8 @@ internal class ViewerEntityGlowPacketQueue(
     private class OwnWrite(val channel: Any, val delivery: ViewerEntityGlowDelivery)
 
     private val connections = WeakHashMap<Any, ConnectionState>()
-    private val cleanupsDrainedCallbacks = mutableListOf<() -> Unit>()
+    private var cleanupsDrainedCallbacks = mutableListOf<() -> Unit>()
+    private var cleanupCount = 0 // Pending plus in-flight, updated only under the short admission monitor.
     private val ownWrites = ThreadLocal<MutableList<OwnWrite>>()
     @Volatile private var retired = false
 
@@ -311,12 +395,10 @@ internal class ViewerEntityGlowPacketQueue(
             state = connections[channel] ?: ConnectionState().also {
                 connections[channel] = it
             }
-            synchronized(state) {
-                state.pending[entityId] = delivery
-                if (!state.scheduled) {
-                    state.scheduled = true
-                    schedule = true
-                }
+            putPending(state, delivery)
+            if (!state.scheduled) {
+                state.scheduled = true
+                schedule = true
             }
         }
         if (schedule) schedule(channel, state, retry = false)
@@ -325,11 +407,10 @@ internal class ViewerEntityGlowPacketQueue(
     /** A server destroy packet makes any queued metadata for those IDs obsolete. */
     fun forgetEntities(channel: Any, entityIds: IntArray) {
         if (entityIds.isEmpty()) return
-        val callbacks = synchronized(connections) {
-            val state = connections[channel]
-            if (state != null) synchronized(state) { entityIds.forEach(state.pending::remove) }
-            collectCleanupsDrainedCallbacksLocked()
+        for (entityId in entityIds) synchronized(connections) {
+            connections[channel]?.let { removePending(it, entityId) }
         }
+        val callbacks = synchronized(connections) { collectCleanupsDrainedCallbacksLocked() }
         callbacks.forEach { it() }
     }
 
@@ -338,11 +419,7 @@ internal class ViewerEntityGlowPacketQueue(
         if (isOwnWrite(channel, entityId, flags)) return
         val callbacks = synchronized(connections) {
             val state = connections[channel]
-            if (state != null) {
-                synchronized(state) {
-                    state.pending[entityId]?.takeIf { it.cleanup }?.let { state.pending.remove(entityId) }
-                }
-            }
+            if (state?.pending?.get(entityId)?.cleanup == true) removePending(state, entityId)
             collectCleanupsDrainedCallbacksLocked()
         }
         callbacks.forEach { it() }
@@ -350,27 +427,16 @@ internal class ViewerEntityGlowPacketQueue(
 
     fun hasPendingCleanup(channel: Any, entityId: Int): Boolean = synchronized(connections) {
         val state = connections[channel] ?: return@synchronized false
-        synchronized(state) { state.pending[entityId]?.cleanup == true }
+        state.pending[entityId]?.cleanup == true
     }
 
-    /** Drops queued glow-on updates when the owner closes but preserves restorations. */
-    fun retire() {
-        retired = true
-        val callbacks = synchronized(connections) {
-            connections.values.forEach { state ->
-                synchronized(state) {
-                    state.pending.entries.removeIf { !it.value.cleanup }
-                }
-            }
-            collectCleanupsDrainedCallbacksLocked()
-        }
-        callbacks.forEach { it() }
-    }
+    /** Constant-time seal; the existing connection drain discards queued ordinary updates. */
+    fun retire() { retired = true }
 
     /** Runs once no pending or in-flight restoration remains, including disconnect cleanup. */
     fun whenCleanupsDrained(callback: () -> Unit) {
         val runNow = synchronized(connections) {
-            if (hasPendingCleanupsLocked()) {
+            if (cleanupCount != 0) {
                 cleanupsDrainedCallbacks += callback
                 false
             } else {
@@ -402,14 +468,17 @@ internal class ViewerEntityGlowPacketQueue(
             forgetChannel(channel)
             return
         }
-        val batch = synchronized(state) {
-            state.pending.values.toList().also { pending ->
-                state.pending.clear()
-                pending.forEach { delivery -> state.inFlight[delivery.entityId] = delivery }
+        // Detach in O(1). Encoding/filtering runs on the event loop without an admission lock.
+        val batch = synchronized(connections) {
+            if (!state.active || connections[channel] !== state) return
+            state.pending.also {
+                state.pending = linkedMapOf()
+                state.inFlightCleanups = state.pendingCleanups
+                state.pendingCleanups = 0
             }
         }
         if (batch.isEmpty()) {
-            finish(channel, state, emptyList(), emptyList(), retry = false)
+            finish(channel, state, emptyList(), retry = false)
             return
         }
 
@@ -418,7 +487,7 @@ internal class ViewerEntityGlowPacketQueue(
         var wrote = false
         var failure: Throwable? = null
         for (cleanup in listOf(true, false)) {
-            val group = batch.filter { it.cleanup == cleanup && (cleanup || !retired) }
+            val group = batch.values.filter { it.cleanup == cleanup && (cleanup || !retired) }
             if (group.isEmpty()) continue
             try {
                 val admission = withOwnWriteMarkers(channel, group) {
@@ -445,34 +514,32 @@ internal class ViewerEntityGlowPacketQueue(
             }
         }
         if (failure != null) warnOnce(state, failure)
-        finish(channel, state, batch, deferred, retry = deferred.isNotEmpty())
+        finish(channel, state, deferred, retry = deferred.isNotEmpty())
     }
 
     private fun finish(
         channel: Any,
         state: ConnectionState,
-        completed: List<ViewerEntityGlowDelivery>,
         deferred: List<ViewerEntityGlowDelivery>,
         retry: Boolean,
     ) {
         var next = false
         var retryNext = false
+        // Each held section is one entry, never a batch-sized merge that can block Paper.
+        for (delivery in deferred) synchronized(connections) {
+            if (state.active && (!retired || delivery.cleanup) && delivery.entityId !in state.pending)
+                putPending(state, delivery)
+        }
         val callbacks = synchronized(connections) {
-            if (connections[channel] !== state) return
-            synchronized(state) {
-                completed.forEach { delivery ->
-                    if (state.inFlight[delivery.entityId] == delivery) state.inFlight.remove(delivery.entityId)
-                }
-                deferred.forEach { delivery ->
-                    if (!retired || delivery.cleanup) state.pending.putIfAbsent(delivery.entityId, delivery)
-                }
-                if (state.pending.isEmpty()) {
-                    state.scheduled = false
-                    state.failureLogged = false
-                } else {
-                    next = true
-                    retryNext = retry
-                }
+            if (!state.active || connections[channel] !== state) return
+            cleanupCount -= state.inFlightCleanups
+            state.inFlightCleanups = 0
+            if (state.pending.isEmpty()) {
+                state.scheduled = false
+                state.failureLogged = false
+            } else {
+                next = true
+                retryNext = retry
             }
             collectCleanupsDrainedCallbacksLocked()
         }
@@ -483,13 +550,10 @@ internal class ViewerEntityGlowPacketQueue(
     private fun schedule(channel: Any, state: ConnectionState, retry: Boolean) {
         try {
             val channelRef = WeakReference(channel)
-            val stateRef = WeakReference(state)
             val task = {
-                val currentState = stateRef.get()
                 val currentChannel = channelRef.get()
-                if (currentState != null) {
-                    if (currentChannel != null) drain(currentChannel, currentState) else forgetState(currentState)
-                }
+                // Keep the accounting state until its queued task observes weak-channel loss.
+                if (currentChannel != null) drain(currentChannel, state) else forgetState(state)
             }
             if (retry) backend.retry(channel, task) else backend.enqueue(channel, task)
         } catch (failure: Throwable) {
@@ -497,13 +561,13 @@ internal class ViewerEntityGlowPacketQueue(
             if (!backend.isOpen(channel)) {
                 forgetChannel(channel)
             } else {
-                synchronized(state) { state.scheduled = false }
+                synchronized(connections) { state.scheduled = false }
             }
         }
     }
 
     private fun warnOnce(state: ConnectionState, failure: Throwable) {
-        val log = synchronized(state) {
+        val log = synchronized(connections) {
             if (state.failureLogged) false else {
                 state.failureLogged = true
                 true
@@ -513,16 +577,18 @@ internal class ViewerEntityGlowPacketQueue(
     }
 
     private fun clear(state: ConnectionState) {
-        synchronized(state) {
-            state.pending.clear()
-            state.inFlight.clear()
-            state.scheduled = false
-        }
+        if (!state.active) return
+        cleanupCount -= state.pendingCleanups + state.inFlightCleanups
+        state.pending = linkedMapOf()
+        state.pendingCleanups = 0
+        state.inFlightCleanups = 0
+        state.scheduled = false
+        state.active = false
     }
 
     private fun forgetState(state: ConnectionState) {
         val callbacks = synchronized(connections) {
-            connections.entries.removeIf { it.value === state }
+            // WeakHashMap expunges the lost key itself. No global map scan under admission lock.
             clear(state)
             collectCleanupsDrainedCallbacksLocked()
         }
@@ -545,17 +611,25 @@ internal class ViewerEntityGlowPacketQueue(
         }
     }
 
-    private fun hasPendingCleanupsLocked(): Boolean = connections.values.any { state ->
-        synchronized(state) {
-            state.pending.values.any { it.cleanup } || state.inFlight.values.any { it.cleanup }
+    private fun putPending(state: ConnectionState, delivery: ViewerEntityGlowDelivery) {
+        val previous = state.pending.put(delivery.entityId, delivery)
+        val change = (if (delivery.cleanup) 1 else 0) - (if (previous?.cleanup == true) 1 else 0)
+        state.pendingCleanups += change
+        cleanupCount += change
+    }
+
+    private fun removePending(state: ConnectionState, entityId: Int) {
+        if (state.pending.remove(entityId)?.cleanup == true) {
+            state.pendingCleanups--
+            cleanupCount--
         }
     }
 
     private fun collectCleanupsDrainedCallbacksLocked(): List<() -> Unit> =
-        if (cleanupsDrainedCallbacks.isEmpty() || hasPendingCleanupsLocked()) {
+        if (cleanupsDrainedCallbacks.isEmpty() || cleanupCount != 0) {
             emptyList()
         } else {
-            cleanupsDrainedCallbacks.toList().also { cleanupsDrainedCallbacks.clear() }
+            cleanupsDrainedCallbacks.also { cleanupsDrainedCallbacks = mutableListOf() }
         }
 }
 
