@@ -103,7 +103,7 @@ internal class SharedSchematicService(
 
     override fun open(owner: String, root: Path): ArcSchematicLibrary {
         require(owner.isNotBlank() && owner.length <= 128 && owner.none(Char::isISOControl)) { "Schematic owner must be a bounded name" }
-        val library = Library(root.toAbsolutePath().normalize())
+        val library = Library(owner, root.toAbsolutePath().normalize())
         synchronized(monitor) {
             ensureOpen()
             if (libraries.size >= 256) failure(ArcSchematicFailure.BUSY, "Schematic library lease limit reached")
@@ -315,7 +315,7 @@ internal class SharedSchematicService(
         (snapshot as? SchematicSnapshot)?.takeIf { it.producer === producer }
             ?: failure(ArcSchematicFailure.INVALID_SNAPSHOT, "Schematic snapshot belongs to another provider")
 
-    private inner class Library(val root: Path) : ArcSchematicLibrary {
+    private inner class Library(val owner: String, val root: Path) : ArcSchematicLibrary {
         @Volatile var closed = false
         private val operations = Collections.newSetFromMap(IdentityHashMap<DeferredOperation, Boolean>())
 
@@ -328,6 +328,13 @@ internal class SharedSchematicService(
 
         override fun loadVerified(id: String, expectedFileSha256: String, contentPolicy: ArcSchematicContentPolicy): CompletableFuture<ArcSchematicSnapshot> =
             loadInternal(id, expectedFileSha256, contentPolicy)
+
+        override fun captureSource(id: String, expectedFileSha256: String): CompletableFuture<ByteArray> = request(this) {
+            if (!expectedFileSha256.matches(Regex("[0-9a-f]{64}"))) failure(ArcSchematicFailure.HASH_MISMATCH, "Invalid expected schematic fingerprint")
+            val source = files.read(files.resolve(root, id))
+            if (source.sha256 != expectedFileSha256) failure(ArcSchematicFailure.HASH_MISMATCH, "Schematic fingerprint changed")
+            CompletableFuture.completedFuture(source.bytes)
+        }
 
         private fun loadInternal(id: String, expected: String?, policy: ArcSchematicContentPolicy): CompletableFuture<ArcSchematicSnapshot> = request(this) {
             if (expected != null && !expected.matches(Regex("[0-9a-f]{64}"))) failure(ArcSchematicFailure.HASH_MISMATCH, "Invalid expected schematic fingerprint")
@@ -364,11 +371,11 @@ internal class SharedSchematicService(
         }
 
         override fun paste(snapshot: ArcSchematicSnapshot, target: ArcSchematicPasteTarget, options: ArcSchematicPasteOptions): ArcSchematicOperation =
-            mutation { NativeSchematicMutation.paste(owned(snapshot), target, options) }
+            mutation { NativeSchematicMutation.paste(owner, owned(snapshot), target, options) }
 
         override fun repairConnections(worldId: UUID, blocks: List<ArcSchematicBlock>): ArcSchematicOperation = mutation {
             if (blocks.size > settings.maximumVolume) failure(ArcSchematicFailure.LIMIT_EXCEEDED, "Connection repair exceeds the block limit")
-            NativeSchematicMutation.repair(worldId, blocks.toList())
+            NativeSchematicMutation.repair(owner, worldId, blocks.toList())
         }
 
         private fun mutation(create: () -> NativeSchematicMutation): ArcSchematicOperation {

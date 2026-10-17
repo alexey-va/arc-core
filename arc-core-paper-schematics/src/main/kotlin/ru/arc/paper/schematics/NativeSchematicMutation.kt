@@ -19,12 +19,14 @@ import ru.arc.paper.api.ArcSchematicMutationResult
 import ru.arc.paper.api.ArcSchematicPasteOptions
 import ru.arc.paper.api.ArcSchematicPasteTarget
 import ru.arc.paper.api.ArcSchematicPoint
+import ru.arc.paper.protection.PaperBlockProtection
 import java.util.AbstractList
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 
 /** Constructed on a worker. All world access belongs to [step] on the Paper thread. */
 internal class NativeSchematicMutation private constructor(
+    private val owner: String,
     private val worldId: UUID,
     private val cells: List<ArcSchematicBlock>,
     private val source: SchematicSnapshot?,
@@ -112,6 +114,7 @@ internal class NativeSchematicMutation private constructor(
                 } else if ((options.ignoreAir && cell.isAir) || (options.ignoreBarriers && cell.isBarrier)) {
                     skipped++
                 } else {
+                    requirePermission(pos)
                     val snapshot = checkNotNull(source)
                     val state = snapshot.entry(index).native
                     val nbt = snapshot.nbt(index)
@@ -145,9 +148,16 @@ internal class NativeSchematicMutation private constructor(
         forEachSchematicMutationChunk(pos, true) { x, z ->
             if (!world.isChunkLoaded(x, z)) failure(ArcSchematicFailure.WORLD_UNAVAILABLE, "Schematic repair neighbor chunk must already be loaded")
         }
+        requirePermission(pos)
         // VALIDATION calls native Block.updateFromNeighbourShapes at this position.
         // NEIGHBORS/UPDATE stay off: no recursive physics outside the supplied scope.
         if (nativeWorld.setBlock(BlockVector3.at(pos.x, pos.y, pos.z), BukkitAdapter.adapt(current), REPAIR_EFFECTS)) changed++ else skipped++
+    }
+
+    private fun requirePermission(position: ArcSchematicPoint) {
+        if (!PaperBlockProtection.permitsSchematicMutation(owner, worldId, position.x, position.y, position.z)) {
+            failure(ArcSchematicFailure.PROTECTED_AREA, "Schematic target is protected")
+        }
     }
 
     companion object {
@@ -157,7 +167,7 @@ internal class NativeSchematicMutation private constructor(
             .with(SideEffect.POI_UPDATE, SideEffect.State.ON)
         private val REPAIR_EFFECTS = WRITE_EFFECTS.with(SideEffect.VALIDATION, SideEffect.State.ON)
 
-        fun paste(snapshot: SchematicSnapshot, target: ArcSchematicPasteTarget, options: ArcSchematicPasteOptions): NativeSchematicMutation {
+        fun paste(owner: String, snapshot: SchematicSnapshot, target: ArcSchematicPasteTarget, options: ArcSchematicPasteOptions): NativeSchematicMutation {
             val cells = object : AbstractList<ArcSchematicBlock>() {
                 override val size get() = snapshot.volume.toInt()
                 override fun get(index: Int): ArcSchematicBlock {
@@ -170,11 +180,11 @@ internal class NativeSchematicMutation private constructor(
                     ))
                 }
             }
-            return NativeSchematicMutation(target.worldId, cells, snapshot, options)
+            return NativeSchematicMutation(owner, target.worldId, cells, snapshot, options)
         }
 
-        fun repair(worldId: UUID, cells: List<ArcSchematicBlock>): NativeSchematicMutation =
-            NativeSchematicMutation(worldId, cells, null, ArcSchematicPasteOptions(false, false, false))
+        fun repair(owner: String, worldId: UUID, cells: List<ArcSchematicBlock>): NativeSchematicMutation =
+            NativeSchematicMutation(owner, worldId, cells, null, ArcSchematicPasteOptions(false, false, false))
     }
 }
 

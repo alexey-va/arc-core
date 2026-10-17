@@ -65,6 +65,14 @@ interface ArcSchematicLibrary : AutoCloseable {
     fun loadVerified(id: String, expectedFileSha256: String): CompletableFuture<ArcSchematicSnapshot>
     fun loadVerified(id: String, expectedFileSha256: String, contentPolicy: ArcSchematicContentPolicy): CompletableFuture<ArcSchematicSnapshot>
 
+    /**
+     * Fresh, bounded source bytes for a consumer's durable construction journal.
+     * Uses the same safe resolver, worker admission and fingerprint checks as loading.
+     * The returned array belongs to the caller; it is never shared with the cache.
+     * Does not decode a clipboard or retain the bytes in the provider.
+     */
+    fun captureSource(id: String, expectedFileSha256: String): CompletableFuture<ByteArray>
+
     /** Mirror local X first, then rotate around the snapshot origin. The result has origin (0,0,0). */
     fun transform(snapshot: ArcSchematicSnapshot, transform: ArcSchematicTransform): CompletableFuture<ArcSchematicSnapshot>
 
@@ -149,7 +157,7 @@ data class ArcSchematicDiagnostics(val entries: Int, val cachedBytes: Long, val 
 
 enum class ArcSchematicFailure {
     INVALID_ID, NOT_FOUND, UNSUPPORTED_FORMAT, UNSUPPORTED_CONTENT, LIMIT_EXCEEDED,
-    BUSY, CLOSED, FILE_CHANGED, HASH_MISMATCH, WORLD_UNAVAILABLE, INVALID_SNAPSHOT, IO_ERROR,
+    BUSY, CLOSED, FILE_CHANGED, HASH_MISMATCH, WORLD_UNAVAILABLE, INVALID_SNAPSHOT, IO_ERROR, PROTECTED_AREA,
 }
 
 class ArcSchematicException(val reason: ArcSchematicFailure, message: String) : RuntimeException(message)

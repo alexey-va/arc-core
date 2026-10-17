@@ -187,6 +187,19 @@ class ProviderHost {
         exit_code, output = self.verify()
         self.assertEqual(0, exit_code, output)
 
+    def test_block_protection_requires_shared_api_and_typed_evidence(self) -> None:
+        manifest = self.root / "arc-core-consumer.toml"
+        manifest.write_text(manifest.read_text().replace('"runtime"]', '"runtime", "paper-block-protection"]'))
+        exit_code, output = self.verify()
+        self.assertEqual(1, exit_code)
+        self.assertIn("arc-core-paper-api", output)
+        self.assertIn("ArcBlockProtectionService", output)
+        build = self.root / "build.gradle.kts"
+        build.write_text(build.read_text() + '\ndependencies { compileOnly("ru.ruscrafting.arc:arc-core-paper-api:2.1.0") }\n')
+        self.write("src/main/kotlin/example/Protection.kt", "class Protection(val check: ArcBlockProtectionService)\n")
+        exit_code, output = self.verify()
+        self.assertEqual(0, exit_code, output)
+
     def test_accepts_paper_provider_host_without_feature_consumer_baseline(self) -> None:
         self.write_valid_provider_host()
 

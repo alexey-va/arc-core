@@ -27,6 +27,26 @@ import java.util.zip.GZIPOutputStream
 import kotlin.io.path.createTempDirectory
 
 class SchematicRuntimeTest : FreeSpec({
+    "durable source captures are fresh owned bytes without decoding or caching" {
+        fixture(settings()) { root, _, codec, service ->
+            val library = service.open("journal", root)
+            val initial = Files.readAllBytes(root.resolve("one.schem"))
+            val captured = library.captureSource("one", sha(initial)).get(5, TimeUnit.SECONDS)
+            captured.toList() shouldBe initial.toList()
+            captured.fill(0)
+            library.captureSource("one", sha(initial)).get(5, TimeUnit.SECONDS).toList() shouldBe initial.toList()
+            codec.decodes.get() shouldBe 0
+            service.diagnostics().entries shouldBe 0
+            Files.write(root.resolve("one.schem"), schematicNbt(variant = 7))
+            val changed = library.captureSource("one", sha(initial))
+            val error = shouldThrow<java.util.concurrent.ExecutionException> { changed.get(5, TimeUnit.SECONDS) }
+            (error.cause as ArcSchematicException).reason shouldBe ArcSchematicFailure.HASH_MISMATCH
+            library.close()
+            val closed = library.captureSource("one", sha(initial))
+            (shouldThrow<CompletionException> { closed.join() }.cause as ArcSchematicException).reason shouldBe ArcSchematicFailure.CLOSED
+        }
+    }
+
     "IDs and lazy root resolution preserve legacy files while rejecting traversal and descendant links" {
         ArcSchematicIds.isValid("civs/house") shouldBe true
         ArcSchematicIds.isValid("nested/legacy.schematic") shouldBe true
@@ -166,7 +186,7 @@ class SchematicRuntimeTest : FreeSpec({
         val scheduler = TestTaskScheduler()
         SchematicMainThread(scheduler, settings()).use { main ->
             repeat(32) {
-                val work = NativeSchematicMutation.repair(java.util.UUID.randomUUID(), emptyList())
+                val work = NativeSchematicMutation.repair("test", java.util.UUID.randomUUID(), emptyList())
                 val completion = main.enqueueMutation(work, work.completion)
                 main.queuedMutations() shouldBe 1
                 completion.whenComplete { _, _ -> main.queuedMutations() shouldBe 0 }
@@ -174,7 +194,7 @@ class SchematicRuntimeTest : FreeSpec({
                 completion.join().cancelled shouldBe true
                 main.queuedMutations() shouldBe 0
             }
-            val alreadyCancelled = NativeSchematicMutation.repair(java.util.UUID.randomUUID(), emptyList())
+            val alreadyCancelled = NativeSchematicMutation.repair("test", java.util.UUID.randomUUID(), emptyList())
             alreadyCancelled.cancel()
             main.enqueueMutation(alreadyCancelled, alreadyCancelled.completion).join().cancelled shouldBe true
             main.queuedMutations() shouldBe 0

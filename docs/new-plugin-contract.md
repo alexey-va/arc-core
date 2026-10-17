@@ -118,6 +118,7 @@ and exporter. See [shared Paper services](shared-paper-services.md).
 | `integration-testing` | `arc-core-integration-testing` and one shared test service |
 | `backend-transfer` | `BackendTransfer` / `BungeeBackendTransfer` |
 | `paper-schematics` | `arc-core-paper-api` plus `ArcSchematicService` / `ArcSchematicLibrary`; shared asynchronous loading, bounded cache, transforms and placement |
+| `paper-block-protection` | `arc-core-paper-api` and `arc-core-paper`, using `ArcBlockProtectionService` or `PaperBlockProtection`; shared protection checks before automated world edits |
 | `chunk-tickets` | `PaperChunkTicketRegistry`; one lifecycle-owned registry per plugin |
 | `paper-audience` | `PaperAudienceEffects` plus `RecordingPaperAudienceEffects` in platform tests |
 | `paper-teleport` | `PaperTeleportExecutor` plus `RecordingPaperTeleportExecutor` in platform tests |
