@@ -194,6 +194,66 @@ class PaperActionPanelsTest : FreeSpec({
         } }
     }
 
+    listOf("current", "ray", "audit", "activate").forEach { stage ->
+        "native right input contains $stage failure and preserves scene cleanup and five-second backoff" {
+            MockBukkitTestRuntime.open().use { paper -> PanelFixture(paper, ActionPanelInputProfile.ENTITY_BOTH).use { f ->
+                f.refresh()
+                val old = f.interactions.single()
+                val failure = IllegalStateException("Native $stage failure")
+                when (stage) {
+                    "current" -> f.frameFailure = failure
+                    "ray" -> every { f.worldSpace.rayClear(any(), any(), any(), any()) } throws failure
+                    "audit" -> f.auditFailure = failure
+                    "activate" -> f.activationFailure = failure
+                }
+                val event = PlayerInteractEntityEvent(f.player, old, EquipmentSlot.HAND)
+                f.panels.onClick(event)
+                event.isCancelled shouldBe true
+                old.isValid shouldBe false
+                f.frames() shouldBe emptyList()
+                f.panels.contains(f.player.uniqueId) shouldBe false
+                f.suppression.last() shouldBe ("first" to false)
+                f.activated shouldBe emptyList()
+                f.activationCalls shouldBe if (stage == "activate") 1 else 0
+
+                val calls = Triple(f.frameCalls, f.auditCalls, f.activationCalls)
+                f.panels.onClick(PlayerInteractEntityEvent(f.player, old, EquipmentSlot.HAND))
+                f.panels.onAttack(PrePlayerAttackEntityEvent(f.player, old, false))
+                Triple(f.frameCalls, f.auditCalls, f.activationCalls) shouldBe calls
+                f.frameFailure = null; f.auditFailure = null; f.activationFailure = null
+                every { f.worldSpace.rayClear(any(), any(), any(), any()) } returns true
+                f.refresh()
+                f.panels.contains(f.player.uniqueId) shouldBe false
+                f.now += 4_999_999_999L
+                f.refresh()
+                f.panels.contains(f.player.uniqueId) shouldBe false
+                f.now++
+                f.refresh()
+                f.panels.contains(f.player.uniqueId) shouldBe true
+                f.interactions.last().uniqueId shouldNotBe old.uniqueId
+            } }
+        }
+    }
+
+    "native left activation failure is contained and cannot repeat through the removed target" {
+        MockBukkitTestRuntime.open().use { paper -> PanelFixture(paper, ActionPanelInputProfile.ENTITY_BOTH).use { f ->
+            f.refresh()
+            val old = f.interactions.single()
+            f.activationFailure = IllegalStateException("Native left activation failure")
+            val event = PrePlayerAttackEntityEvent(f.player, old, false)
+            f.panels.onAttack(event)
+            event.isCancelled shouldBe true
+            f.activationCalls shouldBe 1
+            f.activated shouldBe emptyList()
+            f.frames() shouldBe emptyList()
+            old.isValid shouldBe false
+            f.panels.onAttack(PrePlayerAttackEntityEvent(f.player, old, false))
+            f.activationCalls shouldBe 1
+            f.refresh()
+            f.panels.contains(f.player.uniqueId) shouldBe false
+        } }
+    }
+
     "blocked swept motion snaps but keeps the same packet label" {
         MockBukkitTestRuntime.open().use { paper -> PanelFixture(paper).use { f ->
             f.refresh()
@@ -296,12 +356,29 @@ private class PanelFixture(paper: MockBukkitTestRuntime, val profile: ActionPane
     val panels: PaperActionPanels<String, String>
     var now = 1_000_000_000L
     var current: ActionPanelFrame<String, String>?
+    var frameFailure: Exception? = null
+    var auditFailure: Exception? = null
+    var activationFailure: Exception? = null
+    var frameCalls = 0
+    var auditCalls = 0
+    var activationCalls = 0
 
     init {
         val worldId = UUID.randomUUID()
         val playerId = UUID.randomUUID()
         every { world.uid } returns worldId
         every { world.name } returns "action-panel-world"
+        every { world.minHeight } returns -64
+        every { world.maxHeight } returns 320
+        every { world.isChunkLoaded(any<Int>(), any<Int>()) } returns true
+        every { player.isChunkSent(any<Long>()) } returns true
+        every { world.rayTraceBlocks(any(), any(), any(), any(), any(), any()) } answers {
+            val origin = firstArg<Location>()
+            val direction = secondArg<org.bukkit.util.Vector>()
+            val end = origin.toVector().add(direction.clone().multiply(thirdArg<Double>()))
+            if (worldSpace.rayClear(player, ActionPanelPoint(origin.x, origin.y, origin.z), ActionPanelPoint(end.x, end.y, end.z)) { true }) null
+            else org.bukkit.util.RayTraceResult(origin.toVector())
+        }
         every { player.uniqueId } returns playerId
         every { player.world } returns world
         every { player.isOnline } returns true
@@ -333,8 +410,15 @@ private class PanelFixture(paper: MockBukkitTestRuntime, val profile: ActionPane
         })
         current = frame("first")
         panels = PaperActionPanels(plugin, displays, object : ActionPanelController<String, String>() {
-            override fun frame(player: Player) = current
-            override fun activate(player: Player, context: String, action: String) { activated += context to action }
+            override fun frame(player: Player): ActionPanelFrame<String, String>? {
+                frameCalls++; frameFailure?.let { throw it }; return current
+            }
+            override fun activate(player: Player, context: String, action: String) {
+                activationCalls++; activationFailure?.let { throw it }; activated += context to action
+            }
+            override fun inputObserved(player: Player, context: String, action: String?, accepted: Boolean, reason: ActionPanelInputReason) {
+                auditCalls++; auditFailure?.let { throw it }
+            }
             override fun guideSuppressionChanged(playerId: UUID, context: String, suppressed: Boolean) { suppression += context to suppressed }
         }, false, worldSpace) { now }
     }

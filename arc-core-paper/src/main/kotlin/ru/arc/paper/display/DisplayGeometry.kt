@@ -33,6 +33,15 @@ class DisplayOrientedVolume(center: Vector3d, right: Vector3d, up: Vector3d, nor
 
     val bounds: BoundingBox get() = envelope.clone()
 
+    fun translated(delta: Vector3d): DisplayOrientedVolume = DisplayOrientedVolume(
+        Vector3d(center).add(delta), right, up, normal, halfSize,
+    )
+
+    fun expanded(clearance: Double): DisplayOrientedVolume {
+        require(clearance.isFinite() && clearance >= 0.0)
+        return DisplayOrientedVolume(center, right, up, normal, Vector3d(halfSize).add(clearance, clearance, clearance))
+    }
+
     fun swept(delta: Vector3d): DisplayOrientedVolume = DisplayOrientedVolume(
         Vector3d(center).add(Vector3d(delta).mul(0.5)), right, up, normal,
         Vector3d(halfSize).add(abs(right.dot(delta)) / 2.0, abs(up.dot(delta)) / 2.0, abs(normal.dot(delta)) / 2.0),
@@ -43,6 +52,10 @@ class DisplayOrientedVolume(center: Vector3d, right: Vector3d, up: Vector3d, nor
         Vector3d(block.centerX, block.centerY, block.centerZ), X, Y, Z,
         Vector3d(block.widthX / 2.0, block.height / 2.0, block.widthZ / 2.0),
     )
+
+    override fun equals(other: Any?): Boolean = other is DisplayOrientedVolume && center == other.center &&
+        right == other.right && up == other.up && normal == other.normal && halfSize == other.halfSize
+    override fun hashCode(): Int = listOf(center, right, up, normal, halfSize).hashCode()
 
     private companion object {
         val X = Vector3d(1.0, 0.0, 0.0)

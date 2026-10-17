@@ -149,10 +149,12 @@ Viewer-private clickable world controls declare `paper-action-panels` and
 compose `PaperActionPanels` from `arc-core-paper`. A local native-hitbox or
 ray-button lifecycle is not the default alternative. The runtime accepts fixed
 authored geometry, target-following selection panels, or view-facing land panels;
-the consumer retains its domain controller and authority checks. Informational
-staff cards and mixed chest-preview scenes use `DisplayGeometry` /
-`DisplayOrientedVolume` for their matching geometry seams without declaring a
-fake action-panel capability. See [the exact contract](paper-action-panels.md).
+the consumer retains its domain controller and authority checks. Mixed chest previews and fixed public/book plaques declare `paper-spatial-scenes`
+and compose `PacketDisplayScene`, optionally `PaperSpatialControls`, with the
+shared `PaperSpatialSpace` boundary. They retain feature-specific placement
+policies and domain authority. Informational staff cards use `DisplayGeometry`
+for matching seams without declaring a fake action-panel capability. See
+[action panels](paper-action-panels.md) and [spatial scenes](paper-spatial-scenes.md).
 
 The plugin still owns feature vocabulary. Start with a small semantic interface
 and native adapter when the operation is shaped like the feature. Promote only

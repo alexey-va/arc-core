@@ -1,7 +1,8 @@
 # Personal and contextual action panels
 
 `ru.arc.paper.actionpanel.PaperActionPanels<C, A>` owns the reusable floating
-control mechanism. `C` is an immutable domain session/target identity; `A` is a
+control policy. It delegates keyed visuals, native input and exact world queries to
+[the shared spatial scene owners](paper-spatial-scenes.md). `C` is an immutable domain session/target identity; `A` is a
 typed domain action, commonly an enum. The owning plugin supplies a controller
 that resolves a fresh frame and rechecks domain authority in `activate`.
 
@@ -105,7 +106,7 @@ another guide. `isLookingAt` remains available even if suppression is disabled.
 | ArcCasino `CasinoActionPanels` (blackjack, poker, durak) | Full runtime with Fixed and ENTITY_RIGHT | Seat/mount/table identity, session token, payment/card gates, visible actions, arbitrary XYZ button rectangles, optional status, source audit and scene audience. Block filtering remains controller-owned. |
 | ARC `ClaimLandMenu` | Full runtime with FollowView and EXTERNAL_RAY | Native claim-block gesture/dedupe and land permission rules; 0.03 movement dead zone, front-face-only targeting and guide ownership. |
 | ArcDungeons `StaffSpellHud` | `DisplayGeometry.rectangleSamples`, clearance and proportional-scale helpers | Passenger attachment, CENTER billboard, camera-following motion/retreat, one-tick local transforms, hologram/bossbar/off and top/bottom preferences; spell content/hotkeys remain informational. |
-| ARC `ChestPreviewPlacement` and `ChestPreviewIcons` | `DisplayOrientedVolume` OBB / translated sweep | Mixed item/text grid topology, shared destination for every part, below-lid/front/above-lid choice, 0.08 side motion clearance, stable anchors, fresh scene for changed container/layout. Rotation must still be checked; translation sweep alone is insufficient. |
+| ARC `ChestPreviewPlacement` and `ChestPreviewIcons` | `PacketDisplayScene`, `PaperSpatialSpace`, OBB / translated sweep | Mixed item/text grid topology, shared destination for every part, below-lid/front/above-lid choice, 0.08 side motion clearance, stable anchors, fresh scene for changed container/layout. Rotation must still be checked; translation sweep alone is insufficient. |
 | ARC TravelAnchors | Proportional proxy-scale and clearance helpers | Distance/aim emphasis, proxy placement and enlarged rendered footprint; no action menu is fabricated. |
 
 Builder, Casino and Lands share the exact established palette:

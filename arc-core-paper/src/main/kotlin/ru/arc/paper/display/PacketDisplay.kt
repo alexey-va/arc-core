@@ -100,16 +100,26 @@ sealed class PacketDisplay protected constructor(
     }
 
     fun showTo(player: Player) {
+        showTo(player.uniqueId)
+    }
+
+    fun showTo(playerId: UUID) {
         owner.checkThread()
-        hiddenFrom.remove(player.uniqueId)
-        visibleTo.add(player.uniqueId)
+        hiddenFrom.remove(playerId)
+        visibleTo.add(playerId)
     }
 
     fun hideFrom(player: Player) {
-        owner.checkThread()
-        visibleTo.remove(player.uniqueId)
-        hiddenFrom.add(player.uniqueId)
+        hideFrom(player.uniqueId)
     }
+
+    fun hideFrom(playerId: UUID) {
+        owner.checkThread()
+        visibleTo.remove(playerId)
+        hiddenFrom.add(playerId)
+    }
+
+    internal fun clearAudienceOverrides() { owner.checkThread(); visibleTo.clear(); hiddenFrom.clear() }
 
     fun remove() {
         owner.checkThread()

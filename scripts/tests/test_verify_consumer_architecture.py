@@ -185,6 +185,20 @@ class ProviderHost {
         exit_code, output = self.verify()
         self.assertEqual(0, exit_code, output)
 
+    def test_spatial_scenes_require_actual_scene_owner_not_geometry_only(self) -> None:
+        manifest = self.root / "arc-core-consumer.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace('"runtime"]', '"runtime", "paper-spatial-scenes"]'),
+            encoding="utf-8",
+        )
+        self.write("src/main/kotlin/example/Scene.kt", "class Scene(val space: PaperSpatialSpace)\n")
+        exit_code, output = self.verify()
+        self.assertEqual(1, exit_code)
+        self.assertIn("PacketDisplayScene", output)
+        self.write("src/main/kotlin/example/Scene.kt", "class Scene(val scene: PacketDisplayScene<PartKey>)\n")
+        exit_code, output = self.verify()
+        self.assertEqual(0, exit_code, output)
+
     def test_optional_schematics_provider_module_is_version_checked(self) -> None:
         self.write_valid_provider_host()
         build = self.root / "build.gradle.kts"

@@ -18,6 +18,7 @@ class ActionPanelWorldSpaceTest : FreeSpec({
             val player = mockk<Player>()
             val block = mockk<Block>()
             every { player.world } returns world
+            every { world.uid } returns java.util.UUID.randomUUID()
             every { world.minHeight } returns -64
             every { world.maxHeight } returns 320
             every { world.isChunkLoaded(any<Int>(), any<Int>()) } returns true

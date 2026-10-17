@@ -24,7 +24,7 @@ import org.bukkit.plugin.Plugin
 import org.bukkit.util.Transformation
 import org.joml.Quaternionf
 import org.joml.Vector3f
-import ru.arc.paper.display.PacketTextDisplay
+import ru.arc.paper.scene.*
 import ru.arc.paper.display.PaperPacketDisplays
 import java.util.UUID
 import java.util.logging.Level
@@ -64,10 +64,7 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
     constructor(plugin: Plugin, source: String, controller: ActionPanelController<C, A>) :
         this(plugin, PaperPacketDisplays(plugin, source), controller, true, ActionPanelWorldSpace(), System::nanoTime)
 
-    private class Button<A : Any>(
-        var spec: ActionPanelButton<A>, val display: PacketTextDisplay, var hitbox: Interaction?,
-    ) { var hovered = false }
-    private class Label(val display: PacketTextDisplay)
+    private data class VisualKey<A : Any>(val action: A?, val label: String?)
     private inner class Panel(
         val owner: UUID,
         var frame: ActionPanelFrame<C, A>,
@@ -79,19 +76,35 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
         var shift: ActionPanelShift? = null
         var suppressed = false
         var lookingAt = false
-        var acceptedAt: Long? = null
-        val buttons = linkedMapOf<A, Button<A>>()
-        val labels = linkedMapOf<String, Label>()
+        val scene = PacketDisplayScene<VisualKey<A>>(displays)
+        val controlKeys = linkedMapOf<A, String>()
+        var nextControlKey = 0
+        var hovered: A? = null
     }
-    private data class NativeInput<A : Any>(val owner: UUID, val action: A)
     private data class Placement(val anchor: ActionPanelAnchor, val distance: Double?, val shift: ActionPanelShift?)
     private inner class PlacementRetry(val frame: ActionPanelFrame<C, A>, val body: ActionPanelPoint, val until: Long)
     private val panels = linkedMapOf<UUID, Panel>()
-    private val inputs = mutableMapOf<UUID, NativeInput<A>>()
     private val failuresLogged = mutableSetOf<UUID>()
     private val placementRetries = mutableMapOf<UUID, PlacementRetry>()
     private val rendererRetries = mutableMapOf<UUID, Long>()
     private var closed = false
+
+    private val controls = PaperSpatialControls(plugin, displays, object : SpatialControlController<C, A>() {
+        override fun current(player: Player, scene: SpatialSceneKey): SpatialControlFrame<C, A>? {
+            val panel = panels[player.uniqueId] ?: return null
+            if (scene != key(player.uniqueId)) return null
+            val current = controller.frame(player) ?: run { clear(player.uniqueId); return null }
+            if (!sameInputFrame(panel.frame, current)) { refresh(player); return null }
+            if (!validPlacement(player, panel)) return null
+            return controlFrame(player, panel, current)
+        }
+        override fun activate(player: Player, scene: SpatialSceneKey, context: C, action: A) = controller.activate(player, context, action)
+        override fun blocksRay(player: Player, context: C, block: org.bukkit.block.Block) = controller.blocksRay(player, context, block)
+        override fun inputObserved(player: Player, scene: SpatialSceneKey, context: C, action: A?, accepted: Boolean, reason: SpatialInputReason) =
+            controller.inputObserved(player, context, action, accepted, ActionPanelInputReason.valueOf(reason.name))
+        override fun inputFailed(player: Player, scene: SpatialSceneKey, context: C, failure: Exception) =
+            failed(player.uniqueId, failure, report = false)
+    }, PaperSpatialSpace(), nowNanos)
 
     init {
         displays.checkThread()
@@ -126,10 +139,7 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
             if (retry != null && nowNanos() < retry.until && retry.body == player.location.point() &&
                 sameInputFrame(retry.frame, frame)) return
             placementRetries.remove(player.uniqueId)
-            panels[player.uniqueId]?.takeIf { existing ->
-                existing.buttons.values.any { !it.display.isValid || it.hitbox?.isValid == false } ||
-                    existing.labels.values.any { !it.display.isValid }
-            }?.let { removeCurrent(player.uniqueId) }
+            panels[player.uniqueId]?.takeIf { !it.scene.isValid() }?.let { removeCurrent(player.uniqueId) }
             val panel = panels[player.uniqueId] ?: create(player, frame).also { panels[player.uniqueId] = it }
             apply(player, panel, frame)
             updateSuppression(player, panel)
@@ -153,52 +163,17 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
         if (closed) return null
         val panel = panels[player.uniqueId] ?: return null
         return try {
-            val button = selected(player, panel, validatePlacement = true) ?: return null
-            val current = controller.frame(player) ?: run { clear(player.uniqueId); return null }
-            if (!sameInputFrame(panel.frame, current) || !current.inputEnabled ||
-                current.layout.buttons.none { it.action == button.spec.action && it.visible && it.enabled }) {
-                refresh(player)
-                null
-            } else ActionPanelTarget(current.context, button.spec.action)
+            if (!validPlacement(player, panel)) null else controls.target(key(player.uniqueId), player)?.let { ActionPanelTarget(it.context, it.action) }
         } catch (failure: Exception) { failed(player.uniqueId, failure); null }
     }
 
     /** Consumes only an aimed visible control; unrelated gameplay/tool gestures return false. */
-    fun intercept(player: Player): Boolean = intercept(player, null, ActionPanelInputReason.AIMED_GESTURE)
-
-    private fun intercept(player: Player, expected: A?, reason: ActionPanelInputReason): Boolean {
+    fun intercept(player: Player): Boolean {
         displays.checkThread()
         if (closed) return false
         val panel = panels[player.uniqueId] ?: return false
-        try {
-            val selected = selected(player, panel, includeDisabled = true, validatePlacement = true) ?: return false
-            val current = controller.frame(player) ?: run { clear(player.uniqueId); return true }
-            if (!sameInputFrame(panel.frame, current)) {
-                observe(player, panel, selected.spec.action, false, ActionPanelInputReason.STALE_CONTEXT)
-                refresh(player)
-                return true
-            }
-            val currentButton = current.layout.buttons.firstOrNull { it.action == selected.spec.action && it.visible }
-            if (currentButton == null) {
-                observe(player, panel, selected.spec.action, false, ActionPanelInputReason.HIDDEN_ACTION)
-                refresh(player)
-                return true
-            }
-            if (!current.inputEnabled || !currentButton.enabled) {
-                observe(player, panel, selected.spec.action, false, ActionPanelInputReason.INPUT_DISABLED)
-                return true
-            }
-            val now = nowNanos()
-            if (panel.acceptedAt?.let { now - it < DEDUPLICATION_NANOS } == true) {
-                observe(player, panel, selected.spec.action, false, ActionPanelInputReason.DUPLICATE)
-                return true
-            }
-            panel.acceptedAt = now
-            val actualReason = if (expected != null && expected != selected.spec.action) ActionPanelInputReason.LABEL_PLANE_REMAPPED else reason
-            observe(player, panel, selected.spec.action, true, actualReason)
-            controller.activate(player, current.context, selected.spec.action)
-            return true
-        } catch (failure: Exception) { failed(player.uniqueId, failure); return false }
+        return try { validPlacement(player, panel) && controls.intercept(key(player.uniqueId), player) }
+        catch (failure: Exception) { failed(player.uniqueId, failure); false }
     }
 
     private fun create(player: Player, frame: ActionPanelFrame<C, A>): Panel {
@@ -238,9 +213,6 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
         }
         if (contextChanged) {
             setSuppressed(panel, false)
-            // Packet labels retain continuity, but native IDs are input capabilities for this
-            // exact rendered context. Old queued entity clicks must not activate a new session.
-            panel.buttons.values.forEach { removeHitbox(player, it) }
         }
         panel.frame = frame
         reconcile(player, panel, duration)
@@ -285,110 +257,56 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
     }
 
     private fun reconcile(player: Player, panel: Panel, duration: Int) {
-        val frame = panel.frame
-        val actions = frame.layout.buttons.mapTo(hashSetOf()) { it.action }
-        (panel.buttons.keys - actions).forEach { action -> panel.buttons.remove(action)?.let { removeButton(player, it) } }
-        frame.layout.buttons.forEach { spec ->
-            val center = ActionPanelGeometry.localToWorld(panel.anchor, spec.rect.center)
-            val labelAt = at(player, panel.anchor, center, -spec.rect.height / 2.0 + spec.style.baselineInset)
-            val button = panel.buttons[spec.action] ?: Button(spec, displays.spawnText(labelAt, spec.text), null).also {
-                panel.buttons[spec.action] = it
-            }
-            button.spec = spec
-            updateLabel(player, button.display, labelAt, spec.text, spec.style, spec.visible, frame, duration, button.hovered)
-            if (frame.options.input == ActionPanelInputProfile.EXTERNAL_RAY) {
-                removeHitbox(player, button)
-            } else {
-                val hitboxAt = at(player, panel.anchor, center, -spec.rect.height / 2.0)
-                val hitbox = button.hitbox ?: player.world.spawn(hitboxAt, Interaction::class.java) {
-                    it.isVisibleByDefault = false
-                    it.isPersistent = false
-                    it.isInvulnerable = true
-                    it.setGravity(false)
-                    it.isResponsive = true
-                }.also {
-                    button.hitbox = it
-                    inputs[it.uniqueId] = NativeInput(player.uniqueId, spec.action)
-                }
-                hitbox.interactionWidth = spec.rect.width.toFloat()
-                hitbox.interactionHeight = spec.rect.height.toFloat()
-                if (hitbox.location != hitboxAt) check(hitbox.teleport(hitboxAt)) { "Action panel Interaction teleport failed" }
-                if (spec.visible) player.showEntity(plugin, hitbox) else player.hideEntity(plugin, hitbox)
-            }
-        }
-        val keys = frame.layout.labels.mapTo(hashSetOf()) { it.key }
-        (panel.labels.keys - keys).forEach { panel.labels.remove(it)?.display?.remove() }
-        frame.layout.labels.forEach { spec ->
-            val center = ActionPanelGeometry.localToWorld(panel.anchor, spec.rect.center)
-            val location = at(player, panel.anchor, center, -spec.rect.height / 2.0 + spec.style.baselineInset)
-            val label = panel.labels[spec.key] ?: Label(displays.spawnText(location, spec.text)).also { panel.labels[spec.key] = it }
-            updateLabel(player, label.display, location, spec.text, spec.style, spec.visible, frame, duration, false)
-        }
+        val actions = panel.frame.layout.buttons.mapTo(hashSetOf()) { it.action }
+        panel.controlKeys.keys.retainAll(actions)
+        panel.frame.layout.buttons.forEach { panel.controlKeys.getOrPut(it.action) { (panel.nextControlKey++).toString() } }
+        render(player, panel, duration)
+        controls.apply(key(player.uniqueId), controlFrame(player, panel, panel.frame))
     }
 
-    private fun updateLabel(
-        player: Player, display: PacketTextDisplay, location: Location, text: Component, style: ActionPanelTextStyle,
-        visible: Boolean, frame: ActionPanelFrame<C, A>, duration: Int, hovered: Boolean,
-    ) {
-        display.isVisibleByDefault = false
-        display.audienceGroup = frame.audienceGroup
-        display.billboard = Display.Billboard.FIXED
-        display.brightness = Display.Brightness(15, 15)
-        display.isShadowed = true
-        display.isSeeThrough = false
-        display.isDefaultBackground = false
-        display.alignment = org.bukkit.entity.TextDisplay.TextAlignment.CENTER
-        display.textOpacity = 255.toByte()
-        display.lineWidth = style.lineWidth
-        display.displayWidth = style.displayWidth
-        display.displayHeight = style.displayHeight
-        display.viewRange = 0.15f
-        display.interpolationDelay = style.interpolationDelay
-        display.interpolationDuration = style.interpolationDuration
-        display.transformation = Transformation(Vector3f(), Quaternionf(), Vector3f(style.scale), Quaternionf())
-        display.backgroundColor = if (hovered) HOVER_BACKGROUND else BACKGROUND
-        display.isGlowing = hovered
-        display.glowColorOverride = if (hovered) HOVER_GLOW else null
-        if (display.text() != text) display.text(text)
-        if (display.location != location) { display.teleportDuration = duration; display.teleport(location) }
-        if (visible) display.showTo(player) else display.hideFrom(player)
+    private fun render(player: Player, panel: Panel, duration: Int) {
+        val parts = mutableListOf<ScenePart<VisualKey<A>>>()
+        panel.frame.layout.buttons.forEach { spec ->
+            parts += textPart(player, panel, VisualKey(spec.action, null), spec.rect, spec.text, spec.style, spec.visible, panel.hovered == spec.action)
+        }
+        panel.frame.layout.labels.forEach { spec ->
+            parts += textPart(player, panel, VisualKey(null, spec.key), spec.rect, spec.text, spec.style, spec.visible, false)
+        }
+        panel.scene.apply(SceneFrame(parts, SceneAudience.Private(player.uniqueId, panel.frame.audienceGroup), duration))
     }
 
-    private fun selected(player: Player, panel: Panel, includeDisabled: Boolean = false, validatePlacement: Boolean = false): Button<A>? {
-        if (!player.isOnline || player.isDead || player.world.uid != panel.frame.placement.worldId || player.uniqueId != panel.owner) return null
-        if (panel.frame.audienceGroup?.allows(player) == false) return null
-        if (!includeDisabled && !panel.frame.inputEnabled) return null
-        val eye = player.eyeLocation
-        if (panel.frame.options.frontFaceOnly) {
-            val angle = Math.toRadians(panel.anchor.yaw.toDouble())
-            if (eye.direction.x * sin(angle) - eye.direction.z * cos(angle) <= 1e-8) return null
-        }
-        if (followSettings(panel.frame.placement) != null && validatePlacement &&
-            !worldSpace.safe(player, eye.point(), panel.anchor, panel.frame.layout.rectangles(), panel.frame.options.reach,
-                0.0, true) { controller.blocksRay(player, panel.frame.context, it) }) return null
-        val candidates = panel.buttons.values.filter { it.spec.visible && it.display.isValid && it.hitbox?.isValid != false }
-        val planes = candidates.map { button ->
-            ActionPanelPlane(button.spec.action, ActionPanelGeometry.localToWorld(panel.anchor, button.spec.rect.center),
-                panel.anchor.yaw, button.spec.rect.width, button.spec.rect.height,
-                includeDisabled || (button.spec.enabled && panel.frame.inputEnabled))
-        }
-        val hit = ActionPanelGeometry.nearestHit(eye.point(), eye.direction.let { ActionPanelPoint(it.x, it.y, it.z) },
-            planes, panel.frame.options.reach, null) ?: return null
-        if (!worldSpace.rayClear(player, eye.point(), hit.point) { controller.blocksRay(player, panel.frame.context, it) }) return null
-        return candidates.firstOrNull { it.spec.action == hit.key }
+    private fun textPart(player: Player, panel: Panel, key: VisualKey<A>, rect: ActionPanelRect, text: Component,
+        style: ActionPanelTextStyle, visible: Boolean, hovered: Boolean): ScenePart.Text<VisualKey<A>> {
+        val center = ActionPanelGeometry.localToWorld(panel.anchor, rect.center)
+        val at = at(player, panel.anchor, center, -rect.height / 2.0 + style.baselineInset)
+        return ScenePart.Text(key, ScenePose(at, Transformation(Vector3f(), Quaternionf(), Vector3f(style.scale), Quaternionf())),
+            SceneDisplayStyle(billboard = Display.Billboard.FIXED, brightness = Display.Brightness(15, 15),
+                interpolationDelay = style.interpolationDelay, interpolationDuration = style.interpolationDuration,
+                viewRange = 0.15f, displayWidth = style.displayWidth, displayHeight = style.displayHeight,
+                glowing = hovered, glowColor = if (hovered) HOVER_GLOW else null), text,
+            SceneTextStyle(lineWidth = style.lineWidth, background = if (hovered) HOVER_BACKGROUND else BACKGROUND, shadowed = true), visible)
     }
+
+    private fun controlFrame(player: Player, panel: Panel, frame: ActionPanelFrame<C, A>): SpatialControlFrame<C, A> {
+        val specs = frame.layout.buttons.map { spec ->
+            val center = ActionPanelGeometry.localToWorld(panel.anchor, spec.rect.center)
+            SpatialControl(checkNotNull(panel.controlKeys[spec.action]), spec.action,
+                listOf(SpatialHitPlane(at(player, panel.anchor, center, 0.0), spec.rect.width, spec.rect.height, frame.options.frontFaceOnly)),
+                if (frame.options.input == ActionPanelInputProfile.EXTERNAL_RAY) null else
+                    SpatialNativeTarget(at(player, panel.anchor, center, -spec.rect.height / 2.0), spec.rect.width.toFloat(), spec.rect.height.toFloat()),
+                spec.visible, spec.enabled)
+        }
+        return SpatialControlFrame(frame.context, SceneAudience.Private(player.uniqueId, frame.audienceGroup), SpatialSceneScope.Viewer(player.uniqueId),
+            specs, SpatialInputProfile.valueOf(frame.options.input.name), SpatialReach.Fixed(frame.options.reach), frame.inputEnabled)
+    }
+
+    private fun validPlacement(player: Player, panel: Panel): Boolean = followSettings(panel.frame.placement) == null ||
+        worldSpace.safe(player, player.eyeLocation.point(), panel.anchor, panel.frame.layout.rectangles(), panel.frame.options.reach,
+            0.0, true) { controller.blocksRay(player, panel.frame.context, it) }
 
     private fun updateHover(player: Player, panel: Panel) {
-        val selected = selected(player, panel)
-        panel.buttons.values.forEach { button ->
-            val hovered = button === selected
-            if (button.hovered != hovered) {
-                button.hovered = hovered
-                button.display.isGlowing = hovered
-                button.display.glowColorOverride = if (hovered) HOVER_GLOW else null
-                button.display.backgroundColor = if (hovered) HOVER_BACKGROUND else BACKGROUND
-            }
-        }
+        val hovered = controls.aimed(key(player.uniqueId), player)
+        if (panel.hovered != hovered) { panel.hovered = hovered; render(player, panel, 0) }
     }
 
     private fun updateSuppression(player: Player, panel: Panel) {
@@ -433,37 +351,11 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
         is ActionPanelPlacement.Fixed -> null
     }
 
-    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
-    fun onClick(event: PlayerInteractEntityEvent) = entityClick(event)
-    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
-    fun onClickAt(event: PlayerInteractAtEntityEvent) = entityClick(event)
-    private fun entityClick(event: PlayerInteractEntityEvent) {
-        val input = inputs[event.rightClicked.uniqueId] ?: return
-        val panel = panels[input.owner] ?: return
-        if (event.isCancelled && panel.frame.options.input != ActionPanelInputProfile.ENTITY_BOTH) {
-            observe(event.player, panel, input.action, false, ActionPanelInputReason.EVENT_CANCELLED)
-            return
-        }
-        event.isCancelled = true
-        if (event.hand != EquipmentSlot.HAND) { observe(event.player, panel, input.action, false, ActionPanelInputReason.OFF_HAND); return }
-        if (event.player.uniqueId != input.owner) { observe(event.player, panel, input.action, false, ActionPanelInputReason.OWNER_MISMATCH); return }
-        if (panel.buttons[input.action]?.spec?.visible != true) { observe(event.player, panel, input.action, false, ActionPanelInputReason.HIDDEN_ACTION); return }
-        if (!intercept(event.player, input.action, ActionPanelInputReason.LABEL_PLANE))
-            observe(event.player, panel, input.action, false, ActionPanelInputReason.RAY_MISS)
-    }
-
-    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
-    fun onAttack(event: PrePlayerAttackEntityEvent) {
-        val input = inputs[event.attacked.uniqueId] ?: return
-        val panel = panels[input.owner] ?: return
-        val cancelled = event.willAttack() && event.isCancelled
-        event.isCancelled = true
-        if (cancelled || panel.frame.options.input != ActionPanelInputProfile.ENTITY_BOTH || event.player.uniqueId != input.owner) return
-        intercept(event.player, input.action, ActionPanelInputReason.LABEL_PLANE)
-    }
-
-    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
-    fun onDamage(event: EntityDamageByEntityEvent) { if (event.entity.uniqueId in inputs) event.isCancelled = true }
+    // Public forwarding methods preserve source/test compatibility; only the shared owner registers input handlers.
+    fun onClick(event: PlayerInteractEntityEvent) = controls.onClick(event)
+    fun onClickAt(event: PlayerInteractAtEntityEvent) = controls.onClickAt(event)
+    fun onAttack(event: PrePlayerAttackEntityEvent) = controls.onAttack(event)
+    fun onDamage(event: EntityDamageByEntityEvent) = controls.onDamage(event)
     @EventHandler(priority = EventPriority.MONITOR)
     fun onQuit(event: PlayerQuitEvent) = clear(event.player.uniqueId)
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = false)
@@ -488,28 +380,15 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
         runCatching { setSuppressed(panel, false) }.onFailure {
             plugin.logger.log(Level.WARNING, "Action panel guide restoration failed for $playerId", it)
         }
-        val player = plugin.server.getPlayer(playerId)
-        panel.buttons.values.forEach { removeButton(player, it) }
-        panel.labels.values.forEach { it.display.remove() }
+        controls.clear(key(playerId))
+        panel.scene.close()
     }
 
-    private fun removeHitbox(player: Player?, button: Button<A>) {
-        val hitbox = button.hitbox ?: return
-        button.hitbox = null
-        inputs.remove(hitbox.uniqueId)
-        if (player != null) runCatching { player.hideEntity(plugin, hitbox) }
-        hitbox.remove()
-    }
-    private fun removeButton(player: Player?, button: Button<A>) { removeHitbox(player, button); button.display.remove() }
-
-    private fun observe(player: Player, panel: Panel, action: A?, accepted: Boolean, reason: ActionPanelInputReason) =
-        controller.inputObserved(player, panel.frame.context, action, accepted, reason)
-
-    private fun failed(id: UUID, failure: Exception) {
-        removeCurrent(id)
+    private fun failed(id: UUID, failure: Exception, report: Boolean = true) {
         placementRetries.remove(id)
         rendererRetries[id] = nowNanos() + 5_000_000_000L
-        if (failuresLogged.add(id)) plugin.logger.log(Level.WARNING, "Action panel renderer failed for $id", failure)
+        if (failuresLogged.add(id) && report) plugin.logger.log(Level.WARNING, "Action panel renderer failed for $id", failure)
+        removeCurrent(id)
     }
 
     override fun close() {
@@ -518,12 +397,14 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
         closed = true
         HandlerList.unregisterAll(this)
         panels.keys.toList().forEach(::removeCurrent)
-        inputs.clear()
+        controls.close()
         failuresLogged.clear()
         placementRetries.clear()
         rendererRetries.clear()
         if (ownsDisplays) displays.close()
     }
+
+    private fun key(id: UUID) = SpatialSceneKey(id.toString())
 
     private fun stableEye(player: Player, offset: ActionPanelPoint): ActionPanelPoint = player.location.let {
         ActionPanelPoint(it.x + offset.x, it.y + offset.y, it.z + offset.z)
@@ -533,7 +414,6 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
     private fun Location.point(): ActionPanelPoint = ActionPanelPoint(x, y, z)
     private class NoPlacement : RuntimeException(null, null, false, false)
     private companion object {
-        const val DEDUPLICATION_NANOS = 250_000_000L
         val BACKGROUND: Color = Color.fromARGB(190, 15, 23, 30)
         val HOVER_BACKGROUND: Color = Color.fromARGB(225, 76, 57, 24)
         val HOVER_GLOW: Color = Color.fromRGB(255, 204, 64)

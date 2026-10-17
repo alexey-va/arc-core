@@ -54,6 +54,7 @@ class PaperPacketDisplays internal constructor(
     private val viewers = mutableMapOf<UUID, ViewerState>()
     private val resetChunks = mutableMapOf<UUID, MutableSet<Long>>()
     private val resetViewers = mutableSetOf<UUID>()
+    private val captureParticipants = mutableSetOf<PacketDisplayCaptureParticipant>()
     private var closed = false
 
     init {
@@ -89,6 +90,9 @@ class PaperPacketDisplays internal constructor(
     internal fun itemSnapshot(item: ItemStack) = transport.itemSnapshot(item)
     internal fun remove(display: PacketDisplay) { handles.remove(display.entityId, display) }
     internal fun remove(group: PacketDisplayAudienceGroup) { audienceGroups.remove(group) }
+    internal fun participate(participant: PacketDisplayCaptureParticipant) { checkThread(); check(!closed); captureParticipants.add(participant) }
+    internal fun remove(participant: PacketDisplayCaptureParticipant) { checkThread(); captureParticipants.remove(participant) }
+    internal fun captureFailure(failure: Exception) { plugin.logger.log(java.util.logging.Level.WARNING, "Spatial scene refresh failed", failure) }
 
     private fun checkSpawn(location: Location) {
         checkThread()
@@ -99,12 +103,13 @@ class PaperPacketDisplays internal constructor(
     internal fun refresh() {
         checkThread()
         if (closed) return
-        if (handles.isEmpty() && viewers.isEmpty()) {
+        if (handles.isEmpty() && viewers.isEmpty() && captureParticipants.isEmpty()) {
             resetChunks.clear()
             resetViewers.clear()
             return
         }
         val currentAudience = audience.capture()
+        captureParticipants.toList().forEach { it.capture(currentAudience) }
         val audienceById = currentAudience.associateBy(PacketDisplayViewer::id)
         val passengerSnapshots = currentAudience.associate { it.entityId to it.passengerEntityIds }
         val liveVehiclesByWorld = currentAudience.groupBy(PacketDisplayViewer::worldId)
@@ -199,6 +204,8 @@ class PaperPacketDisplays internal constructor(
         closed = true
         tasks.close()
         HandlerList.unregisterAll(this)
+        captureParticipants.toList().forEach(PacketDisplayCaptureParticipant::ownerClosed)
+        captureParticipants.clear()
         audienceGroups.toList().forEach(PacketDisplayAudienceGroup::close)
         handles.values.toList().forEach(PacketDisplay::remove)
         viewers.keys.toList().forEach(::forgetViewer)
@@ -206,6 +213,12 @@ class PaperPacketDisplays internal constructor(
         resetViewers.clear()
         transport.close()
     }
+}
+
+/** Internal typed participant in this owner's existing main-thread capture, never a second timer. */
+internal interface PacketDisplayCaptureParticipant {
+    fun capture(viewers: List<PacketDisplayViewer>)
+    fun ownerClosed()
 }
 
 /** Server-thread-only audience port; the connection queue never receives these Bukkit references. */
