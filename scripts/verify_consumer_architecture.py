@@ -73,6 +73,7 @@ CAPABILITY_MODULES = {
     "menu": {"arc-core-menu"},
     "one-time-use": {"arc-core-sql", "arc-core-integration-testing"},
     "paper-audience": {"arc-core-paper", "arc-core-paper-testing"},
+    "paper-action-panels": {"arc-core-paper"},
     "paper-menu": {"arc-core-menu", "arc-core-paper-menu"},
     "paper-schematics": {"arc-core-paper-api"},
     "paper-block-protection": {"arc-core-paper-api", "arc-core-paper"},
@@ -86,6 +87,7 @@ PLATFORM_ONLY_CAPABILITIES = {
         "backend-transfer",
         "chunk-tickets",
         "paper-audience",
+        "paper-action-panels",
         "paper-menu",
         "paper-schematics",
         "paper-block-protection",
@@ -113,6 +115,7 @@ KNOWN_CAPABILITIES = {
     "menu",
     "one-time-use",
     "paper-audience",
+    "paper-action-panels",
     "paper-menu",
     "paper-schematics",
     "paper-block-protection",
@@ -153,6 +156,7 @@ CAPABILITY_EVIDENCE = {
         ("main", re.compile(r"\bPaperAudienceEffects\b")),
         ("test", re.compile(r"\bRecordingPaperAudienceEffects\b")),
     ),
+    "paper-action-panels": (("main", re.compile(r"\bPaperActionPanels\b")),),
     "paper-menu": (
         (
             "main",

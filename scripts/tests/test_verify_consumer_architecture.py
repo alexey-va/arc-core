@@ -171,6 +171,20 @@ class ProviderHost {
         exit_code, output = self.verify()
         self.assertEqual(0, exit_code, output)
 
+    def test_action_panels_require_canonical_runtime_not_only_geometry_helpers(self) -> None:
+        manifest = self.root / "arc-core-consumer.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace('"runtime"]', '"runtime", "paper-action-panels"]'),
+            encoding="utf-8",
+        )
+        self.write("src/main/kotlin/example/Panel.kt", "class Panel(val geometry: ActionPanelGeometry)\n")
+        exit_code, output = self.verify()
+        self.assertEqual(1, exit_code)
+        self.assertIn("PaperActionPanels", output)
+        self.write("src/main/kotlin/example/Panel.kt", "class Panel(val panels: PaperActionPanels<Context, Action>)\n")
+        exit_code, output = self.verify()
+        self.assertEqual(0, exit_code, output)
+
     def test_optional_schematics_provider_module_is_version_checked(self) -> None:
         self.write_valid_provider_host()
         build = self.root / "build.gradle.kts"
