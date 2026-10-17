@@ -26,6 +26,8 @@ dependencies {
     // Consumers using it declare the installed PacketEvents plugin as a dependency.
     compileOnly("com.github.retrooper:packetevents-spigot:2.12.1")
     compileOnly("io.netty:netty-transport:4.2.7.Final")
+    // Paper's API does not supply the NBT reader used for offline player data.
+    implementation("net.kyori:adventure-nbt:4.26.1")
 
     testImplementation(project(":arc-core-paper-testing"))
     testImplementation(project(":arc-core-paper-api"))
