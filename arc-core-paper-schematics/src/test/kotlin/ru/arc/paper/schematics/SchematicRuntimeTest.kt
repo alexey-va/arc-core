@@ -134,6 +134,109 @@ class SchematicRuntimeTest : FreeSpec({
         turned.nbt(turned.index(0, 0, 1)) shouldBe snapshot.nbt(0)
     }
 
+    "crop keeps absolute coordinates origin air and only the exact retained block entities" {
+        val native = mockk<BlockState>()
+        val minimum = ArcSchematicPoint(-2, 5, 10)
+        val maximum = ArcSchematicPoint(1, 6, 12)
+        val origin = ArcSchematicPoint(-4, 7, 9)
+        val retained = LinCompoundTag.builder().putString("id", "minecraft:chest").putString("CustomName", "retained").build()
+        val discarded = LinCompoundTag.builder().putString("Command", "say excluded").build()
+        val source = SchematicSnapshot(Any(), minimum, maximum, origin, "a".repeat(64), true, 3,
+            listOf(
+                SchematicPaletteEntry("minecraft:stone", false, false, native),
+                SchematicPaletteEntry("minecraft:air", true, false, native),
+                SchematicPaletteEntry("minecraft:barrier", false, true, native),
+            ), IntArray(24) { it % 3 }, mapOf(0 to discarded, 4 to retained, 23 to retained))
+        var checks = 0
+        val crop = source.cropped(ArcSchematicPoint(-1, 5, 11), ArcSchematicPoint(1, 6, 12)) { checks++ }
+        crop.minimum shouldBe ArcSchematicPoint(-1, 5, 11)
+        crop.maximum shouldBe maximum
+        crop.origin shouldBe origin
+        crop.volume shouldBe 12
+        crop.fileSha256 shouldBe source.fileSha256
+        crop.hasBiomes shouldBe true
+        crop.entityCount shouldBe 3
+        crop.blocks().forEach { cell ->
+            source.blockAt(cell.position.x, cell.position.y, cell.position.z) shouldBe cell
+        }
+        crop.blockAt(-1, 5, 11).isAir shouldBe true
+        crop.blockAt(1, 6, 12).isBarrier shouldBe true
+        crop.nbt(0) shouldBe retained
+        crop.nbt(11) shouldBe retained
+        val inspected = linkedMapOf<ArcSchematicPoint, String>()
+        crop.inspectBlockEntityNbt(java.util.function.BiConsumer { point, text -> inspected[point] = text }) {}
+        inspected shouldBe mapOf(ArcSchematicPoint(-1, 5, 11) to retained.toString(), maximum to retained.toString())
+        (checks > 0) shouldBe true
+        source.nbt(0) shouldBe discarded
+        (crop.contentSha256 != source.contentSha256) shouldBe true
+        listOf(
+            ArcSchematicPoint(-3, 5, 10) to maximum,
+            minimum to ArcSchematicPoint(1, 7, 12),
+            ArcSchematicPoint(1, 5, 10) to ArcSchematicPoint(0, 6, 12),
+        ).forEach { (min, max) ->
+            shouldThrow<ArcSchematicException> { source.cropped(min, max) {} }.reason shouldBe ArcSchematicFailure.INVALID_SNAPSHOT
+        }
+    }
+
+    "NBT inspection exposes the exact detached WorldEdit tag text on worker and rejects before dependent mutation" {
+        fixture(settings()) { root, scheduler, codec, service ->
+            val tag = LinCompoundTag.builder().putString("id", "minecraft:chest")
+                .putString("CustomName", "safe").putString("Command", "say denied").build()
+            codec.blockEntities = mapOf(0 to tag)
+            val library = service.open("inspection", root)
+            val load = library.load("one")
+            pumpUntil(scheduler) { load.isDone }
+            val callerThread = Thread.currentThread()
+            val writes = AtomicInteger()
+            var capturedText: String? = null
+            val inspection = library.inspectBlockEntityNbt(load.join()) { position, text ->
+                check(Thread.currentThread() !== callerThread)
+                position shouldBe ArcSchematicPoint(0, 0, 0)
+                capturedText = text
+                require(!Regex("(?i)command").containsMatchIn(text)) { "Executable block data" }
+            }.thenRun { writes.incrementAndGet() }
+            val failure = shouldThrow<java.util.concurrent.ExecutionException> { inspection.get(5, TimeUnit.SECONDS) }
+            (failure.cause is IllegalArgumentException) shouldBe true
+            capturedText shouldBe tag.toString()
+            writes.get() shouldBe 0
+            val crop = library.crop(load.join(), ArcSchematicPoint(0, 0, 0), ArcSchematicPoint(0, 0, 0)).get(5, TimeUnit.SECONDS)
+            (crop as SchematicSnapshot).nbt(0) shouldBe tag
+            crop.contentSha256 shouldBe load.join().contentSha256
+        }
+    }
+
+    "crop and inspection reject foreign snapshots and lease close prevents late successful inspection" {
+        fixture(settings()) { root, scheduler, codec, service ->
+            codec.blockEntities = mapOf(0 to LinCompoundTag.builder().putString("CustomName", "test").build())
+            val library = service.open("inspection-close", root)
+            val load = library.load("one")
+            pumpUntil(scheduler) { load.isDone }
+            val foreign = mockk<ru.arc.paper.api.ArcSchematicSnapshot>()
+            val rejected = listOf(
+                library.crop(foreign, ArcSchematicPoint(0, 0, 0), ArcSchematicPoint(0, 0, 0)),
+                library.inspectBlockEntityNbt(foreign) { _, _ -> error("Must reject before visitor") },
+            )
+            rejected.forEach { request ->
+                (shouldThrow<java.util.concurrent.ExecutionException> { request.get(5, TimeUnit.SECONDS) }.cause as ArcSchematicException).reason shouldBe ArcSchematicFailure.INVALID_SNAPSHOT
+            }
+            val entered = java.util.concurrent.CountDownLatch(1)
+            val release = java.util.concurrent.CountDownLatch(1)
+            val inspection = library.inspectBlockEntityNbt(load.join()) { _, _ ->
+                entered.countDown()
+                check(release.await(5, TimeUnit.SECONDS))
+            }
+            try {
+                entered.await(5, TimeUnit.SECONDS) shouldBe true
+                library.close()
+                (shouldThrow<CompletionException> { inspection.join() }.cause as ArcSchematicException).reason shouldBe ArcSchematicFailure.CLOSED
+            } finally { release.countDown() }
+            awaitCondition { service.pipelineCounts() == (0 to 0) }
+            inspection.isCompletedExceptionally shouldBe true
+            val closedCrop = library.crop(load.join(), ArcSchematicPoint(0, 0, 0), ArcSchematicPoint(0, 0, 0))
+            (shouldThrow<CompletionException> { closedCrop.join() }.cause as ArcSchematicException).reason shouldBe ArcSchematicFailure.CLOSED
+        }
+    }
+
     "one tick pump shares palette and mutation budgets across requests" {
         val scheduler = TestTaskScheduler()
         SchematicMainThread(scheduler, settings().copy(palettePerTick = 2, blocksPerTick = 3)).use { main ->
@@ -349,10 +452,11 @@ private class FakeCodec : SchematicCodec {
     val decodes = AtomicInteger()
     val threads = java.util.concurrent.CopyOnWriteArrayList<String>()
     private val state = mockk<BlockState>()
+    var blockEntities: Map<Int, LinCompoundTag> = emptyMap()
     override fun decode(bytes: SchematicBytes): DecodedSchematic {
         threads += Thread.currentThread().name
         decodes.incrementAndGet()
-        return DecodedSchematic(ArcSchematicPoint(0, 0, 0), ArcSchematicPoint(0, 0, 0), ArcSchematicPoint(0, 0, 0), listOf(state), intArrayOf(0), emptyMap(), false, 0)
+        return DecodedSchematic(ArcSchematicPoint(0, 0, 0), ArcSchematicPoint(0, 0, 0), ArcSchematicPoint(0, 0, 0), listOf(state), intArrayOf(0), blockEntities, false, 0)
     }
     override fun canonicalize(state: BlockState) = SchematicPaletteEntry("minecraft:stone", false, false, state)
     override fun transform(entry: SchematicPaletteEntry, transform: ArcSchematicTransform) = entry

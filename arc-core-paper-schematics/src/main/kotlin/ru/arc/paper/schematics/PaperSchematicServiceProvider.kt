@@ -17,6 +17,7 @@ import ru.arc.paper.api.ArcSchematicOperation
 import ru.arc.paper.api.ArcSchematicPasteOptions
 import ru.arc.paper.api.ArcSchematicPasteTarget
 import ru.arc.paper.api.ArcSchematicService
+import ru.arc.paper.api.ArcSchematicPoint
 import ru.arc.paper.api.ArcSchematicSnapshot
 import ru.arc.paper.api.ArcSchematicTransform
 import java.nio.file.Path
@@ -369,6 +370,23 @@ internal class SharedSchematicService(
                 main.palette(original.palette) { codec.transform(it, transform) }
                     .thenApplyAsync({ palette -> original.transformed(transform, palette) }, workers)
             }
+        }
+
+        override fun crop(snapshot: ArcSchematicSnapshot, minimum: ArcSchematicPoint, maximum: ArcSchematicPoint): CompletableFuture<ArcSchematicSnapshot> = request(this) {
+            val original = owned(snapshot)
+            pipeline { CompletableFuture.completedFuture(original.cropped(minimum, maximum, ::checkWorkerCurrent)) }
+        }
+
+        override fun inspectBlockEntityNbt(snapshot: ArcSchematicSnapshot, visitor: java.util.function.BiConsumer<ArcSchematicPoint, String>): CompletableFuture<Void> = request(this) {
+            val original = owned(snapshot)
+            pipeline {
+                original.inspectBlockEntityNbt(visitor, ::checkWorkerCurrent)
+                CompletableFuture.completedFuture<Void>(null)
+            }
+        }
+
+        private fun checkWorkerCurrent() {
+            if (closed || Thread.currentThread().isInterrupted) failure(ArcSchematicFailure.CLOSED, "Schematic library is closed")
         }
 
         override fun invalidate(id: String): CompletableFuture<Boolean> = request(this) {

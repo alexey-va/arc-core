@@ -21,8 +21,15 @@ internal class PaperDialogSessionStore(namespace: String) {
         playerId: UUID,
         actions: Map<PaperDialogActionId, () -> Unit>,
     ): PaperDialogSessionRegistration {
-        val nonce = "$instance-${sequence.incrementAndGet().toString(36)}"
-        return PaperDialogSessionRegistration(namespace, nonce, actions).also { sessions[playerId] = it }
+        return prepare(actions).also { publish(playerId, it) }
+    }
+
+    /** Detached nonce/handlers cannot dispatch until their complete native dialog is ready. */
+    fun prepare(actions: Map<PaperDialogActionId, () -> Unit>): PaperDialogSessionRegistration =
+        PaperDialogSessionRegistration(namespace, "$instance-${sequence.incrementAndGet().toString(36)}", actions)
+
+    fun publish(playerId: UUID, registration: PaperDialogSessionRegistration) {
+        sessions[playerId] = registration
     }
 
     fun consume(playerId: UUID, key: String): (() -> Unit)? {

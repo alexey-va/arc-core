@@ -5,7 +5,8 @@ ItemDisplay and TextDisplay visuals for one plugin/module lifecycle. Use it for
 bulk previews, idle item animations, roulettes and anchor markers. Keep reward
 selection, access, targeting, durable anchors and gameplay state in the plugin.
 
-The host supplies PacketEvents **2.12.1** and Paper **1.21.11**. Declare
+The host supplies PacketEvents **2.12.1**, Paper **1.21.11**, and the shared
+`ArcNativeCleanupService` (required at construction). Declare
 `packetevents` as a plugin dependency and compile it only; do not shade it.
 Other consumers of `arc-core-paper` need no PacketEvents dependency unless they
 construct this service. Install core scheduling before construction.
@@ -15,7 +16,7 @@ before constructing a visual owner. All plugin copies resolve the same
 in consumers and supplied by ArcCore.
 
 ```kotlin
-val displays = PaperPacketDisplays(plugin, "workshop-tables")
+val displays = PaperPacketDisplays(plugin, "workshop-tables", runtime.nativeWork)
 val marker = displays.spawnBlock(location, blockData).apply {
     isVisibleByDefault = false
     showTo(player)
@@ -37,14 +38,27 @@ marker.remove()
 carried.teleport(settledLocation)
 carried.detach()
 // At owner shutdown, after animations stop:
-displays.close()
+val cleanup = displays.closeAsync()
+// Include cleanup in the generation drain before constructing its replacement.
+// Never join/get this future on the server thread.
 ```
 
 Factories and all handle access belong on the server thread. Inputs and mutable
 outputs (locations, item stacks, block data and transformations) are copied.
-The service captures one frame per tick. It reads players, world IDs and received
-chunks on that thread, then submits only protocol values to each connection's
-Netty event loop. Encoding, delta calculation and packet writes happen there.
+The service runs one coalesced sweep at a time through the runtime's shared
+`BudgetedTaskQueue`: one audience/tracking entry, display frame, or viewer/display
+pair per step. Passing the runtime queue keeps its 128-step/2 ms aggregate budget;
+legacy constructors create one owner queue. Timer pulses do not accumulate sweeps
+while native capture or event-loop admission is incomplete. World/respawn/chunk
+changes and explicit privacy changes fence a partially captured view. Large
+scenes may take multiple ticks to capture; geometry, population and visibility
+limits are unchanged. Paper's sent-chunk snapshot getter remains one indivisible
+native call.
+
+Only detached protocol snapshots cross to Netty. Collection sorting/copies,
+frame merging, encoding, delta calculation and packet writes happen there.
+Main does not acquire the connection's frame-processing monitor. Each connection
+retains the existing latest-frame/replay/snap-edge semantics.
 The queue coalesces pending animation frames while retaining replay requests and
 any requested zero-duration visual-state edge for the same entity ID, UUID and
 display kind. The edge applies to the latest frame for that entity incarnation;
@@ -84,7 +98,16 @@ together. Large scenes progress in individual entity transactions; animation
 updates rotate their starting entity to avoid starving later entities in one
 scene. Removal precedes replacement and bypasses rate quotas, but waits for a
 writable channel. Closing an owner replaces any deferred scene with empty state
-and keeps bounded cleanup retries alive until sent or the connection closes.
+and keeps cleanup retries alive until sent or the connection closes.
+`close()` is dispatch-only for binary compatibility. `closeAsync()` immediately
+seals capture and invalidates handles, then retires one detached native/handle
+step at a time through the host cleanup queue, which survives consumer disable.
+It closes the transport only after accepted capture admissions and connection
+cleanup settle. Success means cleanup packets were admitted and flushed, not
+acknowledged by a Minecraft client. Observer cancellation cannot cancel accepted
+cleanup. Host shutdown, lost channels and write failures complete exceptionally;
+full server stop cannot promise future native ticks. Include the actual future
+in a consumer's predecessor drain before re-enabling that generation.
 
 By default, every online player in the same world and within `viewRange * 64`
 blocks can see the visual, provided the client has received its chunk. Set

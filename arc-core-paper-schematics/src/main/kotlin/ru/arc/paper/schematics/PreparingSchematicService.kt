@@ -87,6 +87,8 @@ internal class PreparingSchematicService : ArcSchematicService, AutoCloseable {
         override fun loadVerified(id: String, expectedFileSha256: String, contentPolicy: ArcSchematicContentPolicy) = request { it.loadVerified(id, expectedFileSha256, contentPolicy) }
         override fun captureSource(id: String, expectedFileSha256: String) = request { it.captureSource(id, expectedFileSha256) }
         override fun transform(snapshot: ArcSchematicSnapshot, transform: ArcSchematicTransform) = request { it.transform(snapshot, transform) }
+        override fun crop(snapshot: ArcSchematicSnapshot, minimum: ArcSchematicPoint, maximum: ArcSchematicPoint) = request { it.crop(snapshot, minimum, maximum) }
+        override fun inspectBlockEntityNbt(snapshot: ArcSchematicSnapshot, visitor: java.util.function.BiConsumer<ArcSchematicPoint, String>) = request { it.inspectBlockEntityNbt(snapshot, visitor) }
         override fun invalidate(id: String) = request { it.invalidate(id) }
 
         private fun active(): ArcSchematicLibrary {

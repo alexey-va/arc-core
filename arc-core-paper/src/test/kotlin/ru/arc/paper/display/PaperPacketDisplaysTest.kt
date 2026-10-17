@@ -36,9 +36,9 @@ class PaperPacketDisplaysTest : FreeSpec({
                 player.setLocation(location)
                 observer.setLocation(location)
                 val transport = RecordingTransport()
-                PaperPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), BukkitPacketDisplayAudience).use { displays ->
+                testPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), BukkitPacketDisplayAudience).use { displays ->
                     val display = displays.spawnText(location, Component.text("Before death"))
-                    displays.refresh()
+                    displays.refreshFully()
                     transport.forPlayer(player).last().frames.single().entityId shouldBe display.entityId
                     transport.forPlayer(observer).last().frames.single().entityId shouldBe display.entityId
                     player.sentChunkReads shouldBe 1
@@ -48,7 +48,7 @@ class PaperPacketDisplaysTest : FreeSpec({
                     player.isOnline shouldBe true
                     player.isDead shouldBe true
                     display.text(Component.text("While dead"))
-                    displays.refresh()
+                    displays.refreshFully()
                     player.sentChunkReads shouldBe 1
                     transport.forPlayer(player).last().frames shouldBe emptyList()
                     transport.forPlayer(observer).last().frames.single().metadata.content shouldBe
@@ -60,7 +60,7 @@ class PaperPacketDisplaysTest : FreeSpec({
                     player.isDead shouldBe false
                     player.isValid shouldBe false
                     display.text(Component.text("While respawning"))
-                    displays.refresh()
+                    displays.refreshFully()
                     player.sentChunkReads shouldBe 1
                     transport.forPlayer(player).last().frames shouldBe emptyList()
                     transport.forPlayer(observer).last().frames.single().metadata.content shouldBe
@@ -69,7 +69,7 @@ class PaperPacketDisplaysTest : FreeSpec({
                     player.inWorld = true
                     paper.callEvent(PlayerPostRespawnEvent(player, location, false, false, false, PlayerRespawnEvent.RespawnReason.DEATH))
                     display.text(Component.text("After respawn"))
-                    displays.refresh()
+                    displays.refreshFully()
                     player.sentChunkReads shouldBe 2
                     transport.forPlayer(player).last().resetAll shouldBe true
                     transport.forPlayer(player).last().frames.single().entityId shouldBe display.entityId
@@ -92,7 +92,7 @@ class PaperPacketDisplaysTest : FreeSpec({
                 values = listOf(viewer(player, world.uid), viewer(observer, world.uid))
             }
             val transport = RecordingTransport()
-            PaperPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), audience).use { displays ->
+            testPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), audience).use { displays ->
                 var open = false
                 val calls = mutableMapOf<UUID, Int>()
                 val group = displays.createAudienceGroup {
@@ -105,26 +105,26 @@ class PaperPacketDisplaysTest : FreeSpec({
                 }
                 val card = displays.spawnText(Location(world, 1.0, 64.0, 1.0), Component.text("private"))
                     .apply { audienceGroup = group; isVisibleByDefault = false; showTo(player) }
-                displays.refresh()
+                displays.refreshFully()
                 calls shouldBe mapOf(player.uniqueId to 1, observer.uniqueId to 1)
                 transport.connections shouldBe emptyMap()
 
                 open = true
-                displays.refresh()
+                displays.refreshFully()
                 calls.values.toSet() shouldBe setOf(2)
                 transport.forPlayer(player).last().frames.size shouldBe 21
                 transport.forPlayer(observer).last().frames.map { it.entityId } shouldBe public.map { it.entityId }
                 card.hideFrom(player)
                 public.first().teleport(Location(world, 2.0, 64.0, 1.0))
-                displays.refresh()
+                displays.refreshFully()
                 transport.forPlayer(player).last().frames.size shouldBe 20
                 card.showTo(player)
                 open = false
-                displays.refresh()
+                displays.refreshFully()
                 transport.forPlayer(player).last().frames shouldBe emptyList()
                 transport.forPlayer(observer).last().frames shouldBe emptyList()
                 open = true
-                displays.refresh()
+                displays.refreshFully()
                 transport.forPlayer(player).last().frames.size shouldBe 21
                 transport.forPlayer(observer).last().frames.size shouldBe 20
 
@@ -132,21 +132,21 @@ class PaperPacketDisplaysTest : FreeSpec({
                 val before = calls.toMap()
                 audience.values = listOf(viewer(player, world.uid, chunks = emptySet()),
                     viewer(observer, UUID.randomUUID()))
-                displays.refresh()
+                displays.refreshFully()
                 calls shouldBe before
                 audience.values = listOf(viewer(player, world.uid, x = 1000.0))
-                displays.refresh()
+                displays.refreshFully()
                 calls shouldBe before
 
                 group.close()
                 group.close()
                 audience.values = listOf(viewer(player, world.uid))
-                displays.refresh()
+                displays.refreshFully()
                 calls shouldBe before
                 transport.forPlayer(player).last().frames shouldBe emptyList()
                 shouldThrow<IllegalArgumentException> { public.first().audienceGroup = group }
                 public.first().audienceGroup = null
-                displays.refresh()
+                displays.refreshFully()
                 transport.forPlayer(player).last().frames.single().entityId shouldBe public.first().entityId
             }
         }
@@ -156,8 +156,8 @@ class PaperPacketDisplaysTest : FreeSpec({
         MockBukkitTestRuntime.open().use { paper ->
             val plugin = paper.loadPlugin<TestPaperPlugin>()
             val world = paper.addSimpleWorld("group-ownership")
-            val owner = PaperPacketDisplays(plugin, RecordingTransport(), LifecycleTaskScope(TestTaskScheduler()), MutableAudience())
-            val other = PaperPacketDisplays(plugin, RecordingTransport(), LifecycleTaskScope(TestTaskScheduler()), MutableAudience())
+            val owner = testPacketDisplays(plugin, RecordingTransport(), LifecycleTaskScope(TestTaskScheduler()), MutableAudience())
+            val other = testPacketDisplays(plugin, RecordingTransport(), LifecycleTaskScope(TestTaskScheduler()), MutableAudience())
             val group = owner.createAudienceGroup { true }
             val handle = owner.spawnText(Location(world, 1.0, 64.0, 1.0), Component.empty())
                 .apply { audienceGroup = group }
@@ -184,33 +184,33 @@ class PaperPacketDisplaysTest : FreeSpec({
             }
             val transport = RecordingTransport()
             val before = world.entities.size
-            PaperPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), audience).use { displays ->
+            testPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), audience).use { displays ->
                 val display = displays.spawnText(Location(world, 1.0, 64.0, 1.0), Component.text("Marker"))
                 display.isVisibleByDefault = false
                 display.showTo(player)
-                displays.refresh()
+                displays.refreshFully()
                 transport.forPlayer(player).last().frames.map { it.entityId } shouldBe listOf(display.entityId)
                 transport.connections.containsKey(other.uniqueId) shouldBe false
                 world.entities.size shouldBe before
 
                 audience.values = listOf(viewer(player, world.uid, chunks = emptySet()))
-                displays.refresh()
+                displays.refreshFully()
                 transport.forPlayer(player).last().frames shouldBe emptyList()
                 audience.values = listOf(viewer(player, world.uid))
-                displays.refresh()
+                displays.refreshFully()
                 transport.forPlayer(player).last().frames.single().entityId shouldBe display.entityId
                 display.hideFrom(player)
-                displays.refresh()
+                displays.refreshFully()
                 transport.forPlayer(player).last().frames shouldBe emptyList()
                 display.showTo(player)
                 audience.values = listOf(viewer(player, UUID.randomUUID()))
-                displays.refresh()
+                displays.refreshFully()
                 transport.forPlayer(player).last().frames shouldBe emptyList()
                 audience.values = listOf(viewer(player, world.uid, x = 65.01))
-                displays.refresh()
+                displays.refreshFully()
                 transport.forPlayer(player).last().frames shouldBe emptyList()
                 audience.values = listOf(viewer(player, world.uid, x = 65.0))
-                displays.refresh()
+                displays.refreshFully()
                 transport.forPlayer(player).last().frames.size shouldBe 1
             }
         }
@@ -223,22 +223,22 @@ class PaperPacketDisplaysTest : FreeSpec({
             val player = paper.addPlayer("Viewer")
             val audience = MutableAudience().apply { values = listOf(viewer(player, world.uid)) }
             val transport = RecordingTransport()
-            PaperPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), audience).use { displays ->
+            testPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), audience).use { displays ->
                 val location = Location(world, 1.0, 64.0, 1.0)
                 val display = displays.spawnText(location, Component.text("A"))
                 val transform = Transformation(Vector3f(0f), Quaternionf(), Vector3f(2f), Quaternionf())
                 display.transformation = transform
-                displays.refresh()
+                displays.refreshFully()
                 val first = transport.forPlayer(player).last().frames.single()
                 location.x = 1000.0
                 transform.scale.x = 1000f
                 display.location.x = 1000.0
                 display.transformation.scale.x = 1000f
-                displays.refresh()
+                displays.refreshFully()
                 transport.forPlayer(player).last().frames.single() shouldBe first
                 display.teleport(Location(world, 2.0, 64.0, 1.0))
                 display.text(Component.text("B"))
-                displays.refresh()
+                displays.refreshFully()
                 val changed = transport.forPlayer(player).last().frames.single()
                 changed.entityId shouldBe first.entityId
                 changed.uuid shouldBe first.uuid
@@ -260,10 +260,10 @@ class PaperPacketDisplaysTest : FreeSpec({
                 values = listOf(viewer(carrier, world.uid), viewer(bystander, world.uid))
             }
             val transport = RecordingTransport()
-            PaperPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), audience).use { displays ->
+            testPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), audience).use { displays ->
                 val display = displays.spawnText(Location(world, 1.0, 64.0, 1.0), Component.text("Held"))
                 display.attachTo(carrier)
-                displays.refresh()
+                displays.refreshFully()
 
                 transport.forPlayer(carrier).last().frames.single().attachmentVehicleId shouldBe carrier.entityId
                 transport.connections.containsKey(bystander.uniqueId) shouldBe false
@@ -272,19 +272,19 @@ class PaperPacketDisplaysTest : FreeSpec({
                     viewer(carrier, world.uid).copy(trackedBy = setOf(bystander.uniqueId)),
                     viewer(bystander, world.uid),
                 )
-                displays.refresh()
+                displays.refreshFully()
                 transport.forPlayer(bystander).last().passengers shouldBe mapOf(carrier.entityId to listOf(display.entityId))
                 transport.forPlayer(bystander).last().frames.single().x shouldBe audience.values.first { it.id == carrier.uniqueId }.x
 
                 val replacement = RecordingConnection()
                 transport.connections[bystander.uniqueId] = replacement
-                displays.refresh()
+                displays.refreshFully()
                 replacement.last().frames.single().entityId shouldBe display.entityId
                 replacement.last().passengers shouldBe mapOf(carrier.entityId to listOf(display.entityId))
 
                 display.teleport(Location(world, 3.0, 66.0, 3.0))
                 display.detach()
-                displays.refresh()
+                displays.refreshFully()
                 replacement.last().passengers shouldBe emptyMap()
                 replacement.last().frames.single().x shouldBe 3.0
             }
@@ -298,17 +298,17 @@ class PaperPacketDisplaysTest : FreeSpec({
             val player = paper.addPlayer("Viewer")
             val audience = MutableAudience().apply { values = listOf(viewer(player, world.uid)) }
             val transport = RecordingTransport()
-            PaperPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), audience).use { displays ->
+            testPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), audience).use { displays ->
                 val display = displays.spawnText(Location(world, 1.0, 64.0, 1.0), Component.text("Marker"))
-                displays.refresh()
+                displays.refreshFully()
                 val old = transport.forPlayer(player)
                 displays.onChunkUnload(PlayerChunkUnloadEvent(world.getChunkAt(0, 0), player))
-                displays.refresh()
+                displays.refreshFully()
                 old.last().resetChunks shouldBe setOf(0L)
                 old.last().frames.single().entityId shouldBe display.entityId
                 val replacement = RecordingConnection()
                 transport.connections[player.uniqueId] = replacement
-                displays.refresh()
+                displays.refreshFully()
                 old.last().frames shouldBe emptyList()
                 replacement.last().frames.single().entityId shouldBe display.entityId
             }
@@ -323,12 +323,12 @@ class PaperPacketDisplaysTest : FreeSpec({
             val audience = MutableAudience().apply { values = listOf(viewer(player, world.uid)) }
             val transport = RecordingTransport()
             val scope = LifecycleTaskScope(TestTaskScheduler())
-            val displays = PaperPacketDisplays(plugin, transport, scope, audience)
+            val displays = testPacketDisplays(plugin, transport, scope, audience)
             val display = displays.spawnText(Location(world, 1.0, 64.0, 1.0), Component.text("Marker"))
-            displays.refresh()
+            displays.refreshFully()
             display.remove()
             display.remove()
-            displays.refresh()
+            displays.refreshFully()
             transport.forPlayer(player).last().frames shouldBe emptyList()
             display.isValid shouldBe false
             displays.close()
@@ -351,7 +351,7 @@ private fun viewer(
     player.passengers.map { it.entityId },
 )
 
-private class MutableAudience : PacketDisplayAudienceSource {
+private class MutableAudience : TestPacketDisplayAudience() {
     var values = emptyList<PacketDisplayViewer>()
     override fun checkThread() = Unit
     override fun capture() = values

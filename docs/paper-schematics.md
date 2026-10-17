@@ -56,7 +56,7 @@ gzip NBT; unsupported/malformed payloads fail before a snapshot is exposed.
 
 ## Asynchronous work and thread boundaries
 
-`load`, `loadVerified`, `transform` and `invalidate` always dispatch through a
+`load`, `loadVerified`, `transform`, `crop`, `inspectBlockEntityNbt` and `invalidate` always dispatch through a
 bounded worker queue, including cache hits. Never call `join()` or `get()` on
 Paper's primary thread. A completion callback has no promised thread affinity;
 schedule Bukkit/player/world operations explicitly in the consumer lifecycle.
@@ -129,6 +129,25 @@ FAWE may return a shared cached instance, so mutating it would corrupt later
 loads and transforms. NBT is preserved unchanged. Arbitrary embedded
 coordinates inside opaque custom NBT are not rewritten. The file hash remains
 the source fingerprint; the content hash is recomputed for the returned view.
+
+`crop(snapshot, minimum, maximum)` uses inclusive source coordinates. Empty or
+out-of-source bounds fail `INVALID_SNAPSHOT`. The returned view retains its
+absolute coordinates, original origin (even if outside the crop), source hash
+and source-extra metadata. Air and block-entity NBT are preserved. Cell indices,
+content hash and retained-data weight are rebuilt on the shared worker; no
+native palette conversion is required. Crops use the same heavy-work permits
+as transforms and do not populate another cache.
+
+`inspectBlockEntityNbt(snapshot, visitor)` visits only retained block entities on
+a provider worker. Each visit supplies an absolute snapshot coordinate and a
+String with the exact `LinCompoundTag.toString()` representation previously
+available through WorldEdit's `BaseBlock.nbtReference.value.toString()`. The
+provider exposes no native tag or copied NBT map. The callback must not use
+Bukkit, world, player or inventory APIs. Throwing rejects the future; consumers
+must await successful inspection before their native mutation. Core supplies
+no executable-content policy: the consumer owns its validation. Cropping and
+inspection enforce provider ownership and library lifetime just like transforms.
+Closing a lease stops subsequent visits; an already-running callback may finish.
 
 ## Content policy
 

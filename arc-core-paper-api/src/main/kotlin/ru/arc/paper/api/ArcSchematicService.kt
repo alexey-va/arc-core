@@ -2,6 +2,7 @@ package ru.arc.paper.api
 
 import java.nio.file.Path
 import java.util.UUID
+import java.util.function.BiConsumer
 import java.util.concurrent.CompletableFuture
 
 /** One host-wide budget, shared by every library and consumer. No files are read at installation. */
@@ -75,6 +76,26 @@ interface ArcSchematicLibrary : AutoCloseable {
 
     /** Mirror local X first, then rotate around the snapshot origin. The result has origin (0,0,0). */
     fun transform(snapshot: ArcSchematicSnapshot, transform: ArcSchematicTransform): CompletableFuture<ArcSchematicSnapshot>
+
+    /**
+     * Worker-only inclusive crop in the snapshot's absolute coordinates. Bounds must be nonempty
+     * and entirely inside the source. Coordinates, source origin, fingerprint and source-extra
+     * metadata are preserved; the content hash is recomputed and block-entity NBT follows its cell.
+     * The returned snapshot belongs to the caller and is not added to the shared cache.
+     */
+    fun crop(snapshot: ArcSchematicSnapshot, minimum: ArcSchematicPoint, maximum: ArcSchematicPoint): CompletableFuture<ArcSchematicSnapshot> =
+        CompletableFuture.failedFuture(ArcSchematicException(ArcSchematicFailure.UNSUPPORTED_CONTENT, "Schematic cropping is unavailable"))
+
+    /**
+     * Visits each retained block entity on a bounded provider worker, never on Paper's thread.
+     * [visitor] receives its absolute snapshot position and detached LinCompoundTag.toString text,
+     * with the same representation as WorldEdit BaseBlock.nbtReference.value.toString(). No native
+     * object or mutable map escapes. The visitor must not access Bukkit/world/player state.
+     * Throwing rejects this future; await success before any consumer mutation. Inspection itself
+     * supplies no security policy and never changes the snapshot. Completion has no thread affinity.
+     */
+    fun inspectBlockEntityNbt(snapshot: ArcSchematicSnapshot, visitor: BiConsumer<ArcSchematicPoint, String>): CompletableFuture<Void> =
+        CompletableFuture.failedFuture(ArcSchematicException(ArcSchematicFailure.UNSUPPORTED_CONTENT, "Schematic NBT inspection is unavailable"))
 
     fun invalidate(id: String): CompletableFuture<Boolean>
 

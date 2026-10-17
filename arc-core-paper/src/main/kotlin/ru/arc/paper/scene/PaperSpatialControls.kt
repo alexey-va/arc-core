@@ -29,26 +29,38 @@ class PaperSpatialControls<C : Any, A : Any> internal constructor(
     constructor(plugin: Plugin, displays: PaperPacketDisplays, controller: SpatialControlController<C, A>) :
         this(plugin, displays, controller, PaperSpatialSpace(), System::nanoTime)
 
-    private class Native(val entity: Interaction) { val shown = mutableSetOf<UUID>() }
+    private class Native(val entity: Interaction) { val shown = java.util.concurrent.ConcurrentHashMap.newKeySet<UUID>() }
     private inner class Scene(var frame: SpatialControlFrame<C, A>) {
-        val native = linkedMapOf<String, Native>()
+        val native = java.util.concurrent.ConcurrentHashMap<String, Native>()
         val accepted = mutableMapOf<UUID, Long>()
     }
     private data class Input(val scene: SpatialSceneKey, val key: String)
     private data class Hit<A : Any>(val control: SpatialControl<A>, val point: Vector, val distance: Double)
-    private val scenes = linkedMapOf<SpatialSceneKey, Scene>()
-    private val inputs = mutableMapOf<UUID, Input>()
+    private var scenes = java.util.concurrent.ConcurrentHashMap<SpatialSceneKey, Scene>()
+    private var inputs = mutableMapOf<UUID, Input>()
     private var closed = false
-    private val participant = object : PacketDisplayCaptureParticipant {
-        override fun capture(viewers: List<PacketDisplayViewer>) {
-            val players = viewers.map { it.player }
-            scenes.toList().forEach { (key, scene) ->
-                try { native(key, scene, players) } catch (failure: Exception) {
-                    clear(key); plugin.logger.log(Level.WARNING, "Spatial controls failed for ${key.value}", failure)
+    private val participant: PacketDisplayCaptureParticipant = object : PacketDisplayCaptureParticipant {
+        override fun captureSteps(viewers: List<PacketDisplayViewer>): Iterator<Unit> = sequence {
+            val players = arrayListOf<Player>()
+            for (viewer in viewers) { players.add(viewer.player); yield(Unit) }
+            for ((key, scene) in scenes) {
+                if (closed) break
+                val frame = scene.frame
+                val steps = nativeSteps(key, scene, players)
+                while (true) {
+                    val progressed = try {
+                        if (steps.hasNext()) { steps.next(); true } else false
+                    } catch (failure: Exception) {
+                        if (scenes[key] === scene && scene.frame === frame) clear(key)
+                        plugin.logger.log(Level.WARNING, "Spatial controls failed for ${key.value}", failure)
+                        false
+                    }
+                    if (!progressed) break
+                    yield(Unit)
                 }
             }
-        }
-        override fun ownerClosed() = close()
+        }.iterator()
+        override fun closeSteps(): Iterator<Unit> = detachNative()
     }
     init { displays.checkThread(); plugin.server.pluginManager.registerEvents(this, plugin) }
 
@@ -58,10 +70,12 @@ class PaperSpatialControls<C : Any, A : Any> internal constructor(
         val scene = scenes.getOrPut(key) { Scene(frame) }
         if (scene.frame.context != frame.context) removeNative(scene)
         scene.frame = frame
-        try { native(key, scene, plugin.server.onlinePlayers.toList()) } catch (failure: Exception) { clear(key); throw failure }
+        // Domain/input authority changes now; native controls join the owner's next coalesced
+        // capture. No per-apply online-player snapshot or all-viewer reconciliation runs inline.
+        displays.refresh()
     }
 
-    fun contains(key: SpatialSceneKey): Boolean { displays.checkThread(); return key in scenes }
+    fun contains(key: SpatialSceneKey): Boolean { displays.checkThread(); return scenes.containsKey(key) }
 
     fun target(key: SpatialSceneKey, player: Player): SpatialControlTarget<C, A>? {
         return guardedInput(player, key, null) { targetUnsafe(key, player) }
@@ -117,7 +131,7 @@ class PaperSpatialControls<C : Any, A : Any> internal constructor(
     }
 
     private fun selected(player: Player, frame: SpatialControlFrame<C, A>): Hit<A>? {
-        if (closed || !player.isOnline || player.isDead || !frame.audience.allows(player)) return null
+        if (closed || displays.closed || !player.isOnline || player.isDead || !frame.audience.allows(player)) return null
         if (frame.clearanceFootprints.any { !space.clear(player.world, it, player) }) return null
         val eye = player.eyeLocation
         val direction = eye.direction.normalize()
@@ -138,36 +152,59 @@ class PaperSpatialControls<C : Any, A : Any> internal constructor(
             a.controls.map { listOf(it.key, it.action, it.planes, it.nativeTarget, it.visible) } ==
             b.controls.map { listOf(it.key, it.action, it.planes, it.nativeTarget, it.visible) }
 
-    private fun native(key: SpatialSceneKey, scene: Scene, players: List<Player>) {
+    private fun nativeSteps(key: SpatialSceneKey, scene: Scene, players: List<Player>): Iterator<Unit> = sequence {
         val frame = scene.frame
-        val desired = if (frame.input == SpatialInputProfile.EXTERNAL_RAY) emptyList() else frame.controls.filter { it.nativeTarget != null }
-        val keys = desired.mapTo(hashSetOf()) { it.key }
-        (scene.native.keys - keys).forEach { removeNative(scene, it) }
-        desired.forEach { control ->
-            val target = checkNotNull(control.nativeTarget)
+        fun current() = !closed && scenes[key] === scene && scene.frame === frame
+        val keys = hashSetOf<String>()
+        if (frame.input != SpatialInputProfile.EXTERNAL_RAY) for (control in frame.controls) {
+            if (!current()) return@sequence
+            if (control.nativeTarget != null) keys.add(control.key)
+            yield(Unit)
+        }
+        for (oldKey in scene.native.keys) {
+            if (!current()) return@sequence
+            if (oldKey !in keys) removeNative(scene, oldKey)
+            yield(Unit)
+        }
+        if (frame.input == SpatialInputProfile.EXTERNAL_RAY) return@sequence
+        for (control in frame.controls) {
+            if (!current()) return@sequence
+            val target = control.nativeTarget ?: continue
             val at = target.location()
             val world = checkNotNull(at.world)
             val bounds = BoundingBox(at.x - target.width / 2, at.y, at.z - target.width / 2,
                 at.x + target.width / 2, at.y + target.height, at.z + target.width / 2)
-            if (!space.known(world, bounds)) { removeNative(scene, control.key); return@forEach }
+            if (!space.known(world, bounds)) { removeNative(scene, control.key); yield(Unit); continue }
             if (scene.native[control.key]?.entity?.isValid == false) removeNative(scene, control.key)
             val native = scene.native[control.key] ?: Native(world.spawn(at, Interaction::class.java) {
                 it.isVisibleByDefault = false; it.isPersistent = false; it.isInvulnerable = true
                 it.setGravity(false); it.isResponsive = true
                 it.interactionWidth = target.width; it.interactionHeight = target.height
-            }).also {
-                scene.native[control.key] = it; inputs[it.entity.uniqueId] = Input(key, control.key)
-            }
+            }).also { scene.native[control.key] = it; inputs[it.entity.uniqueId] = Input(key, control.key) }
             val entity = native.entity
             if (entity.interactionWidth != target.width) entity.interactionWidth = target.width
             if (entity.interactionHeight != target.height) entity.interactionHeight = target.height
             if (entity.location != at) check(entity.teleport(at)) { "Spatial Interaction teleport failed" }
-            val allowed = players.filter { control.visible && it.world.uid == world.uid && frame.audience.allows(it) && space.known(world, bounds, it) }
-            val ids = allowed.mapTo(hashSetOf()) { it.uniqueId }
-            (native.shown - ids).forEach { id -> plugin.server.getPlayer(id)?.hideEntity(plugin, entity); native.shown.remove(id) }
-            allowed.filter { it.uniqueId !in native.shown }.forEach { it.showEntity(plugin, entity); native.shown.add(it.uniqueId) }
+            yield(Unit)
+            val present = hashSetOf<UUID>()
+            for (player in players) {
+                if (!current()) return@sequence
+                val id = player.uniqueId
+                present.add(id)
+                val allowed = control.visible && player.world.uid == world.uid && frame.audience.allows(player) && space.known(world, bounds, player)
+                if (allowed && native.shown.add(id)) player.showEntity(plugin, entity)
+                if (!allowed && native.shown.remove(id)) player.hideEntity(plugin, entity)
+                yield(Unit)
+            }
+            val oldViewers = native.shown.iterator()
+            while (oldViewers.hasNext()) {
+                if (!current()) return@sequence
+                val id = oldViewers.next()
+                if (id !in present) { plugin.server.getPlayer(id)?.hideEntity(plugin, entity); oldViewers.remove() }
+                yield(Unit)
+            }
         }
-    }
+    }.iterator()
 
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
     fun onEarlyClick(event: PlayerInteractEntityEvent) { entityClick(event, true) }
@@ -250,7 +287,6 @@ class PaperSpatialControls<C : Any, A : Any> internal constructor(
     private fun removeNative(scene: Scene, key: String) {
         val native = scene.native.remove(key) ?: return
         inputs.remove(native.entity.uniqueId)
-        native.shown.forEach { plugin.server.getPlayer(it)?.let { player -> runCatching { player.hideEntity(plugin, native.entity) } } }
         native.entity.remove()
     }
     private fun removeNative(scene: Scene) {
@@ -264,10 +300,26 @@ class PaperSpatialControls<C : Any, A : Any> internal constructor(
         if (scenes.isEmpty()) displays.remove(participant)
         removeNative(scene)
     }
+    private fun detachNative(): Iterator<Unit> {
+        displays.checkThread()
+        if (closed) return emptyList<Unit>().iterator()
+        closed = true
+        displays.remove(participant)
+        HandlerList.unregisterAll(this)
+        val detached = scenes.values.iterator()
+        scenes = java.util.concurrent.ConcurrentHashMap()
+        inputs = mutableMapOf()
+        return sequence {
+            for (scene in detached) {
+                for (native in scene.native.values) { native.entity.remove(); yield(Unit) }
+                yield(Unit)
+            }
+        }.iterator()
+    }
+
     override fun close() {
-        displays.checkThread(); if (closed) return; closed = true
-        displays.remove(participant); HandlerList.unregisterAll(this)
-        scenes.keys.toList().forEach { runCatching { clear(it) }.onFailure { error -> plugin.logger.log(Level.WARNING, "Spatial cleanup failed", error) } }
-        inputs.clear()
+        displays.checkThread()
+        if (closed) return
+        displays.retireNative("spatial-controls", detachNative())
     }
 }

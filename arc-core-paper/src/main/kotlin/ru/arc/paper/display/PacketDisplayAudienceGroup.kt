@@ -13,12 +13,13 @@ class PacketDisplayAudienceGroup internal constructor(
     internal val owner: PaperPacketDisplays,
     private var predicate: ((Player) -> Boolean)?,
 ) : AutoCloseable {
-    val isClosed: Boolean get() = predicate == null
+    val isClosed: Boolean get() = predicate == null || owner.closed
 
-    internal fun allows(player: Player): Boolean = predicate?.invoke(player) ?: false
+    internal fun allows(player: Player): Boolean = if (owner.closed) false else predicate?.invoke(player) ?: false
 
     override fun close() {
         owner.checkThread()
+        if (predicate != null) owner.visibilityChanged()
         predicate = null
         owner.remove(this)
     }

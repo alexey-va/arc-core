@@ -26,6 +26,90 @@ class PacketDisplayTransportTest : FreeSpec({
     beforeSpec { PacketEvents.setAPI(TestPacketEventsApi()) }
     afterSpec { PacketEvents.setAPI(previousApi) }
 
+    "async admission touches frames only on the event loop and terminal cleanup waits for admission" {
+        val backend = RecordingPacketBackend()
+        val connection = PacketDisplayAttachment(Any(), Logger.getAnonymousLogger(), backend)
+        var reads = 0
+        val captured = object : AbstractList<PacketDisplayFrame>() {
+            override val size: Int get() { reads++; return 1 }
+            override fun get(index: Int): PacketDisplayFrame { reads++; return frame() }
+        }
+        val admission = connection.submitAsync(captured)
+        reads shouldBe 0
+        admission.isDone shouldBe false
+        val closing = connection.closeAsync()
+        closing.isDone shouldBe false
+        backend.runAll()
+        admission.isCompletedExceptionally shouldBe false
+        closing.isDone shouldBe true
+        closing.isCompletedExceptionally shouldBe false
+        // Closing can coalesce an unsent display; it cannot leave a received ID behind.
+        backend.writes.filterIsInstance<WrapperPlayServerSpawnEntity>().forEach { spawn ->
+            backend.writes.filterIsInstance<WrapperPlayServerDestroyEntities>().flatMap { it.entityIds.toList() } shouldContain spawn.entityId
+        }
+        connection.submitAsync(listOf(frame())).isCompletedExceptionally shouldBe true
+    }
+
+    "a blocked event-loop frame merge does not block native connection reuse or terminal admission" {
+        val backend = RecordingPacketBackend()
+        val channel = Any()
+        val connection = PacketDisplayAttachment(channel, Logger.getAnonymousLogger(), backend)
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val captured = object : AbstractList<PacketDisplayFrame>() {
+            override val size = 1
+            override fun get(index: Int): PacketDisplayFrame {
+                entered.countDown()
+                check(release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                return frame()
+            }
+        }
+        connection.submitAsync(captured)
+        val worker = Thread({ backend.tasks.removeFirst().invoke() }, "test-packet-event-loop")
+        worker.start()
+        try {
+            check(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            // Frame preparation owns its monitor here. These native-thread operations must not.
+            val started = System.nanoTime()
+            connection.isUsableFor(channel) shouldBe true
+            val closing = connection.closeAsync()
+            (System.nanoTime() - started < 1_000_000_000L) shouldBe true
+            closing.isDone shouldBe false
+            release.countDown()
+            worker.join(5000)
+            worker.isAlive shouldBe false
+            backend.runAll()
+            closing.join()
+        } finally { release.countDown(); worker.join(5000) }
+    }
+
+    "terminal completion waits for writable cleanup and detached observers cannot cancel it" {
+        val backend = RecordingPacketBackend()
+        val connection = PacketDisplayAttachment(Any(), Logger.getAnonymousLogger(), backend)
+        connection.submit(listOf(frame())); backend.runAll(); backend.clear()
+        backend.writable = false
+        val cancelledObserver = connection.closeAsync()
+        cancelledObserver.cancel(false)
+        val observed = connection.closeAsync()
+        backend.tasks.removeFirst().invoke() // terminal admission
+        backend.tasks.removeFirst().invoke() // cleanup denied and scheduled for retry
+        observed.isDone shouldBe false
+        backend.writable = true
+        backend.runAll()
+        observed.join()
+        backend.writes.filterIsInstance<WrapperPlayServerDestroyEntities>().single().entityIds.toList() shouldContain 100
+    }
+
+    "lost channel fails terminal completion instead of claiming delivered cleanup" {
+        val backend = RecordingPacketBackend()
+        val connection = PacketDisplayAttachment(Any(), Logger.getAnonymousLogger(), backend)
+        connection.submit(listOf(frame())); backend.runAll()
+        val closing = connection.closeAsync()
+        backend.open = false
+        backend.runAll()
+        closing.isCompletedExceptionally shouldBe true
+    }
+
     "a display owner can close before PacketEvents is initialized" {
         val api = PacketEvents.getAPI()
         PacketEvents.setAPI(null)

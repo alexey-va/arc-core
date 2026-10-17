@@ -1,5 +1,9 @@
 package ru.arc.paper.inspection
 
+import ru.arc.paper.display.testPacketDisplays
+import ru.arc.paper.display.refreshFully
+import ru.arc.paper.display.TestPacketDisplayAudience
+
 import com.github.retrooper.packetevents.protocol.item.ItemStack as PacketItemStack
 import io.kotest.core.spec.style.FreeSpec
 import io.kotest.assertions.throwables.shouldThrow
@@ -49,19 +53,19 @@ class PaperArcInspectionServiceTest : FreeSpec({
                 }
                 val preferences = InspectionViewPreferences(scale = 2f, verticalOffset = -1.5, horizontalOffset = 2.0)
                 service.update(player, preferences)
-                displays.refresh()
+                displays.refreshFully()
                 val initial = transport.forPlayer(player).last().frames.single()
                 listOf(initial.x, initial.y, initial.z) shouldBe listOf(2.0, 66.15, 3.0)
                 initial.metadata.billboard shouldBe Display.Billboard.VERTICAL.ordinal.toByte()
                 initial.metadata.transform.scale.y shouldBe 2f
 
                 service.follow(player)
-                displays.refresh()
+                displays.refreshFully()
                 transport.forPlayer(player).last().frames.single().y shouldBe 66.15
 
                 anchor = InspectionHologramAnchor(player.world.uid, 4.0, 68.15, 3.0)
                 service.update(player, preferences)
-                displays.refresh()
+                displays.refreshFully()
                 val tall = transport.forPlayer(player).last().frames.single()
                 tall.entityId shouldBe initial.entityId
                 listOf(tall.x, tall.y, tall.z) shouldBe listOf(4.0, 68.15, 3.0)
@@ -69,13 +73,13 @@ class PaperArcInspectionServiceTest : FreeSpec({
 
                 anchor = null
                 service.update(player, InspectionViewPreferences())
-                displays.refresh()
+                displays.refreshFully()
                 transport.forPlayer(player).last().frames.single().metadata.billboard shouldBe
                     Display.Billboard.CENTER.ordinal.toByte()
 
                 anchor = InspectionHologramAnchor(UUID.randomUUID(), 2.0, 66.15, 3.0)
                 service.update(player, preferences)
-                displays.refresh()
+                displays.refreshFully()
                 transport.forPlayer(player).last().frames shouldBe emptyList()
                 service.close()
             }
@@ -114,18 +118,18 @@ class PaperArcInspectionServiceTest : FreeSpec({
 
                 service.update(player, InspectionViewPreferences())
                 lowerCalls shouldBe 1
-                displays.refresh()
+                displays.refreshFully()
                 transport.lastText(player) shouldBe Component.text("Backing target")
 
                 higherFrame = ArcInspectionFrame(Component.empty(), Component.empty())
                 service.update(player, InspectionViewPreferences())
                 lowerCalls shouldBe 1
-                displays.refresh()
+                displays.refreshFully()
                 transport.forPlayer(player).last().frames shouldBe emptyList()
 
                 higher.close()
                 lowerCalls shouldBe 2
-                displays.refresh()
+                displays.refreshFully()
                 transport.lastText(player) shouldBe Component.text("Backing target")
                 service.close()
             }
@@ -148,7 +152,7 @@ class PaperArcInspectionServiceTest : FreeSpec({
                 }
 
                 service.update(player, InspectionViewPreferences(scale = 1.25f))
-                displays.refresh()
+                displays.refreshFully()
                 transport.lastContent(player)?.text shouldBe Component.text("Cylinder 1")
                 transport.forPlayer(player).last().frames.last().metadata.transform.scale.x shouldBe 1.25f
                 service.follow(player)
@@ -156,7 +160,7 @@ class PaperArcInspectionServiceTest : FreeSpec({
                 service.update(player, InspectionViewPreferences(mode = InspectionViewMode.BOSSBAR))
                 effects.shown shouldHaveSize 1
                 effects.shown.single().name() shouldBe Component.text("Cylinder 1 · intake")
-                displays.refresh()
+                displays.refreshFully()
                 transport.forPlayer(player).last().frames shouldBe emptyList()
 
                 service.update(player, InspectionViewPreferences(mode = InspectionViewMode.OFF))
@@ -199,15 +203,15 @@ class PaperArcInspectionServiceTest : FreeSpec({
                 brokenCalls shouldBe 1
                 firstCalls shouldBe 1
                 secondCalls shouldBe 0
-                displays.refresh()
+                displays.refreshFully()
                 transport.lastText(player) shouldBe Component.text("First registered")
 
                 paper.callEvent(PlayerChangedWorldEvent(player, player.world))
-                displays.refresh()
+                displays.refreshFully()
                 transport.forPlayer(player).last().frames shouldBe emptyList()
 
                 service.update(player, InspectionViewPreferences())
-                displays.refresh()
+                displays.refreshFully()
                 transport.lastText(player) shouldBe Component.text("First registered")
                 val quitConnection = transport.forPlayer(player)
                 paper.callEvent(
@@ -225,14 +229,14 @@ private fun packetDisplays(
     plugin: TestPaperPlugin,
     player: Player,
     transport: RecordingTransport,
-): PaperPacketDisplays = PaperPacketDisplays(
+): PaperPacketDisplays = testPacketDisplays(
     plugin,
     transport,
     LifecycleTaskScope(TestTaskScheduler()),
     MutableAudience(player),
 )
 
-private class MutableAudience(private val player: Player) : PacketDisplayAudienceSource {
+private class MutableAudience(private val player: Player) : TestPacketDisplayAudience() {
     override fun checkThread() = Unit
     override fun capture(): List<PacketDisplayViewer> {
         val location = player.location

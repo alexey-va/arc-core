@@ -11,6 +11,9 @@ import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executor
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import javax.sql.DataSource
 
 class SqlExecutorTest : StringSpec({
@@ -49,6 +52,51 @@ class SqlExecutorTest : StringSpec({
 
         verify(exactly = 1) { connection.isReadOnly = true }
         verify(exactly = 1) { connection.close() }
+    }
+
+    "async drain includes delayed connection cleanup and preserves the borrowed executor" {
+        val cleanupEntered = CountDownLatch(1)
+        val releaseCleanup = CountDownLatch(1)
+        val connection = mockk<Connection>(relaxed = true)
+        every { connection.close() } answers {
+            cleanupEntered.countDown()
+            check(releaseCleanup.await(5, TimeUnit.SECONDS))
+        }
+        val dataSource = mockk<DataSource>()
+        every { dataSource.connection } returns connection
+        val host = Executors.newSingleThreadExecutor()
+        try {
+            val facade = SqlExecutor(dataSource, host)
+            val write = facade.write { "committed" }
+            check(cleanupEntered.await(5, TimeUnit.SECONDS))
+            val drain = facade.closeAsync()
+            drain.isDone shouldBe false
+            facade.closeAsync().cancel(false) shouldBe true
+            shouldThrow<RejectedExecutionException> { facade.submit { "late" } }
+            releaseCleanup.countDown()
+            write.get(5, TimeUnit.SECONDS) shouldBe "committed"
+            drain.get(5, TimeUnit.SECONDS) shouldBe Unit
+            facade.closeAsync().get(5, TimeUnit.SECONDS) shouldBe Unit
+            host.submit<String> { "provider still alive" }.get(5, TimeUnit.SECONDS) shouldBe "provider still alive"
+        } finally {
+            releaseCleanup.countDown()
+            host.shutdownNow()
+        }
+    }
+
+    "rejected delegate admission cannot strand async drain or enter work inline" {
+        val dataSource = mockk<DataSource>()
+        var calls = 0
+        val facade = SqlExecutor(dataSource, Executor { throw RejectedExecutionException("host closed") })
+        shouldThrow<RejectedExecutionException> { facade.submit { calls++; Unit } }
+        facade.closeAsync().isDone shouldBe true
+        calls shouldBe 0
+    }
+
+    "an inline failing test delegate releases its accepted task exactly once" {
+        val facade = SqlExecutor(mockk(), Executor(Runnable::run))
+        shouldThrow<IllegalStateException> { facade.execute { error("failed operation") } }
+        facade.closeAsync().isDone shouldBe true
     }
 
     "successful transaction commits and restores auto-commit" {

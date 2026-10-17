@@ -1,5 +1,9 @@
 package ru.arc.paper.actionpanel
 
+import ru.arc.paper.display.testPacketDisplays
+import ru.arc.paper.display.refreshFully
+import ru.arc.paper.display.TestPacketDisplayAudience
+
 import io.kotest.core.spec.style.FreeSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
@@ -403,7 +407,7 @@ private class PanelFixture(paper: MockBukkitTestRuntime, val profile: ActionPane
             interactions += interaction
             interaction
         }
-        displays = PaperPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), object : PacketDisplayAudienceSource {
+        displays = testPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), object : TestPacketDisplayAudience() {
             override fun checkThread() = Unit
             override fun capture() = listOf(PacketDisplayViewer(player, playerId, worldId, 1, emptySet(),
                 body.x, body.y, body.z, (-1..1).flatMap { x -> (-1..1).map { z -> Chunk.getChunkKey(x, z) } }.toSet()))
@@ -429,8 +433,8 @@ private class PanelFixture(paper: MockBukkitTestRuntime, val profile: ActionPane
         return ActionPanelFrame(context, ActionPanelPlacement.FollowTarget(world.uid, ActionPanelPoint(0.0, 64.0, 10.0)),
             ActionPanelLayout(listOf(button), emptyList()), true, ActionPanelOptions(input, 4.0, true), null)
     }
-    fun refresh() { panels.refresh(player) }
-    fun frames(): List<PacketDisplayFrame> { displays.refresh(); return transport.connection.frames }
+    fun refresh() { panels.refresh(player); displays.refreshFully() }
+    fun frames(): List<PacketDisplayFrame> { displays.refreshFully(); return transport.connection.frames }
     override fun close() { panels.close(); displays.close() }
 }
 

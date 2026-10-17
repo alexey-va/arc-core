@@ -24,6 +24,19 @@ class PaperDialogSessionStoreTest : FreeSpec({
         store.size shouldBe 0
     }
 
+    "a prepared nonce cannot dispatch until explicit publication" {
+        val player = UUID.randomUUID()
+        val store = PaperDialogSessionStore("arc")
+        val action = PaperDialogActionId.of("prepared")
+        var clicked = 0
+        val prepared = store.prepare(mapOf(action to { clicked++ }))
+        store.size shouldBe 0
+        store.consume(player, prepared.key(action)) shouldBe null
+        store.publish(player, prepared)
+        store.consume(player, prepared.key(action))?.invoke()
+        clicked shouldBe 1
+    }
+
     "rejects actions owned by another player or namespace" {
         val owner = UUID.randomUUID()
         val other = UUID.randomUUID()

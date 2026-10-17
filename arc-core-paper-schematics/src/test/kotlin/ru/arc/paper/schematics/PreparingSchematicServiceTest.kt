@@ -29,6 +29,30 @@ class PreparingSchematicServiceTest : FunSpec({
         facade.close()
     }
 
+    test("crop and detached NBT inspection wait for the prepared provider and forward their exact inputs") {
+        val facade = PreparingSchematicService()
+        val library = facade.open("crop", Path.of("root"))
+        val snapshot = mockk<ArcSchematicSnapshot>()
+        val cropped = mockk<ArcSchematicSnapshot>()
+        val min = ru.arc.paper.api.ArcSchematicPoint(-2, 3, 4)
+        val max = ru.arc.paper.api.ArcSchematicPoint(5, 6, 7)
+        val visitor = java.util.function.BiConsumer<ru.arc.paper.api.ArcSchematicPoint, String> { _, _ -> }
+        val crop = library.crop(snapshot, min, max)
+        val inspection = library.inspectBlockEntityNbt(snapshot, visitor)
+        crop.isDone shouldBe false
+        inspection.isDone shouldBe false
+        val actual = mockk<ArcSchematicLibrary>(relaxed = true)
+        every { actual.crop(snapshot, min, max) } returns CompletableFuture.completedFuture(cropped)
+        every { actual.inspectBlockEntityNbt(snapshot, visitor) } returns CompletableFuture.completedFuture(null)
+        val service = mockk<SharedSchematicService>(relaxed = true)
+        every { service.open("crop", any()) } returns actual
+        facade.attach(service)
+        crop.getNow(null) shouldBe cropped
+        inspection.isDone shouldBe true
+        inspection.isCompletedExceptionally shouldBe false
+        facade.close()
+    }
+
     test("closing one pending library completes only its requests and rejects late binding") {
         val facade = PreparingSchematicService()
         val first = facade.open("first", Path.of("first"))

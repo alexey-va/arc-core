@@ -12,6 +12,7 @@ import java.security.MessageDigest
 import java.util.AbstractList
 import java.util.Collections
 import java.util.HexFormat
+import java.util.function.BiConsumer
 
 internal data class SchematicPaletteEntry(val text: String, val air: Boolean, val barrier: Boolean, val native: BlockState)
 
@@ -83,6 +84,37 @@ internal class SchematicSnapshot(
     private fun cell(index: Int): ArcSchematicBlock {
         val entry = entry(index)
         return ArcSchematicBlock(position(index), entry.text, entry.air, entry.barrier)
+    }
+
+    fun cropped(minimum: ArcSchematicPoint, maximum: ArcSchematicPoint, checkCurrent: () -> Unit): SchematicSnapshot {
+        if (minimum.x > maximum.x || minimum.y > maximum.y || minimum.z > maximum.z ||
+            minimum.x < this.minimum.x || minimum.y < this.minimum.y || minimum.z < this.minimum.z ||
+            maximum.x > this.maximum.x || maximum.y > this.maximum.y || maximum.z > this.maximum.z) {
+            failure(ru.arc.paper.api.ArcSchematicFailure.INVALID_SNAPSHOT, "Crop bounds must be nonempty and inside the source snapshot")
+        }
+        val width = maximum.x - minimum.x + 1
+        val height = maximum.y - minimum.y + 1
+        val length = maximum.z - minimum.z + 1
+        val cells = IntArray(Math.multiplyExact(Math.multiplyExact(width, height), length))
+        val nbt = HashMap<Int, LinCompoundTag>()
+        var target = 0
+        for (y in minimum.y..maximum.y) for (x in minimum.x..maximum.x) for (z in minimum.z..maximum.z) {
+            if (target % 16_384 == 0) checkCurrent()
+            val source = index(x, y, z)
+            cells[target] = indices[source]
+            blockEntities[source]?.let { nbt[target] = it }
+            target++
+        }
+        checkCurrent()
+        return SchematicSnapshot(producer, minimum, maximum, origin, fileSha256, hasBiomes, entityCount, palette, cells, nbt)
+    }
+
+    fun inspectBlockEntityNbt(visitor: BiConsumer<ArcSchematicPoint, String>, checkCurrent: () -> Unit) {
+        blockEntities.forEach { (index, tag) ->
+            checkCurrent()
+            visitor.accept(position(index), tag.toString())
+        }
+        checkCurrent()
     }
 
     fun transformed(transform: ArcSchematicTransform, transformedPalette: List<SchematicPaletteEntry>): SchematicSnapshot {

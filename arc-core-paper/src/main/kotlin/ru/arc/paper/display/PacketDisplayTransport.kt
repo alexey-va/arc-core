@@ -34,6 +34,9 @@ import java.lang.ref.WeakReference
 import java.util.Optional
 import java.util.UUID
 import java.util.WeakHashMap
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CancellationException
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.logging.Level
 import java.util.logging.Logger
 
@@ -65,6 +68,22 @@ internal interface PacketDisplayConnection {
         nativePassengerSnapshots: Map<Int, List<Int>> = emptyMap(),
         liveVehicleIds: Set<Int>? = null,
     )
+
+    /** Detached snapshots only. Production prepares them on the existing connection event loop. */
+    fun submitAsync(
+        desired: List<PacketDisplayFrame>, resetChunks: Set<Long> = emptySet(), resetAll: Boolean = false,
+        desiredPassengers: Map<Int, List<Int>> = emptyMap(), nativePassengerSnapshots: Map<Int, List<Int>> = emptyMap(),
+        liveVehicleIds: Set<Int>? = null,
+    ): CompletableFuture<Void> {
+        submit(desired, resetChunks, resetAll, desiredPassengers, nativePassengerSnapshots, liveVehicleIds)
+        return CompletableFuture.completedFuture(null)
+    }
+
+    fun closeAsync(): CompletableFuture<Void> {
+        submit(emptyList())
+        return CompletableFuture.completedFuture(null)
+    }
+
 }
 
 /** Narrow seam used by deterministic tests; production delegates to PacketEvents/Netty. */
@@ -100,8 +119,9 @@ internal class PacketEventsDisplayTransport(
 ) : PacketDisplayTransport {
     constructor(plugin: Plugin, source: String) : this(plugin.logger, PacketEventsChannelBackend(plugin, source))
     /* Weak keys and weak channel snapshots avoid retaining disconnected players. */
-    private val attachments = WeakHashMap<Player, PacketDisplayAttachment>()
-    private val passengerStates = mutableMapOf<UUID, WeakReference<PacketDisplayPassengerState>>()
+    private var attachments = WeakHashMap<Player, PacketDisplayAttachment>()
+    private val passengerLock = Any()
+    private var passengerStates = mutableMapOf<UUID, WeakReference<PacketDisplayPassengerState>>()
     private val listenerLock = Any()
     private var listenerApi: PacketEventsAPI<*>? = null
     private var closed = false
@@ -109,7 +129,7 @@ internal class PacketEventsDisplayTransport(
         override fun onPacketSend(event: PacketSendEvent) {
             if (event.isCancelled) return
             val viewerId = event.user.uuid ?: return
-            val state = synchronized(passengerStates) { passengerStates[viewerId]?.get() } ?: return
+            val state = synchronized(passengerLock) { passengerStates[viewerId]?.get() } ?: return
             when (event.packetType) {
                 PacketType.Play.Server.SET_PASSENGERS -> {
                     val packet = WrapperPlayServerSetPassengers(event)
@@ -129,7 +149,7 @@ internal class PacketEventsDisplayTransport(
 
         override fun onUserDisconnect(event: UserDisconnectEvent) {
             event.user.uuid?.let { viewerId ->
-                synchronized(passengerStates) { passengerStates.remove(viewerId)?.get()?.closeConnection() }
+                synchronized(passengerLock) { passengerStates.remove(viewerId)?.get() }?.closeConnection()
             }
         }
     }
@@ -155,7 +175,7 @@ internal class PacketEventsDisplayTransport(
             if (current != null && current.isUsableFor(channel)) return current
             if (current?.deferReplacementUntilCleanup(channel) == true) return null
             val passengerState = PacketDisplayPassengerState()
-            synchronized(passengerStates) { passengerStates[player.uniqueId] = WeakReference(passengerState) }
+            synchronized(passengerLock) { passengerStates[player.uniqueId] = WeakReference(passengerState) }
             val replacement = PacketDisplayAttachment(channel, logger, backend, passengerState)
             attachments[player] = replacement
             return replacement
@@ -164,13 +184,13 @@ internal class PacketEventsDisplayTransport(
 
     override fun forget(player: Player) {
         synchronized(attachments) { attachments.remove(player)?.abandonPassengerState() }
-        synchronized(passengerStates) { passengerStates.remove(player.uniqueId) }
+        synchronized(passengerLock) { passengerStates.remove(player.uniqueId) }
     }
 
     override fun close() {
         /* Queued attachment drains keep their own weak channel and cleanup IDs. */
-        synchronized(attachments) { attachments.clear() }
-        synchronized(passengerStates) { passengerStates.clear() }
+        attachments = WeakHashMap()
+        synchronized(passengerLock) { passengerStates = mutableMapOf() }
         val registeredApi = synchronized(listenerLock) {
             if (closed) return
             closed = true
@@ -335,7 +355,10 @@ internal class PacketDisplayAttachment internal constructor(
     private val channelRef = WeakReference(channel)
     private val lock = Any()
     private val attachmentIdentity = Any()
-    private var valid = true
+    @Volatile private var valid = true
+    @Volatile private var clean = true
+    private val closing = AtomicBoolean()
+    private val closed = CompletableFuture<Void>()
     private var scheduled = false
     private var pending: Pending? = null
     private var submitted: Map<Int, PacketDisplayFrame> = emptyMap()
@@ -347,26 +370,67 @@ internal class PacketDisplayAttachment internal constructor(
 
     override val identity: Any get() = attachmentIdentity
 
-    internal fun isUsableFor(channel: Any): Boolean = synchronized(lock) {
-        valid && channelRef.get() === channel
-    }
+    internal fun isUsableFor(channel: Any): Boolean = valid && !closing.get() && channelRef.get() === channel
 
-    internal fun abandonPassengerState() = passengerState.closeConnection()
+    internal fun abandonPassengerState() {
+        val channel = channelRef.get() ?: return
+        try { backend.enqueue(channel) { passengerState.closeConnection() } }
+        catch (failure: Throwable) { closed.completeExceptionally(failure) }
+    }
 
     /** Keep same-channel listener state alive until an invalid queue has removed all admitted IDs. */
     internal fun deferReplacementUntilCleanup(channel: Any): Boolean {
-        val sameChannel = synchronized(lock) { channelRef.get() === channel }
-        if (!sameChannel) {
-            abandonPassengerState()
-            return false
-        }
-        val cleaned = synchronized(lock) {
-            !valid && pending == null && !scheduled && inFlightFrames == null &&
-                submitted.isEmpty() && submittedPassengers.isEmpty() && cleanupIds.isEmpty()
-        }
-        if (cleaned) return false
-        submit(emptyList())
+        if (channelRef.get() !== channel) { abandonPassengerState(); return false }
+        if (clean) return false
+        closeAsync()
         return true
+    }
+
+    override fun submitAsync(
+        desired: List<PacketDisplayFrame>, resetChunks: Set<Long>, resetAll: Boolean,
+        desiredPassengers: Map<Int, List<Int>>, nativePassengerSnapshots: Map<Int, List<Int>>, liveVehicleIds: Set<Int>?,
+    ): CompletableFuture<Void> {
+        if (closing.get()) return CompletableFuture.failedFuture(CancellationException("Packet display connection is closing"))
+        return enqueue {
+            submit(desired, resetChunks, resetAll, desiredPassengers, nativePassengerSnapshots, liveVehicleIds)
+        }
+    }
+
+    /** Accepted captures precede this terminal message in the same Netty FIFO. */
+    override fun closeAsync(): CompletableFuture<Void> {
+        if (closing.compareAndSet(false, true)) {
+            enqueue {
+                submit(emptyList())
+                completeCloseIfDrained()
+            }.whenComplete { _, failure -> if (failure != null) closed.completeExceptionally(failure) }
+        }
+        return closed.copy()
+    }
+
+    private fun enqueue(action: () -> Unit): CompletableFuture<Void> {
+        val result = CompletableFuture<Void>()
+        val channel = channelRef.get()
+        if (channel == null || !backend.isOpen(channel)) {
+            result.completeExceptionally(CancellationException("Packet display channel is closed"))
+            return result
+        }
+        try {
+            backend.enqueue(channel) {
+                try { action(); result.complete(null) }
+                catch (failure: Throwable) { result.completeExceptionally(failure) }
+            }
+        } catch (failure: Throwable) { result.completeExceptionally(failure) }
+        return result
+    }
+
+    // Called only by the event-loop owner. No Main caller waits on the frame/codec monitor.
+    private fun completeCloseIfDrained() {
+        val empty = synchronized(lock) {
+            pending == null && !scheduled && inFlightFrames == null && submitted.isEmpty() &&
+                submittedPassengers.isEmpty() && cleanupIds.isEmpty()
+        }
+        clean = empty
+        if (closing.get() && empty) closed.complete(null)
     }
 
     override fun submit(
@@ -377,6 +441,7 @@ internal class PacketDisplayAttachment internal constructor(
         nativePassengerSnapshots: Map<Int, List<Int>>,
         liveVehicleIds: Set<Int>?,
     ) {
+        clean = false
         val resetSnapshot = resetChunks.toSet()
         val passengerSnapshot = desiredPassengers.mapValues { (_, ids) -> ids.distinct().sorted() }.filterValues { it.isNotEmpty() }
         val nativeSnapshot = nativePassengerSnapshots.mapValues { (_, ids) -> ids.distinct() }
@@ -420,7 +485,9 @@ internal class PacketDisplayAttachment internal constructor(
         if (!schedule) return
         val channel = channelRef.get()
         if (channel == null) {
-            invalidate(cause = IllegalStateException("display channel was collected"))
+            val failure = CancellationException("Packet display channel was collected")
+            invalidate(cause = failure)
+            if (closing.get()) closed.completeExceptionally(failure)
             synchronized(lock) { scheduled = false }
             return
         }
@@ -428,11 +495,16 @@ internal class PacketDisplayAttachment internal constructor(
             backend.enqueue(channel) { drain() }
         } catch (failure: Throwable) {
             invalidate(cause = failure)
+            if (closing.get()) closed.completeExceptionally(failure)
             synchronized(lock) { scheduled = false }
         }
     }
 
     private fun drain() {
+        try { drainFrames() } finally { completeCloseIfDrained() }
+    }
+
+    private fun drainFrames() {
         while (true) {
             val batch = synchronized(lock) {
                 val value = pending ?: run {
@@ -459,6 +531,7 @@ internal class PacketDisplayAttachment internal constructor(
                 process(batch)
             } catch (failure: Throwable) {
                 invalidate(cause = failure)
+                if (closing.get()) closed.completeExceptionally(failure)
                 null
             } finally {
                 synchronized(lock) { inFlightFrames = null }
@@ -482,8 +555,12 @@ internal class PacketDisplayAttachment internal constructor(
             }
             synchronized(lock) {
                 if (pending == null) {
-                    scheduled = false
-                    return
+                    if (closing.get() && !closed.isDone && (!submitted.isEmpty() || !cleanupIds.isEmpty() || !submittedPassengers.isEmpty())) {
+                        pending = Pending(emptyMap(), emptySet(), false)
+                    } else {
+                        scheduled = false
+                        return
+                    }
                 }
             }
         }
@@ -495,6 +572,7 @@ internal class PacketDisplayAttachment internal constructor(
         val channel = channelRef.get()
         if (channel == null || !backend.isOpen(channel)) {
             invalidate(additionalCleanupIds = batch.previous.keys)
+            if (closing.get()) closed.completeExceptionally(CancellationException("Packet display channel closed before cleanup"))
             return null
         }
         if (!synchronized(lock) { valid }) {

@@ -14,33 +14,50 @@ fun interface SceneRefreshController { fun refresh() }
 /** Borrowed display owner. This is the sole keyed visual reconciler, not a second packet transport. */
 class PacketDisplayScene<K : Any>(private val displays: PaperPacketDisplays) : AutoCloseable {
     private class Entry<K : Any>(val handle: PacketDisplay, var part: ScenePart<K>)
-    private val entries = linkedMapOf<K, Entry<K>>()
+    private val entries = java.util.concurrent.ConcurrentHashMap<K, Entry<K>>()
     private var audience: SceneAudience? = null
     private var closed = false
     private var hidden = false
     private var refreshController: SceneRefreshController? = null
     private var refreshRegion: SceneRefreshRegion? = null
     private var refreshTicks = 0
-    private val participant = object : PacketDisplayCaptureParticipant {
-        override fun capture(viewers: List<PacketDisplayViewer>) {
+    private val participant: PacketDisplayCaptureParticipant = object : PacketDisplayCaptureParticipant {
+        override fun captureSteps(viewers: List<PacketDisplayViewer>): Iterator<Unit> = sequence {
+            if (closed) return@sequence
             val region = refreshRegion
-            if (region != null && viewers.none(region::observes)) return
             val gate = audience
-            if (region == null && gate != null && entries.isNotEmpty() && viewers.none { viewer ->
-                gate.allows(viewer.player) && entries.values.any { entry ->
-                    val location = entry.part.pose.location()
-                    val range = entry.part.style.viewRange * 64.0
-                    location.world?.uid == viewer.worldId &&
-                        (location.x - viewer.x) * (location.x - viewer.x) + (location.y - viewer.y) * (location.y - viewer.y) +
-                        (location.z - viewer.z) * (location.z - viewer.z) <= range * range
+            var observed = region == null && (gate == null || entries.isEmpty())
+            for (viewer in viewers) {
+                if (observed) break
+                if (region != null) observed = region.observes(viewer)
+                else if (gate != null && gate.allows(viewer.player)) {
+                    for (entry in entries.values) {
+                        val location = entry.part.pose.location()
+                        val range = entry.part.style.viewRange * 64.0
+                        observed = location.world?.uid == viewer.worldId &&
+                            (location.x - viewer.x) * (location.x - viewer.x) + (location.y - viewer.y) * (location.y - viewer.y) +
+                            (location.z - viewer.z) * (location.z - viewer.z) <= range * range
+                        yield(Unit)
+                        if (observed) break
+                    }
                 }
-            }) return
-            if (++refreshTicks % 5 == 0) try { refreshController?.refresh() } catch (failure: Exception) {
-                runCatching { reset() }.exceptionOrNull()?.let(failure::addSuppressed)
-                displays.captureFailure(failure)
+                yield(Unit)
             }
-        }
-        override fun ownerClosed() = close()
+            if (!closed && observed && ++refreshTicks % 5 == 0) {
+                try { refreshController?.refresh() } catch (failure: Exception) {
+                    runCatching { reset() }.exceptionOrNull()?.let(failure::addSuppressed)
+                    displays.captureFailure(failure)
+                }
+                yield(Unit)
+            }
+        }.iterator()
+        override fun closeSteps(): Iterator<Unit> = sequence {
+            if (closed) return@sequence
+            closed = true; refreshController = null; refreshRegion = null
+            displays.remove(participant)
+            for ((key, entry) in entries) { entry.handle.remove(); entries.remove(key, entry); yield(Unit) }
+            audience = null; hidden = false
+        }.iterator()
     }
 
     /** Opt-in idle placement refresh on the existing display capture; manual scenes install none. */

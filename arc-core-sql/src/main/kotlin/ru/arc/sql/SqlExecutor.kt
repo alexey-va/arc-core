@@ -34,10 +34,46 @@ class SqlExecutor private constructor(
     )
 
     private val closed = AtomicBoolean()
+    private val admission = Any()
+    private var accepted = 0
+    private val drained = CompletableFuture<Unit>()
 
     override fun execute(command: Runnable) {
-        if (closed.get()) throw RejectedExecutionException("SQL executor is closed")
-        executor.execute(command)
+        synchronized(admission) {
+            if (closed.get()) throw RejectedExecutionException("SQL executor is closed")
+            accepted++
+        }
+        val released = AtomicBoolean()
+        fun release() { if (released.compareAndSet(false, true)) finished() }
+        try {
+            executor.execute {
+                try { command.run() } finally { release() }
+            }
+        } catch (failure: Throwable) {
+            release()
+            throw failure
+        }
+    }
+
+    private fun finished() {
+        val complete = synchronized(admission) { --accepted; closed.get() && accepted == 0 }
+        // User continuations must never execute under the admission monitor.
+        if (complete) drained.complete(Unit)
+    }
+
+    /**
+     * Seals this facade without waiting; observes every accepted task leaving its
+     * operation and JDBC cleanup. It does not close a borrowed executor, pool or
+     * lease, and is not a claim that each individual operation succeeded. Owners
+     * first drain higher-level ledgers/completion lanes, await this stage on their
+     * cleanup worker, then release the runtime/lease. Use this instead of the
+     * legacy synchronous close while owned work is still pending. Observer
+     * cancellation cannot cancel accepted work or another observer's drain.
+     */
+    fun closeAsync(): CompletableFuture<Unit> {
+        if (closed.compareAndSet(false, true)) ownedExecutor?.shutdown()
+        if (synchronized(admission) { accepted == 0 }) drained.complete(Unit)
+        return drained.copy()
     }
 
     /** Runs blocking SQL-adjacent work that owns its own connection lifecycle, such as migrations. */
@@ -94,6 +130,7 @@ class SqlExecutor private constructor(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
+        if (synchronized(admission) { accepted == 0 }) drained.complete(Unit)
         val owned = ownedExecutor ?: return
         owned.shutdown()
         try {

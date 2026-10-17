@@ -1,5 +1,9 @@
 package ru.arc.paper.scene
 
+import ru.arc.paper.display.testPacketDisplays
+import ru.arc.paper.display.refreshFully
+import ru.arc.paper.display.TestPacketDisplayAudience
+
 import com.github.retrooper.packetevents.PacketEvents
 import com.github.retrooper.packetevents.protocol.item.type.ItemTypes
 import com.github.retrooper.packetevents.protocol.player.ClientVersion
@@ -272,7 +276,7 @@ class SpatialScenesTest : FreeSpec({
             f.current = f.controlFrame("two")
             f.controls.onEarlyClick(PlayerInteractEntityEvent(f.player, first, EquipmentSlot.HAND))
             f.actions shouldBe listOf("one")
-            f.controls.apply(f.key, checkNotNull(f.current))
+            f.controls.apply(f.key, checkNotNull(f.current)); f.capture()
             val replacement = f.interactions.last()
             replacement.uniqueId shouldNotBe first.uniqueId
             first.isValid shouldBe false
@@ -347,7 +351,7 @@ class SpatialScenesTest : FreeSpec({
             })
             f.plugin.logger.addHandler(handler)
             try {
-                controls.apply(f.key, frame)
+                controls.apply(f.key, frame); f.capture()
                 val old = f.interactions.single()
                 controls.onEarlyClick(PlayerInteractEntityEvent(f.player, old, EquipmentSlot.HAND))
                 attempts shouldBe 1
@@ -406,7 +410,7 @@ class SpatialScenesTest : FreeSpec({
             val volume = DisplayOrientedVolume(Vector3d(0.0,65.62,2.4), Vector3d(1.0,0.0,0.0), Vector3d(0.0,1.0,0.0),
                 Vector3d(0.0,0.0,1.0), Vector3d(1.5,.75,.04))
             f.current = f.controlFrame(footprints = listOf(volume))
-            f.controls.apply(f.key, checkNotNull(f.current))
+            f.controls.apply(f.key, checkNotNull(f.current)); f.capture()
             f.current = f.controlFrame(footprints = listOf(volume.translated(Vector3d())))
             f.controls.target(f.key, f.player)?.action shouldBe "inspect"
             val entity = f.interactions.single()
@@ -496,7 +500,7 @@ private class SceneFixture(paper: MockBukkitTestRuntime) : AutoCloseable {
             interactions += entity; entity
         }
         every { block.clone() } returns block
-        displays = PaperPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), object : PacketDisplayAudienceSource {
+        displays = testPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), object : TestPacketDisplayAudience() {
             override fun checkThread() = Unit
             override fun capture(): List<PacketDisplayViewer> {
                 audienceCaptures++
@@ -522,7 +526,7 @@ private class SceneFixture(paper: MockBukkitTestRuntime) : AutoCloseable {
             listOf(SpatialHitPlane(Location(world,0.0,65.62,2.4,180f,0f),3.0,1.5)),
             SpatialNativeTarget(Location(world,0.0,64.87,2.4),3f,1.5f))),SpatialInputProfile.ENTITY_RIGHT_EARLY,SpatialReach.Fixed(4.0),
             clearanceFootprints = footprints)
-    fun capture() = displays.refresh()
+    fun capture() = displays.refreshFully()
     fun frames(): List<PacketDisplayFrame> { capture(); return transport.connections[player.uniqueId]?.frames.orEmpty() }
     override fun close() { controls.close(); displays.close() }
 }

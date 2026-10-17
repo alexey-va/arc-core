@@ -29,20 +29,21 @@ sealed class PacketDisplay protected constructor(
     private var position = location.clone()
     private var transform = DisplayTransform()
     private var attachedPlayerId: UUID? = null
-    private val visibleTo = mutableSetOf<UUID>()
-    private val hiddenFrom = mutableSetOf<UUID>()
-    var isValid: Boolean = true
-        private set
+    private var visibleTo = mutableSetOf<UUID>()
+    private var hiddenFrom = mutableSetOf<UUID>()
+    private var active = true
+    val isValid: Boolean get() = active && !owner.closed
     val location: Location get() = position.clone()
     internal val attachmentTargetId: UUID? get() = attachedPlayerId
     var isVisibleByDefault: Boolean = true
+        set(value) { owner.checkThread(); if (field != value) { field = value; owner.visibilityChanged() } }
     /** Additional shared gate; never grants access denied by this handle's explicit audience. */
     var audienceGroup: PacketDisplayAudienceGroup? = null
         set(value) {
             owner.checkThread()
             require(value == null || value.owner === owner) { "Audience group must belong to the display owner" }
             require(value == null || !value.isClosed) { "Audience group is closed" }
-            field = value
+            if (field !== value) { field = value; owner.visibilityChanged() }
         }
     var billboard: Display.Billboard = Display.Billboard.FIXED
     var brightness: Display.Brightness? = null
@@ -90,12 +91,14 @@ sealed class PacketDisplay protected constructor(
     fun attachTo(player: Player) {
         owner.checkThread()
         check(isValid) { "A removed packet display cannot be attached" }
+        if (attachedPlayerId != player.uniqueId) owner.visibilityChanged()
         attachedPlayerId = player.uniqueId
     }
 
     /** Returns this display to its last [teleport] position. */
     fun detach() {
         owner.checkThread()
+        if (attachedPlayerId != null) owner.visibilityChanged()
         attachedPlayerId = null
     }
 
@@ -105,8 +108,8 @@ sealed class PacketDisplay protected constructor(
 
     fun showTo(playerId: UUID) {
         owner.checkThread()
-        hiddenFrom.remove(playerId)
-        visibleTo.add(playerId)
+        val changed = hiddenFrom.remove(playerId)
+        if (visibleTo.add(playerId) || changed) owner.visibilityChanged()
     }
 
     fun hideFrom(player: Player) {
@@ -115,21 +118,22 @@ sealed class PacketDisplay protected constructor(
 
     fun hideFrom(playerId: UUID) {
         owner.checkThread()
-        visibleTo.remove(playerId)
-        hiddenFrom.add(playerId)
+        val changed = visibleTo.remove(playerId)
+        if (hiddenFrom.add(playerId) || changed) owner.visibilityChanged()
     }
 
-    internal fun clearAudienceOverrides() { owner.checkThread(); visibleTo.clear(); hiddenFrom.clear() }
+    internal fun clearAudienceOverrides() { owner.checkThread(); if (visibleTo.isNotEmpty() || hiddenFrom.isNotEmpty()) owner.visibilityChanged(); visibleTo = mutableSetOf(); hiddenFrom = mutableSetOf() }
 
     fun remove() {
         owner.checkThread()
-        if (!isValid) return
-        isValid = false
+        if (!active) return
+        active = false
+        owner.visibilityChanged()
         attachedPlayerId = null
         audienceGroup = null
         owner.remove(this)
-        visibleTo.clear()
-        hiddenFrom.clear()
+        visibleTo = mutableSetOf()
+        hiddenFrom = mutableSetOf()
     }
 
     internal fun visibleTo(viewer: PacketDisplayViewer, frame: PacketDisplayFrame): Boolean {
