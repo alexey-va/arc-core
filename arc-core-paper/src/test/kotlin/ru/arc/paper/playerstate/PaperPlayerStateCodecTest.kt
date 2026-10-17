@@ -40,6 +40,34 @@ class PaperPlayerStateCodecTest : FreeSpec({
         codec.decode(envelope) shouldBe snapshot
     }
 
+    "worker prepares opaque item blobs and only native binding invokes the native item codec" {
+        val nativeThread = Thread.currentThread()
+        val guarded = object : PaperItemStackBinaryCodec by NativePaperItemStackBinaryCodec {
+            override fun decodeItems(payload: ByteArray): List<ItemStack?> {
+                Thread.currentThread() shouldBe nativeThread
+                return NativePaperItemStackBinaryCodec.decodeItems(payload)
+            }
+            override fun decodeItem(payload: ByteArray): ItemStack {
+                Thread.currentThread() shouldBe nativeThread
+                return NativePaperItemStackBinaryCodec.decodeItem(payload)
+            }
+        }
+        val codec = PaperPlayerStateCodec(guarded)
+        val state = snapshot()
+        val envelope = codec.encode(state)
+        BoundedAsyncExecutor("prepared-player-test").use { worker ->
+            val prepared = worker.submit { codec.prepareDecode(envelope) }.get(5, TimeUnit.SECONDS)
+            prepared.playerId shouldBe state.playerId
+            shouldThrow<IllegalArgumentException> { PaperPlayerStateCodec().decode(prepared) }
+            codec.decode(prepared) shouldBe state
+        }
+        val wrongSlots = PaperPlayerStateCodec(object : PaperItemStackBinaryCodec by guarded {
+            override fun decodeItems(payload: ByteArray): List<ItemStack?> = emptyList()
+        })
+        val prepared = wrongSlots.prepareDecode(envelope)
+        shouldThrow<IllegalArgumentException> { wrongSlots.decode(prepared) }
+    }
+
     "worker validation authenticates the complete outer structure without decoding native items" {
         val native = PaperPlayerStateCodec()
         val state = snapshot()

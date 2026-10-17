@@ -1,5 +1,6 @@
 package ru.arc.sql.onetime
 
+import ru.arc.core.BoundedAsyncExecutor
 import ru.arc.onetime.OneTimeUseAbandonResult
 import ru.arc.onetime.OneTimeUseClaim
 import ru.arc.onetime.OneTimeUseClaimRequest
@@ -236,6 +237,7 @@ class MySqlOneTimeUseLedger private constructor(
     private var closing = false
     private var cleanupScheduled = false
     private val cleanupCompleted = CompletableFuture<Unit>()
+    private val cleanup = BoundedAsyncExecutor("arc-otu-close", 1, 1)
 
     override val activeClaims: Int get() = claimHandles.size
 
@@ -282,11 +284,17 @@ class MySqlOneTimeUseLedger private constructor(
         }
 
     override fun close() {
+        closeAsync()
+        if (runtime.ownsPool) awaitStandaloneCleanup()
+    }
+
+    /** Nonwaiting drain of accepted operations, retained advisory locks and owned completion resources. */
+    fun closeAsync(): CompletableFuture<Unit> {
         synchronized(lifecycle) {
             closing = true
         }
         scheduleCleanupIfDrained()
-        if (runtime.ownsPool) awaitStandaloneCleanup()
+        return cleanupCompleted.copy()
     }
 
     private fun <T> submit(executor: SqlExecutor, block: () -> T): CompletableFuture<T> {
@@ -332,7 +340,10 @@ class MySqlOneTimeUseLedger private constructor(
                 true
             }
         }
-        if (schedule) CompletableFuture.runAsync(::finishClose)
+        if (schedule) {
+            cleanup.execute(::finishClose)
+            cleanup.close()
+        }
     }
 
     private fun finishClose() {

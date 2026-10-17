@@ -113,7 +113,42 @@ class PaperPlayerStateCodec(
         )
     }
 
-    fun decode(envelope: PaperPlayerStateEnvelope): PaperPlayerStateSnapshot = readEnvelope(envelope, decodeNativeItems = true)
+    /** Compatibility entrypoint; staged consumers use prepareDecode on a worker then decode on Paper. */
+    fun decode(envelope: PaperPlayerStateEnvelope): PaperPlayerStateSnapshot = decode(prepareDecode(envelope))
+
+    /** Opaque, exclusively owned validated metadata and native item bytes. No mutable payload is exposed. */
+    class PreparedPayload internal constructor(
+        private val owner: PaperPlayerStateCodec,
+        private val metadata: PaperPlayerStateSnapshot,
+        private val blobs: List<ByteArray?>,
+    ) {
+        val playerId: UUID get() = metadata.playerId
+
+        internal fun bind(codec: PaperPlayerStateCodec): PaperPlayerStateSnapshot {
+            require(codec === owner) { "Prepared player state belongs to another codec" }
+            val storage = codec.itemCodec.decodeItems(requireNotNull(blobs[0]))
+            require(storage.size == PaperPlayerStateSnapshot.STORAGE_SLOT_COUNT) { "Player-state item container has an invalid slot count" }
+            val armor = codec.itemCodec.decodeItems(requireNotNull(blobs[1]))
+            require(armor.size == PaperPlayerStateSnapshot.ARMOR_SLOT_COUNT) { "Player-state item container has an invalid slot count" }
+            return metadata.copy(
+                storage = storage,
+                armor = armor,
+                offHand = blobs[2]?.let(codec.itemCodec::decodeItem)?.takeUnless(ItemStack::isEmpty),
+                cursor = blobs[3]?.let(codec.itemCodec::decodeItem)?.takeUnless(ItemStack::isEmpty),
+            ).validated()
+        }
+    }
+
+    /** Worker-only Base64, checksum, binary parse and item blob capture; no native item codec is invoked. */
+    fun prepareDecode(envelope: PaperPlayerStateEnvelope): PreparedPayload {
+        val blobs = arrayListOf<ByteArray?>()
+        val metadata = readPayload(unwrapEnvelope(envelope), decodeNativeItems = false, blobs)
+        check(blobs.size == 4)
+        return PreparedPayload(this, metadata, blobs)
+    }
+
+    /** Native owner only. Performs item binding and final native slot validation without Base64/SHA/outer parsing. */
+    fun decode(prepared: PreparedPayload): PaperPlayerStateSnapshot = prepared.bind(this)
 
     /**
      * Worker-safe envelope/metadata/outer binary validation, returning its player.
@@ -121,9 +156,9 @@ class PaperPlayerStateCodec(
      * but native item contents and slot counts are checked by [decode] on Paper
      * before mutation. This method does not claim a restorable native inventory.
      */
-    fun validateEnvelope(envelope: PaperPlayerStateEnvelope): UUID = readEnvelope(envelope, decodeNativeItems = false).playerId
+    fun validateEnvelope(envelope: PaperPlayerStateEnvelope): UUID = readPayload(unwrapEnvelope(envelope), decodeNativeItems = false).playerId
 
-    private fun readEnvelope(envelope: PaperPlayerStateEnvelope, decodeNativeItems: Boolean): PaperPlayerStateSnapshot {
+    private fun unwrapEnvelope(envelope: PaperPlayerStateEnvelope): ByteArray {
         require(envelope.formatVersion == PaperPlayerStateSnapshot.CURRENT_FORMAT_VERSION) {
             "Unsupported player-state envelope format"
         }
@@ -144,7 +179,11 @@ class PaperPlayerStateCodec(
         ) {
             "Player-state checksum mismatch"
         }
-        return DataInputStream(ByteArrayInputStream(payload)).use { input ->
+        return payload
+    }
+
+    private fun readPayload(payload: ByteArray, decodeNativeItems: Boolean, blobs: MutableList<ByteArray?>? = null): PaperPlayerStateSnapshot =
+        DataInputStream(ByteArrayInputStream(payload)).use { input ->
             require(input.readInt() == MAGIC) { "Invalid player-state payload magic" }
             require(input.readInt() == PaperPlayerStateSnapshot.CURRENT_FORMAT_VERSION) {
                 "Unsupported player-state payload format"
@@ -154,10 +193,10 @@ class PaperPlayerStateCodec(
                 capturedAtMillis = input.readLong(),
                 location = input.readLocation(),
                 compassTarget = input.readLocation(),
-                storage = input.readItemList(PaperPlayerStateSnapshot.STORAGE_SLOT_COUNT, decodeNativeItems),
-                armor = input.readItemList(PaperPlayerStateSnapshot.ARMOR_SLOT_COUNT, decodeNativeItems),
-                offHand = input.readNullableItem(decodeNativeItems),
-                cursor = input.readNullableItem(decodeNativeItems),
+                storage = input.readItemList(PaperPlayerStateSnapshot.STORAGE_SLOT_COUNT, decodeNativeItems, blobs),
+                armor = input.readItemList(PaperPlayerStateSnapshot.ARMOR_SLOT_COUNT, decodeNativeItems, blobs),
+                offHand = input.readNullableItem(decodeNativeItems, blobs),
+                cursor = input.readNullableItem(decodeNativeItems, blobs),
                 selectedSlot = input.readInt(),
                 health = input.readDouble(),
                 absorption = input.readDouble(),
@@ -190,7 +229,6 @@ class PaperPlayerStateCodec(
             require(input.read() == -1) { "Trailing bytes in player-state payload" }
             snapshot
         }
-    }
 
     private fun DataOutputStream.writeLocation(location: PaperLocationSnapshot) {
         location.validated()
@@ -215,8 +253,11 @@ class PaperPlayerStateCodec(
 
     private fun DataOutputStream.writeItemList(items: List<ItemStack?>) = writeBlob(itemCodec.encodeItems(items))
 
-    private fun DataInputStream.readItemList(expectedSize: Int, nativeItems: Boolean): List<ItemStack?> {
-        if (!nativeItems) { skipBlob(); return List(expectedSize) { null } }
+    private fun DataInputStream.readItemList(expectedSize: Int, nativeItems: Boolean, blobs: MutableList<ByteArray?>?): List<ItemStack?> {
+        if (!nativeItems) {
+            if (blobs != null) blobs.add(readBlob()) else skipBlob()
+            return List(expectedSize) { null }
+        }
         return itemCodec.decodeItems(readBlob()).also { items ->
             require(items.size == expectedSize) { "Player-state item container has an invalid slot count" }
         }
@@ -233,11 +274,14 @@ class PaperPlayerStateCodec(
         if (normalized == null) writeInt(-1) else writeBlob(itemCodec.encodeItem(normalized))
     }
 
-    private fun DataInputStream.readNullableItem(nativeItems: Boolean): ItemStack? {
+    private fun DataInputStream.readNullableItem(nativeItems: Boolean, blobs: MutableList<ByteArray?>?): ItemStack? {
         val length = readInt()
-        if (length == -1) return null
+        if (length == -1) { blobs?.add(null); return null }
         require(length in 1..maxItemBlobBytes) { "Player-state item payload has an invalid size" }
-        if (!nativeItems) { skipNBytes(length.toLong()); return null }
+        if (!nativeItems) {
+            if (blobs != null) blobs.add(ByteArray(length).also(::readFully)) else skipNBytes(length.toLong())
+            return null
+        }
         return itemCodec.decodeItem(ByteArray(length).also(::readFully)).takeUnless(ItemStack::isEmpty)
     }
 

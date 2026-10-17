@@ -292,7 +292,19 @@ bounded admission. No default policy grants a temporary startup bypass.
 
 `PaperPlayerStateCodec.encodePayload` captures native item bytes on Paper, one
 bounded player per native slice. `wrapPayload` performs detached Base64/checksum
-work on a worker. `validateEnvelope` checks metadata and the complete outer
-binary envelope without native item deserialization; item contents and container
-slot counts remain a native `decode` check before any restore/mutation. Native
+work on a worker. For restore, `prepareDecode(envelope)` authenticates and parses
+the outer envelope on a worker, retaining opaque, privately owned item blobs;
+`decode(preparedPayload)` binds native items and validates actual slot counts on
+Paper without repeating Base64, SHA or outer parsing. The prepared value belongs
+to that codec instance. `validateEnvelope` remains a pure metadata validation
+when a prepared native restore is not needed. Item contents remain a native check
+before any restore/mutation. Native
 `Player.saveData` remains an indivisible owning-thread durability barrier.
+
+`MySqlOneTimeUseLedger.closeAsync()` seals new claims and observes accepted
+operations, retained advisory-lock release and completion-resource cleanup on its
+owned worker. An attached ledger never closes the borrowed `SqlRuntime`; close
+that facade only after the ledger future completes, and complete the consumer's
+SQL terminal drain last. Do not replace actual completion with a consumer timeout
+that releases leases while durable cleanup is still running. Legacy standalone
+`close()` retains its bounded waiting contract and belongs on a worker.
