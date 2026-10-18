@@ -19,7 +19,7 @@ class PaperNativeCleanupServiceProvider internal constructor(
     maximumNanos: Long,
     nanoTime: () -> Long,
 ) : ArcNativeCleanupService, AutoCloseable {
-    constructor(plugin: Plugin) : this(plugin, 128, 2_000_000L, System::nanoTime)
+    constructor(plugin: Plugin) : this(plugin, 512, 4_000_000L, System::nanoTime)
 
     private val services = plugin.server.servicesManager
     private val scheduler = BukkitTaskScheduler(plugin)
