@@ -80,10 +80,27 @@ whole following layout. Optional front-face-only selection preserves the Lands
 ray contract; Builder and seated controls retain two-sided plane selection.
 
 When blocked, first try bounded upward/side offsets in 0.25-block increments,
-then a bounded 0.1-block pullback search capped by reach. Retain a safe shift or
-distance and require an extra 0.12-block clearance probe before returning by
-0.06 blocks. This retains narrow non-monotonic safe gaps instead of assuming
-every nearer distance is safe. Safe small motion interpolates for two ticks;
+then a bounded 0.1-block pullback search capped by reach. During body movement
+near an obstacle, retain the complete safe **world anchor**, including its yaw,
+while the usual centred destination lacks 0.12 blocks of extra clearance.
+Revalidate the retained footprint, line of sight and reach every refresh; it
+must also remain inside the current follow search envelope: forward distance
+0.35 (or the smaller configured distance) through the configured distance,
+all capped by reach, sideways displacement
+within `obstacleMaxShift`, and upward displacement from zero through that limit.
+An unsafe or out-of-envelope anchor is released immediately, and changed target,
+settings or layout starts a fresh placement search.
+
+Once the normal destination has clearance, rebase the retained world point into
+the current follow coordinates and recover sideways/upward and depth by at most
+0.06 blocks each per refresh, including while the player stands still. This
+avoids replaying accumulated player motion as a jump. Ordinary open-space
+following keeps its configured movement tolerance, including Builder's exact
+zero tolerance. Obstacle retention requires the usual centred destination to be
+reachable across its whole layout; reach-limited layouts keep their ordinary
+follow path. Existing shift/distance clearance probes retain narrow
+non-monotonic safe gaps instead of assuming every nearer distance is safe.
+Safe small motion interpolates for two ticks;
 native click targets move immediately. A blocked swept envelope, large turn or
 step, or changed layout snaps. Ordinary text/content refresh retains IDs. A fixed
 layout may hide every authored control temporarily without discarding its text
@@ -125,7 +142,7 @@ never removes the guide's underlying geometry.
 | Builder odd row, six-plus-two page slots and long/farthest controls | `ActionPanelGeometryTest`: stable page/header geometry and whole-rectangle reach over five yaws |
 | Builder/Claim actual-plane hover, edge clicks, near disabled control and occlusion | `ActionPanelGeometryTest`: nearest visible plane, scaled edge/reach and disabled-nearest blocking; `PaperActionPanelsTest`: click-time actual-eye/full-layout and occlusion gates |
 | Builder head/crouch stationarity, micro-motion and guide restoration | `PaperActionPanelsTest`: retained IDs/pose, two-tick movement, old/new context suppression order; consumer adapter tests retain exact zero-dead-zone behavior |
-| Builder obstacle shift/distance jitter and gradual recovery | `ActionPanelGeometryTest`: bounded search, clearance hysteresis and non-monotonic gap; runtime retry/recovery tests |
+| Builder/Claim obstacle shift/distance jitter and gradual recovery | `ActionPanelGeometryTest`: bounded search, clearance hysteresis and non-monotonic gap; `PaperActionPanelsTest`: repeated doorway strafing through the real world-space boundary, immediate escape from a new obstruction, and bounded recovery at rest |
 | Builder swept sagitta, thin barrier and intermediate rotation | `ActionPanelGeometryTest`: intermediate envelope and small-turn thinness; `DisplayGeometryTest`: pitched OBB false-positive negative control and translated obstacle sweep |
 | Builder/Casino stale native IDs and duplicate click routes | `PaperActionPanelsTest`: old context IDs invalidated, text identity retained, 250 ms gate across contexts, cancellation/offhand/owner behavior |
 | Casino all-hidden waiting/card-flight transitions | `PaperActionPanelsTest`: fixed text/native IDs survive visible → hidden → visible while the hidden scene accepts no input; empty following geometry still releases its scene |

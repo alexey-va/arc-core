@@ -5,6 +5,7 @@ import ru.arc.paper.display.refreshFully
 import ru.arc.paper.display.TestPacketDisplayAudience
 
 import io.kotest.core.spec.style.FreeSpec
+import io.kotest.matchers.doubles.plusOrMinus
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.mockk.every
@@ -14,12 +15,15 @@ import net.kyori.adventure.text.Component
 import org.bukkit.Chunk
 import org.bukkit.Location
 import org.bukkit.World
+import org.bukkit.block.Block
 import org.bukkit.block.data.BlockData
 import org.bukkit.entity.Interaction
 import org.bukkit.entity.Player
 import org.bukkit.event.player.PlayerInteractEntityEvent
 import org.bukkit.inventory.EquipmentSlot
 import org.bukkit.inventory.ItemStack
+import org.bukkit.util.BoundingBox
+import org.bukkit.util.Vector
 import ru.arc.core.LifecycleTaskScope
 import ru.arc.core.TestTaskScheduler
 import ru.arc.paper.display.PacketDisplayAudienceSource
@@ -34,6 +38,83 @@ import java.util.UUID
 import java.util.function.Consumer
 
 class PaperActionPanelsTest : FreeSpec({
+    "reach-limited open-space placement preserves zero-tolerance following during repeated strafing" {
+        MockBukkitTestRuntime.open().use { paper -> PanelFixture(paper).use { f ->
+            f.useCollisionWorld(emptyList())
+            val rect = ActionPanelRect(ActionPanelPoint(0.0, 0.0, 0.0), 2.0, 1.0)
+            val button = ActionPanelButton("confirm", rect, Component.text("Confirm"), ActionPanelTextStyle.button(0.8f, 2f, 1f))
+            f.current = ActionPanelFrame("reach-limited", ActionPanelPlacement.FollowView(f.world.uid,
+                ActionPanelFollowSettings(2.4, 0.0, 0.0, 1.25, 0.0)), ActionPanelLayout(listOf(button), emptyList()), true,
+                ActionPanelOptions(ActionPanelInputProfile.EXTERNAL_RAY, 2.5, false), null)
+            f.refresh()
+            val initial = f.frames().single()
+            initial.z shouldBe (2.2 plusOrMinus 1e-6)
+            repeat(3) {
+                listOf(0.05, 0.10, 0.05, 0.0, -0.05, -0.10, -0.05, 0.0).forEach { x ->
+                    f.body.x = x; f.eye.x = x
+                    f.refresh()
+                    val current = f.frames().single()
+                    current.entityId shouldBe initial.entityId
+                    current.x shouldBe (initial.x + x plusOrMinus 1e-6)
+                    current.z shouldBe (initial.z plusOrMinus 1e-6)
+                    current.metadata.teleportDuration shouldBe 2
+                }
+            }
+        } }
+    }
+
+    "doorway strafing holds a safe world anchor and releases obstruction without a recovery jump" {
+        MockBukkitTestRuntime.open().use { paper -> PanelFixture(paper).use { f ->
+            val walls = mutableListOf(
+                BoundingBox(-5.0, 64.0, 1.6, -1.65, 69.0, 3.0),
+                BoundingBox(1.65, 64.0, 1.6, 5.0, 69.0, 3.0),
+            )
+            f.useCollisionWorld(walls)
+            val layout = ActionPanelLayouts.twoColumn((1..6).map { ActionPanelAction("action-$it", Component.text("Action $it")) },
+                Component.text("Title"))
+            f.current = ActionPanelFrame("doorway", ActionPanelPlacement.FollowView(f.world.uid), layout, true,
+                ActionPanelOptions(ActionPanelInputProfile.EXTERNAL_RAY, 4.0, false), null)
+            fun pose() = f.frames().associate { it.entityId to Triple(it.x, it.y, it.z) }
+            fun move(x: Double) { f.body.x = x; f.eye.x = x; f.refresh() }
+            f.refresh()
+            val initial = pose()
+            repeat(4) {
+                listOf(0.12, -0.12, 0.06, -0.06, 0.0).forEach { x ->
+                    move(x)
+                    pose() shouldBe initial
+                }
+            }
+
+            // A new solid obstruction invalidates the retained footprint immediately.
+            walls += BoundingBox(-5.0, 64.0, 1.6, 5.0, 69.0, 2.6)
+            f.refresh()
+            val escaped = pose()
+            escaped.keys shouldBe initial.keys
+            escaped shouldNotBe initial
+            f.frames().all { it.z < 1.6 && it.metadata.teleportDuration == 0 } shouldBe true
+
+            // The usual follow destination needs extra clearance before the panel can return.
+            // Stay still after the forced retreat: recovery must not depend on another strafe.
+            walls.clear()
+            var previous = pose()
+            repeat(20) {
+                f.refresh()
+                val current = pose()
+                current.keys shouldBe initial.keys
+                current.forEach { (id, at) ->
+                    val before = previous.getValue(id)
+                    ActionPanelGeometry.distance(ActionPanelPoint(before.first, before.second, before.third),
+                        ActionPanelPoint(at.first, at.second, at.third)).let { it <= 0.09 } shouldBe true
+                }
+                previous = current
+            }
+            f.frames().all { kotlin.math.abs(it.z - 2.4) < 1e-6 } shouldBe true
+            move(0.2)
+            f.frames().all { it.metadata.teleportDuration == 2 } shouldBe true
+            pose() shouldNotBe previous
+        } }
+    }
+
     "head turns and crouching preserve placement and IDs while body movement interpolates" {
         MockBukkitTestRuntime.open().use { paper -> PanelFixture(paper).use { f ->
             f.refresh()
@@ -432,6 +513,38 @@ private class PanelFixture(paper: MockBukkitTestRuntime, val profile: ActionPane
         val button = ActionPanelButton("confirm", rect, Component.text("Confirm"), ActionPanelTextStyle.button(0.8f, 1.5f, 0.3f))
         return ActionPanelFrame(context, ActionPanelPlacement.FollowTarget(world.uid, ActionPanelPoint(0.0, 64.0, 10.0)),
             ActionPanelLayout(listOf(button), emptyList()), true, ActionPanelOptions(input, 4.0, true), null)
+    }
+    /** Real placement/reach/sent-chunk checks; only native block shapes and block ray tracing are recorded. */
+    fun useCollisionWorld(obstacles: List<BoundingBox>) {
+        val native = ActionPanelWorldSpace()
+        val blocks = mutableMapOf<Triple<Int, Int, Int>, Block>()
+        every { world.getBlockAt(any<Int>(), any<Int>(), any<Int>()) } answers {
+            val x = firstArg<Int>(); val y = secondArg<Int>(); val z = thirdArg<Int>()
+            blocks.getOrPut(Triple(x, y, z)) {
+                mockk<Block>().also { block ->
+                    every { block.collisionShape.boundingBoxes } answers {
+                        obstacles.mapNotNull { box ->
+                            val minX = maxOf(box.minX, x.toDouble()); val maxX = minOf(box.maxX, x + 1.0)
+                            val minY = maxOf(box.minY, y.toDouble()); val maxY = minOf(box.maxY, y + 1.0)
+                            val minZ = maxOf(box.minZ, z.toDouble()); val maxZ = minOf(box.maxZ, z + 1.0)
+                            if (minX >= maxX || minY >= maxY || minZ >= maxZ) null
+                            else BoundingBox(minX - x, minY - y, minZ - z, maxX - x, maxY - y, maxZ - z)
+                        }
+                    }
+                }
+            }
+        }
+        every { world.rayTraceBlocks(any(), any(), any(), any(), any(), any()) } answers {
+            val origin = firstArg<Location>().toVector()
+            val direction = secondArg<Vector>()
+            val distance = thirdArg<Double>()
+            obstacles.mapNotNull { it.rayTrace(origin, direction, distance) }.minByOrNull { it.hitPosition.distanceSquared(origin) }
+        }
+        every { worldSpace.safe(any(), any(), any(), any(), any(), any(), any(), any()) } answers {
+            native.safe(firstArg(), secondArg(), thirdArg(), arg(3), arg(4), arg(5), arg(6), arg(7))
+        }
+        every { worldSpace.rayClear(any(), any(), any(), any()) } answers { native.rayClear(firstArg(), secondArg(), thirdArg(), arg(3)) }
+        every { worldSpace.clearSweep(any(), any()) } answers { native.clearSweep(firstArg(), secondArg()) }
     }
     fun refresh() { panels.refresh(player); displays.refreshFully() }
     fun frames(): List<PacketDisplayFrame> { displays.refreshFully(); return transport.connection.frames }

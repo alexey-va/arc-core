@@ -28,6 +28,7 @@ import ru.arc.paper.scene.*
 import ru.arc.paper.display.PaperPacketDisplays
 import java.util.UUID
 import java.util.logging.Level
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
@@ -50,6 +51,8 @@ data class ActionPanelTarget<C : Any, A : Any>(val context: C, val action: A)
  * owns its display runtime. Both release all panel handles, native targets, suppression and listeners.
  * Head turns/crouching only update actual-eye aiming; following panels retain their placement until
  * meaningful body movement, a target/layout change or obstructed geometry requires reconciliation.
+ * Near obstacles, a safe world anchor remains within the bounded follow envelope; clearance allows
+ * gradual recovery on subsequent refreshes, including when the viewer has stopped moving.
  */
 class PaperActionPanels<C : Any, A : Any> internal constructor(
     private val plugin: Plugin,
@@ -74,6 +77,7 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
     ) {
         var distance: Double? = null
         var shift: ActionPanelShift? = null
+        var recovering = false
         var suppressed = false
         var lookingAt = false
         val scene = PacketDisplayScene<VisualKey<A>>(displays)
@@ -81,7 +85,7 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
         var nextControlKey = 0
         var hovered: A? = null
     }
-    private data class Placement(val anchor: ActionPanelAnchor, val distance: Double?, val shift: ActionPanelShift?)
+    private data class Placement(val anchor: ActionPanelAnchor, val distance: Double?, val shift: ActionPanelShift?, val recovering: Boolean = false)
     private inner class PlacementRetry(val frame: ActionPanelFrame<C, A>, val body: ActionPanelPoint, val until: Long)
     private val panels = linkedMapOf<UUID, Panel>()
     private val failuresLogged = mutableSetOf<UUID>()
@@ -182,7 +186,7 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
         val offset = ActionPanelPoint(eye.x - body.x, eye.y - body.y, eye.z - body.z)
         val placed = place(player, frame, offset, null)
         return Panel(player.uniqueId, frame, placed.anchor, body, offset).also {
-            it.distance = placed.distance; it.shift = placed.shift
+            it.distance = placed.distance; it.shift = placed.shift; it.recovering = placed.recovering
         }
     }
 
@@ -198,8 +202,8 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
         val invalid = settings != null && !worldSpace.safe(player, eye, panel.anchor, rectangles, frame.options.reach,
             0.0, true) { controller.blocksRay(player, frame.context, it) }
         var duration = 0
-        if (shapeChanged || placementChanged || (settings != null && moved) || invalid) {
-            val placed = place(player, frame, panel.eyeOffset, panel)
+        if (shapeChanged || placementChanged || (settings != null && moved) || invalid || panel.recovering) {
+            val placed = place(player, frame, panel.eyeOffset, panel.takeUnless { shapeChanged || placementChanged })
             val canInterpolate = settings != null && !shapeChanged && !invalid &&
                 ActionPanelGeometry.distance(panel.anchor.point, placed.anchor.point) <= 1.0 &&
                 ActionPanelGeometry.yawDelta(panel.anchor.yaw, placed.anchor.yaw) <= 30.0 &&
@@ -210,6 +214,7 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
             panel.positionedFrom = player.location.point()
             panel.distance = placed.distance
             panel.shift = placed.shift
+            panel.recovering = placed.recovering
         }
         if (contextChanged) {
             setSuppressed(panel, false)
@@ -242,18 +247,49 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
                 controller.blocksRay(player, frame.context, it)
             }
         val maximumDistance = minOf(settings.distance, frame.options.reach)
-        val preferredDistance = previous?.distance?.coerceAtMost(maximumDistance) ?: maximumDistance
-        val shift = ActionPanelGeometry.adaptiveShift(settings.obstacleMaxShift, previous?.shift) { candidate, clearance ->
+        val minimumDistance = minOf(0.35, maximumDistance)
+        val center = ActionPanelShift(0.0, 0.0)
+        val nominalWithinReach = ActionPanelGeometry.allReachable(eye, anchor(maximumDistance, center), rects, frame.options.reach)
+        var previousDistance = previous?.distance
+        var previousShift = previous?.shift
+        if (previous != null && nominalWithinReach) {
+            // Relative offsets alone move with a strafing viewer. Preserve the actual safe world pose,
+            // bounded by the same forward/side/up envelope as the ordinary obstacle search.
+            val origin = anchor(0.0, center).point
+            val delta = ActionPanelPoint(previous.anchor.point.x - origin.x, previous.anchor.point.y - origin.y,
+                previous.anchor.point.z - origin.z)
+            val angle = Math.toRadians(yaw.toDouble())
+            val distance = delta.x * sin(angle) - delta.z * cos(angle)
+            val side = delta.x * cos(angle) + delta.z * sin(angle)
+            if (distance in (minimumDistance - 1e-6)..(maximumDistance + 1e-6) &&
+                abs(side) <= settings.obstacleMaxShift + 1e-6 && delta.y in -1e-6..(settings.obstacleMaxShift + 1e-6) &&
+                worldSpace.safe(player, eye, previous.anchor, rects, frame.options.reach, 0.0, true) {
+                    controller.blocksRay(player, frame.context, it)
+                }) {
+                val rebasedDistance = distance.coerceIn(minimumDistance, maximumDistance)
+                val rebasedShift = ActionPanelShift(side.coerceIn(-settings.obstacleMaxShift, settings.obstacleMaxShift),
+                    delta.y.coerceIn(0.0, settings.obstacleMaxShift))
+                if (!safe(maximumDistance, center, 0.12)) {
+                    return Placement(previous.anchor, rebasedDistance, rebasedShift, true)
+                }
+                if (previous.recovering) {
+                    previousDistance = rebasedDistance
+                    previousShift = rebasedShift
+                }
+            }
+        }
+        val preferredDistance = previousDistance?.coerceAtMost(maximumDistance) ?: maximumDistance
+        val shift = ActionPanelGeometry.adaptiveShift(settings.obstacleMaxShift, previousShift) { candidate, clearance ->
             safe(preferredDistance, candidate, clearance)
         }
         if (shift != null) {
-            val distance = ActionPanelGeometry.stableDistance(maximumDistance, previous?.distance) { safe(it, shift, 0.0) }
-            if (distance != null) return Placement(anchor(distance, shift), distance, shift)
+            val distance = ActionPanelGeometry.stableDistance(maximumDistance, previousDistance) { safe(it, shift, 0.0) }
+            if (distance != null) return Placement(anchor(distance, shift), distance, shift,
+                nominalWithinReach && (distance + 1e-6 < maximumDistance || hypot(shift.side, shift.up) > 1e-6))
         }
-        val center = ActionPanelShift(0.0, 0.0)
-        val distance = ActionPanelGeometry.firstSafeDistance(maximumDistance, minOf(0.35, maximumDistance)) { safe(it, center, 0.0) }
+        val distance = ActionPanelGeometry.firstSafeDistance(maximumDistance, minimumDistance) { safe(it, center, 0.0) }
             ?: throw NoPlacement()
-        return Placement(anchor(distance, center), distance, center)
+        return Placement(anchor(distance, center), distance, center, nominalWithinReach && distance + 1e-6 < maximumDistance)
     }
 
     private fun reconcile(player: Player, panel: Panel, duration: Int) {
