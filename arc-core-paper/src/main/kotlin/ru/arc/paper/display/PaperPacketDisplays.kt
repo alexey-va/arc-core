@@ -25,6 +25,9 @@ import java.util.concurrent.CancellationException
 import java.util.function.BooleanSupplier
 import java.util.UUID
 
+// The queue checks its aggregate time allowance between these bounded, memory-only chunks.
+private const val PURE_CAPTURE_BATCH_SIZE = 16
+
 /**
  * Owns ephemeral Block/Item/TextDisplay visuals for one plugin/module lifecycle.
  *
@@ -183,11 +186,13 @@ class PaperPacketDisplays internal constructor(
             yield(Unit)
         }
         val frames = arrayListOf<Pair<PacketDisplay, PacketDisplayFrame>>()
+        var frameBatchSize = 0
         for (display in handles.values) {
             val target = display.attachmentTargetId?.let(audienceById::get)
             display.frame(target)?.let { frames.add(display to it) }
-            yield(Unit)
+            if (++frameBatchSize == PURE_CAPTURE_BATCH_SIZE) { frameBatchSize = 0; yield(Unit) }
         }
+        if (frameBatchSize != 0) yield(Unit)
         for (id in viewers.keys) {
             if (id !in audienceById) forgetViewer(id)?.let(admissions::add)
             yield(Unit)
@@ -198,21 +203,34 @@ class PaperPacketDisplays internal constructor(
             val desired = arrayListOf<PacketDisplayFrame>()
             val desiredPassengers = hashMapOf<Int, MutableList<Int>>()
             val nativePassengers = hashMapOf<Int, List<Int>>()
+            var visibilityBatchSize = 0
             for ((display, frame) in frames) {
                 val targetId = display.attachmentTargetId
+                var nativeCheck = targetId != null
+                // Carrier visibility and uncached scene predicates retain individual native steps.
+                if (nativeCheck && visibilityBatchSize != 0) { visibilityBatchSize = 0; yield(Unit) }
                 val carrier = targetId?.let(audienceById::get)
                 val carrierVisible = targetId == null || targetId == viewer.id ||
                     (carrier != null && audience.isCurrent(carrier) && viewer.id in carrier.trackedBy && viewer.player.canSee(carrier.player))
-                if (carrierVisible && frame.chunkKey in viewer.sentChunks && display.visibleTo(viewer, frame) &&
-                    (display.audienceGroup?.let { group -> groupVisibility.getOrPut(group) { group.allows(viewer.player) } } ?: true)) {
-                    desired.add(frame)
-                    frame.attachmentVehicleId?.let { vehicleId ->
-                        desiredPassengers.getOrPut(vehicleId, ::arrayListOf).add(frame.entityId)
-                        nativePassengers[vehicleId] = passengerSnapshots[vehicleId].orEmpty()
+                if (carrierVisible && frame.chunkKey in viewer.sentChunks && display.visibleTo(viewer, frame)) {
+                    val group = display.audienceGroup
+                    if (group != null && group !in groupVisibility) {
+                        if (visibilityBatchSize != 0) { visibilityBatchSize = 0; yield(Unit) }
+                        groupVisibility[group] = group.allows(viewer.player)
+                        nativeCheck = true
+                    }
+                    if (group == null || groupVisibility[group] == true) {
+                        desired.add(frame)
+                        frame.attachmentVehicleId?.let { vehicleId ->
+                            desiredPassengers.getOrPut(vehicleId, ::arrayListOf).add(frame.entityId)
+                            nativePassengers[vehicleId] = passengerSnapshots[vehicleId].orEmpty()
+                        }
                     }
                 }
-                yield(Unit)
+                if (nativeCheck) yield(Unit)
+                else if (++visibilityBatchSize == PURE_CAPTURE_BATCH_SIZE) { visibilityBatchSize = 0; yield(Unit) }
             }
+            if (visibilityBatchSize != 0) yield(Unit)
             // A world/respawn/chunk transition during a sliced capture must not publish the old view.
             if (!audience.isCurrent(viewer) || visibility != visibilityRevision || epochs[viewer.id] != (viewerEpochs[viewer.id] ?: 0L)) { yield(Unit); continue }
             val previous = viewers[viewer.id]

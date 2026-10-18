@@ -21,6 +21,81 @@ import java.util.concurrent.CompletionStage
 import java.util.function.BooleanSupplier
 
 class PaperPacketDisplayBudgetTest : FreeSpec({
+    "large plain and grouped scenes admit every consecutive frame within 128 steps" {
+        for ((handleCount, viewerCount, grouped) in listOf(Triple(168, 1, false), Triple(200, 4, true), Triple(336, 1, false), Triple(336, 2, true))) {
+            MockBukkitTestRuntime.open().use { paper ->
+                val plugin = paper.loadPlugin<TestPaperPlugin>()
+                val players = List(viewerCount) { paper.addPlayer("Viewer-$it") }
+                val world = paper.addSimpleWorld("large-frames")
+                val scheduler = TestTaskScheduler()
+                val work = BudgetedTaskQueue(LifecycleTaskScope(scheduler), maximumSteps = 128, maximumNanos = 2_000_000L, nanoTime = { 0 })
+                val cleanup = QueueCleanup(); val transport = BudgetTransport()
+                var tick = 0L
+                var groupCalls = 0
+                val audience = object : TestPacketDisplayAudience() {
+                    override fun checkThread() = Unit
+                    override fun capture() = players.map { PacketDisplayViewer(it, it.uniqueId, world.uid, it.entityId,
+                        emptySet(), 0.0, 64.0, 0.0, setOf(0L)) }
+                }
+                val displays = PaperPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), audience,
+                    work, false, cleanup, java.util.function.LongSupplier { tick })
+                val group = if (grouped) displays.createAudienceGroup {
+                    org.bukkit.Bukkit.isPrimaryThread() shouldBe true
+                    groupCalls++
+                    true
+                } else null
+                val handles = List(handleCount) {
+                    displays.spawnText(Location(world, 0.0, 64.0, 0.0), Component.text("moving")).apply { audienceGroup = group }
+                }
+                val ids = handles.map { it.entityId }.toSet()
+                repeat(4) { frame ->
+                    if (frame > 0) { tick++; scheduler.tick() }
+                    handles.forEach { it.teleport(Location(world, frame.toDouble(), 64.0, 0.0)) }
+                    displays.refresh().isDone shouldBe true
+                    transport.frames.size shouldBe (frame + 1) * viewerCount
+                    transport.frames.takeLast(viewerCount).forEach { captured ->
+                        captured.size shouldBe handleCount
+                        captured.map { it.entityId }.toSet() shouldBe ids
+                        captured.map { it.x }.toSet() shouldBe setOf(frame.toDouble())
+                    }
+                    groupCalls shouldBe if (grouped) (frame + 1) * viewerCount else 0
+                }
+                transport.frames.first().map { it.x }.toSet() shouldBe setOf(0.0)
+                val closing = displays.closeAsync(); cleanup.drain(closing); work.close()
+            }
+        }
+    }
+
+    "uncached audience predicates retain individual native budget steps" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val plugin = paper.loadPlugin<TestPaperPlugin>()
+            val player = paper.addPlayer("Viewer")
+            val world = paper.addSimpleWorld("native-predicates")
+            val scheduler = TestTaskScheduler()
+            val work = BudgetedTaskQueue(LifecycleTaskScope(scheduler), 4, Long.MAX_VALUE)
+            val cleanup = QueueCleanup(); val transport = BudgetTransport()
+            val displays = PaperPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()),
+                fixedAudience(player, world.uid), work, false, cleanup)
+            var calls = 0
+            repeat(30) {
+                displays.spawnText(Location(world, 0.0, 64.0, 0.0), Component.empty()).audienceGroup =
+                    displays.createAudienceGroup { calls++; true }
+            }
+            val sweep = displays.refresh()
+            scheduler.tick()
+            calls shouldBe 1 // Audience plus two frame chunks leave one native predicate step.
+            scheduler.tick()
+            calls shouldBe 5
+            sweep.isDone shouldBe false
+            transport.frames shouldBe emptyList()
+            scheduler.tick(20)
+            sweep.join()
+            calls shouldBe 30
+            transport.frames.single().size shouldBe 30
+            val closing = displays.closeAsync(); cleanup.drain(closing); work.close()
+        }
+    }
+
     "short frames use the current tick allowance and async admission completes without a native polling tick" {
         MockBukkitTestRuntime.open().use { paper ->
             val plugin = paper.loadPlugin<TestPaperPlugin>()
@@ -160,9 +235,16 @@ class PaperPacketDisplayBudgetTest : FreeSpec({
             val work = BudgetedTaskQueue(LifecycleTaskScope(scheduler), 4, Long.MAX_VALUE)
             val cleanup = QueueCleanup(); val transport = BudgetTransport()
             val displays = PaperPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), fixedAudience(player, world.uid), work, false, cleanup)
-            val handles = List(30) { displays.spawnText(Location(world, 0.0, 64.0, 0.0), Component.empty()) }
+            var groupCalls = 0
+            val group = displays.createAudienceGroup { groupCalls++; true }
+            val handles = List(30) {
+                displays.spawnText(Location(world, 0.0, 64.0, 0.0), Component.empty()).apply { audienceGroup = group }
+            }
             val sweep = displays.refresh()
-            scheduler.tick(10) // audience and frame capture finished; the visibility pass is partial
+            scheduler.tick() // Audience, two frame chunks, then the first eligible group's native predicate.
+            groupCalls shouldBe 1
+            sweep.isDone shouldBe false
+            transport.frames shouldBe emptyList()
             handles.forEach { it.hideFrom(player) }
             repeat(100) { scheduler.tick() }
             sweep.join()

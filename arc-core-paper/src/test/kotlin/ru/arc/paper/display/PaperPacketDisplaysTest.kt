@@ -282,6 +282,15 @@ class PaperPacketDisplaysTest : FreeSpec({
                 first.x shouldBe 1.0
                 first.metadata.transform.scale.x shouldBe 2f
                 first.metadata.content shouldBe PacketDisplayContent.Text(Component.text("A"))
+
+                val destination = paper.addSimpleWorld("copies-destination")
+                display.teleport(Location(destination, 3.0, 64.0, 1.0))
+                audience.values = listOf(viewer(player, destination.uid))
+                displays.refreshFully()
+                val movedWorld = transport.forPlayer(player).last().frames.single()
+                movedWorld.worldId shouldBe destination.uid
+                movedWorld.entityId shouldBe first.entityId
+                first.worldId shouldBe world.uid
             }
         }
     }

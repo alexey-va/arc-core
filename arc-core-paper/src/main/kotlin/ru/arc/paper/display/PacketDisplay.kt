@@ -27,6 +27,7 @@ sealed class PacketDisplay protected constructor(
 ) {
     val uniqueId: UUID = UUID.randomUUID()
     private var position = location.clone()
+    private var positionWorldId = requireNotNull(location.world) { "A packet display must belong to a world" }.uid
     private var transform = DisplayTransform()
     private var attachedPlayerId: UUID? = null
     private var visibleTo = mutableSetOf<UUID>()
@@ -79,8 +80,9 @@ sealed class PacketDisplay protected constructor(
 
     fun teleport(location: Location) {
         owner.checkThread()
-        requireNotNull(location.world) { "A packet display must belong to a world" }
+        val worldId = requireNotNull(location.world) { "A packet display must belong to a world" }.uid
         position = location.clone()
+        positionWorldId = worldId
     }
 
     /**
@@ -150,7 +152,7 @@ sealed class PacketDisplay protected constructor(
     internal fun frame(attachedPlayer: PacketDisplayViewer? = null): PacketDisplayFrame? {
         val targetId = attachedPlayerId
         if (targetId != null && attachedPlayer?.id != targetId) return null
-        val worldId = attachedPlayer?.worldId ?: requireNotNull(position.world) { "A packet display must belong to a world" }.uid
+        val worldId = attachedPlayer?.worldId ?: positionWorldId
         return PacketDisplayFrame(
             entityId = entityId,
             uuid = uniqueId,

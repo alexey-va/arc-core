@@ -46,8 +46,13 @@ val cleanup = displays.closeAsync()
 Factories and all handle access belong on the server thread. Inputs and mutable
 outputs (locations, item stacks, block data and transformations) are copied.
 The service runs one coalesced sweep at a time through the runtime's shared
-`BudgetedTaskQueue`: one audience/tracking entry, display frame, or viewer/display
-pair per step. Passing the runtime queue keeps its 128-step/2 ms aggregate budget;
+`BudgetedTaskQueue`. Audience/tracking entries, carrier visibility, uncached
+audience predicates and final connection checks keep individual native steps.
+Frame copies and unattached viewer/display checks use bounded chunks of at most
+16 memory-only operations per step; a group's already-captured result is also
+memory-only. Location world IDs and item/block protocol contents are captured
+when handles are created or changed. The queue checks its aggregate time budget
+between chunks. Passing the runtime queue shares its count/time allowance;
 legacy constructors create one owner queue. Timer pulses do not accumulate sweeps
 while native capture or event-loop admission is incomplete. World/respawn/chunk
 changes and explicit privacy changes fence a partially captured view. Large
@@ -58,7 +63,7 @@ native call.
 Short sweeps explicitly spend the queue's remaining allowance in the current
 Paper tick, without first waiting for a delayed task. `drainAvailable` binds the
 queue to Paper's tick identity: all display owners and scheduled continuations
-share the same 128-step/2 ms allowance, including repeated calls within one tick.
+share the same allowance, including repeated calls within one tick.
 Exhausted work resumes on a later tick. Completing capture waits asynchronously
 for that sweep's Netty admissions instead of polling their futures with native
 steps. Slow Netty still holds the single-capture gate, so immutable snapshots do
