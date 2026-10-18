@@ -33,7 +33,7 @@ class BudgetedTaskQueueTest : FunSpec({
         val scope = LifecycleTaskScope(scheduler)
         var tick = 0L
         var nanos = 0L
-        val queue = BudgetedTaskQueue(scope, nanoTime = { nanos })
+        val queue = BudgetedTaskQueue(scope, maximumNanos = 2_000_000L, nanoTime = { nanos })
         var calls = 0
         queue.submit({ true }) { calls++; nanos += 1_000_000; false }
         queue.drainAvailable { tick }
@@ -47,7 +47,7 @@ class BudgetedTaskQueueTest : FunSpec({
     test("one count budget is shared fairly by simultaneous operations") {
         val scheduler = TestTaskScheduler()
         val scope = LifecycleTaskScope(scheduler)
-        val queue = BudgetedTaskQueue(scope, nanoTime = { 0 })
+        val queue = BudgetedTaskQueue(scope, maximumSteps = 128, nanoTime = { 0 })
         val counts = IntArray(100)
         val results = counts.indices.map { index -> queue.submit({ true }) { ++counts[index] == 3 } }
         counts.sum() shouldBe 0
@@ -71,7 +71,7 @@ class BudgetedTaskQueueTest : FunSpec({
         var calls = 0
         val result = queue.submit({ current }) { nanos += 1_000_000; calls++; false }
         scheduler.tick()
-        calls shouldBe 2
+        calls shouldBe 4
         result.isDone shouldBe false
         current = false
         scheduler.tick()
@@ -80,24 +80,44 @@ class BudgetedTaskQueueTest : FunSpec({
         queue.close()
         scheduler.tick()
         abandoned.isCompletedExceptionally shouldBe true
-        calls shouldBe 2
+        calls shouldBe 4
         scope.close()
     }
 
-    test("full admission and failed steps never fall back inline or strand siblings") {
+    test("burst beyond the old admission limit finishes every task within the default tick budget") {
+        val scheduler = TestTaskScheduler()
+        val scope = LifecycleTaskScope(scheduler)
+        val queue = BudgetedTaskQueue(scope, nanoTime = { 0 })
+        val counts = IntArray(10_000)
+        val results = counts.indices.map { index -> queue.submit({ true }) { counts[index]++; true } }
+        counts.sum() shouldBe 0
+        results.none { it.isDone } shouldBe true
+        repeat(20) { tick ->
+            scheduler.tick()
+            counts.sum() shouldBe minOf((tick + 1) * 512, counts.size)
+        }
+        counts.all { it == 1 } shouldBe true
+        results.all { it.isDone && !it.isCompletedExceptionally } shouldBe true
+        queue.close(); scope.close()
+    }
+
+    test("allocation hint does not reject work and failed steps do not strand siblings") {
         val scheduler = TestTaskScheduler()
         val scope = LifecycleTaskScope(scheduler)
         val queue = BudgetedTaskQueue(scope, maximumPending = 2)
         val failed = queue.submit({ true }) { error("failed native step") }
         var calls = 0
         val healthy = queue.submit({ true }) { calls++; true }
-        queue.submit({ true }) { calls++; true }.isCompletedExceptionally shouldBe true
+        val overflow = queue.submit({ true }) { calls++; true }
+        overflow.isDone shouldBe false
         calls shouldBe 0
         scheduler.tick()
         failed.isCompletedExceptionally shouldBe true
         healthy.isCompletedExceptionally shouldBe false
         healthy.isDone shouldBe true
-        calls shouldBe 1
+        overflow.isDone shouldBe true
+        overflow.isCompletedExceptionally shouldBe false
+        calls shouldBe 2
         queue.close()
         scope.close()
     }

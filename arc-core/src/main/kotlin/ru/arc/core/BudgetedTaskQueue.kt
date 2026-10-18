@@ -3,7 +3,6 @@ package ru.arc.core
 import java.util.ArrayDeque
 import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
-import java.util.concurrent.RejectedExecutionException
 import java.util.function.LongSupplier
 
 /**
@@ -13,13 +12,16 @@ import java.util.function.LongSupplier
  *
  * Construct, submit and close on the owning thread. Close this queue before
  * restarting/closing [scope]; a scope alone cannot complete abandoned futures.
- * [submit] never runs a step inline, including on rejection. Completion means the
- * last step finished, not that any consumer-specific persistence is durable.
+ * [submit] never runs a step inline. Pending work is retained until completion or
+ * explicit failure/cancellation; the tick budget limits execution, not admission.
+ * Producers should chain/batch requests through their futures to control backlog.
+ * Completion means the last step finished, not that persistence is durable.
+ * [maximumPending] is a legacy allocation hint, retained for binary compatibility.
  */
 class BudgetedTaskQueue @JvmOverloads constructor(
     private val scope: LifecycleTaskScope,
-    private val maximumSteps: Int = 128,
-    private val maximumNanos: Long = 2_000_000L,
+    private val maximumSteps: Int = 512,
+    private val maximumNanos: Long = 4_000_000L,
     private val nanoTime: () -> Long = System::nanoTime,
     private val maximumPending: Int = 4096,
 ) : AutoCloseable {
@@ -29,7 +31,7 @@ class BudgetedTaskQueue @JvmOverloads constructor(
         val result: CompletableFuture<Unit>,
     )
 
-    private val pending = ArrayDeque<Work>()
+    private val pending = ArrayDeque<Work>(maximumPending)
     private var scheduled = false
     private var closed = false
     private var executing = false
@@ -45,9 +47,6 @@ class BudgetedTaskQueue @JvmOverloads constructor(
     /** A step returns true when its operation is complete, otherwise it yields. */
     fun submit(isCurrent: () -> Boolean, step: () -> Boolean): CompletableFuture<Unit> {
         if (closed) return CompletableFuture.failedFuture(CancellationException("Native work queue is closed"))
-        if (pending.size + (if (executing) 1 else 0) >= maximumPending) {
-            return CompletableFuture.failedFuture(RejectedExecutionException("Native work queue is full"))
-        }
         val result = CompletableFuture<Unit>()
         pending.addLast(Work(isCurrent, step, result))
         schedule()
