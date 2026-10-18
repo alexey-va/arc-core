@@ -17,10 +17,85 @@ import ru.arc.paper.testing.MockBukkitTestRuntime
 import ru.arc.paper.testing.loadPlugin
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CancellationException
+import java.util.concurrent.CompletionException
 import java.util.concurrent.CompletionStage
 import java.util.function.BooleanSupplier
+import java.util.logging.Filter
+import java.util.logging.LogRecord
+import java.util.logging.Level
 
 class PaperPacketDisplayBudgetTest : FreeSpec({
+    "disconnect cancellation is quiet but admission failures stay observable and the next sweep retries" {
+        for (failure in listOf(CancellationException("channel closed"),
+            CompletionException(CompletionException(CancellationException("channel closed"))),
+            IllegalStateException("encoder failed", CancellationException("not an expected disconnect")))) {
+            MockBukkitTestRuntime.open().use { paper ->
+                val plugin = paper.loadPlugin<TestPaperPlugin>()
+                val player = paper.addPlayer("Viewer")
+                val world = paper.addSimpleWorld("disconnect")
+                val scheduler = TestTaskScheduler()
+                val work = BudgetedTaskQueue(LifecycleTaskScope(scheduler), maximumNanos = Long.MAX_VALUE)
+                val cleanup = QueueCleanup()
+                val transport = BudgetTransport().apply { admission = CompletableFuture.failedFuture(failure) }
+                val displays = PaperPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()),
+                    fixedAudience(player, world.uid), work, false, cleanup)
+                val records = mutableListOf<LogRecord>()
+                val previousLevel = plugin.logger.level
+                plugin.logger.level = Level.ALL
+                val previousFilter = plugin.logger.filter
+                plugin.logger.filter = Filter { records.add(it); false }
+                try {
+                    displays.spawnText(Location(world, 0.0, 64.0, 0.0), Component.text("one"))
+                    val failed = displays.refresh()
+                    scheduler.tick(20)
+                    failed.isCompletedExceptionally shouldBe true
+                    records.map { it.message } shouldBe if (failure.javaClass == IllegalStateException::class.java) listOf(
+                        "Packet display admission failed", "Packet display capture failed; the next sweep will retry",
+                    ) else emptyList()
+                    transport.admission = CompletableFuture.completedFuture(null)
+                    val retry = displays.refresh()
+                    scheduler.tick(20)
+                    retry.join()
+                    transport.frames.size shouldBe 2
+                    val closing = displays.closeAsync(); cleanup.drain(closing)
+                } finally { plugin.logger.filter = previousFilter; plugin.logger.level = previousLevel; work.close() }
+            }
+        }
+    }
+
+    "forgetting a disconnected viewer stays quiet without claiming successful cleanup" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val plugin = paper.loadPlugin<TestPaperPlugin>()
+            val player = paper.addPlayer("Viewer")
+            val world = paper.addSimpleWorld("quit")
+            val scheduler = TestTaskScheduler()
+            val work = BudgetedTaskQueue(LifecycleTaskScope(scheduler), maximumNanos = Long.MAX_VALUE)
+            val cleanup = QueueCleanup(); val transport = BudgetTransport()
+            var online = true
+            val audience = object : TestPacketDisplayAudience() {
+                override fun checkThread() = Unit
+                override fun capture() = if (online) fixedAudience(player, world.uid).capture() else emptyList()
+            }
+            val displays = PaperPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), audience, work, false, cleanup)
+            val records = mutableListOf<LogRecord>()
+            val previousFilter = plugin.logger.filter
+            plugin.logger.filter = Filter { records.add(it); false }
+            try {
+                displays.spawnText(Location(world, 0.0, 64.0, 0.0), Component.text("one"))
+                val initial = displays.refresh(); scheduler.tick(20); initial.join()
+                online = false
+                transport.terminal = CompletableFuture.failedFuture(CancellationException("Packet display channel is closed"))
+                val forgotten = displays.refresh(); scheduler.tick(20)
+                forgotten.isCompletedExceptionally shouldBe true
+                transport.closeAsync().isCompletedExceptionally shouldBe true
+                val next = displays.refresh(); scheduler.tick(20); next.join()
+                records shouldBe emptyList()
+                val closing = displays.closeAsync(); cleanup.drain(closing)
+            } finally { plugin.logger.filter = previousFilter; work.close() }
+        }
+    }
+
     "large plain and grouped scenes admit every consecutive frame within 128 steps" {
         for ((handleCount, viewerCount, grouped) in listOf(Triple(168, 1, false), Triple(200, 4, true), Triple(336, 1, false), Triple(336, 2, true))) {
             MockBukkitTestRuntime.open().use { paper ->

@@ -22,6 +22,7 @@ import ru.arc.paper.api.ArcNativeCleanupService
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CancellationException
+import java.util.concurrent.CompletionException
 import java.util.function.BooleanSupplier
 import java.util.UUID
 
@@ -150,7 +151,7 @@ class PaperPacketDisplays internal constructor(
         }.also { result ->
             capture = result
             result.whenComplete { _, failure ->
-                if (failure != null && failure !is CancellationException) {
+                if (failure != null && !failure.isCancellation()) {
                     plugin.logger.log(java.util.logging.Level.WARNING, "Packet display capture failed; the next sweep will retry", failure)
                 }
             }
@@ -164,8 +165,15 @@ class PaperPacketDisplays internal constructor(
         submission.whenComplete { _, failure ->
             if (failure != null) terminalFailures?.add(failure)
             submissions.remove(submission)
-            if (failure != null && !closed) plugin.logger.log(java.util.logging.Level.WARNING, "Packet display admission failed", failure)
+            if (failure != null && !closed && !failure.isCancellation()) plugin.logger.log(java.util.logging.Level.WARNING, "Packet display admission failed", failure)
         }
+    }
+
+    // CompletableFuture.copy/allOf wrap normal disconnect cancellation in CompletionException.
+    private fun Throwable.isCancellation(): Boolean {
+        var cause = this
+        while (cause is CompletionException && cause.cause != null) cause = requireNotNull(cause.cause)
+        return cause is CancellationException
     }
 
     private fun captureSteps(admissions: MutableList<CompletableFuture<Void>>): Iterator<Unit> = sequence {
