@@ -189,18 +189,6 @@ class PaperPacketDisplays internal constructor(
             liveVehiclesByWorld.getOrPut(viewer.worldId, ::hashSetOf).add(viewer.entityId)
             epochs[viewer.id] = viewerEpochs[viewer.id] ?: 0L
         })
-        // Citizens PLAYER actors are native carriers, never online connection/viewer entries.
-        for (display in handles.values) {
-            val carrier = display.attachmentPlayer
-            if (carrier != null && carrier.uniqueId !in audienceById) {
-                yieldAll(BukkitPacketDisplayAudience.captureCarrierSteps(carrier) { snapshot ->
-                    audienceById[snapshot.id] = snapshot
-                    passengerSnapshots[snapshot.entityId] = snapshot.passengerEntityIds
-                    liveVehiclesByWorld.getOrPut(snapshot.worldId, ::hashSetOf).add(snapshot.entityId)
-                })
-            }
-            yield(Unit)
-        }
         for (participant in captureParticipants) {
             yieldAll(participant.captureSteps(currentAudience))
             yield(Unit)
@@ -208,7 +196,20 @@ class PaperPacketDisplays internal constructor(
         val frames = arrayListOf<Pair<PacketDisplay, PacketDisplayFrame>>()
         var frameBatchSize = 0
         for (display in handles.values) {
-            val target = display.attachmentTargetId?.let(audienceById::get)
+            val targetId = display.attachmentTargetId
+            var target = targetId?.let(audienceById::get)
+            // A Citizens PLAYER carrier is native, but has no online viewer/connection entry.
+            if (targetId != null && target == null) {
+                if (frameBatchSize != 0) { frameBatchSize = 0; yield(Unit) }
+                display.attachmentPlayer?.let { carrier ->
+                    yieldAll(BukkitPacketDisplayAudience.captureCarrierSteps(carrier) { snapshot ->
+                        target = snapshot
+                        audienceById[snapshot.id] = snapshot
+                        passengerSnapshots[snapshot.entityId] = snapshot.passengerEntityIds
+                        liveVehiclesByWorld.getOrPut(snapshot.worldId, ::hashSetOf).add(snapshot.entityId)
+                    })
+                }
+            }
             display.frame(target)?.let { frames.add(display to it) }
             if (++frameBatchSize == PURE_CAPTURE_BATCH_SIZE) { frameBatchSize = 0; yield(Unit) }
         }
