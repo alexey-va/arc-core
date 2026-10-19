@@ -21,6 +21,7 @@ import ru.arc.paper.api.ArcSchematicPasteTarget
 import ru.arc.paper.api.ArcSchematicPoint
 import ru.arc.paper.protection.PaperBlockProtection
 import java.util.AbstractList
+import java.util.BitSet
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 
@@ -39,6 +40,8 @@ internal class NativeSchematicMutation private constructor(
     private var skipped = 0
     private var index = 0
     private var repairing = source == null
+    private val pairStates = source?.palette?.map { SchematicBlockPairPolicy.describe(it.text) }
+    private val placedCompanions = BitSet()
     private val chunks: List<Pair<Int, Int>>
     private var chunkIndex = 0
     private val minimumY: Int
@@ -106,6 +109,13 @@ internal class NativeSchematicMutation private constructor(
             if (chunkIndex < chunks.size) return@synchronized consumed
             val nativeWorld = BukkitAdapter.adapt(world)
             while (index < cells.size && consumed < budget) {
+                if (!repairing && placedCompanions[index]) {
+                    // The companion was charged when written; charge this bookkeeping visit too so a full
+                    // layer of already-written upper halves cannot become an unbounded main-thread scan.
+                    index++
+                    consumed++
+                    continue
+                }
                 val cell = cells[index]
                 val pos = cell.position
                 if (!world.isChunkLoaded(pos.x shr 4, pos.z shr 4)) failure(ArcSchematicFailure.WORLD_UNAVAILABLE, "Schematic target chunk unloaded during mutation")
@@ -114,12 +124,26 @@ internal class NativeSchematicMutation private constructor(
                 } else if ((options.ignoreAir && cell.isAir) || (options.ignoreBarriers && cell.isBarrier)) {
                     skipped++
                 } else {
-                    requirePermission(pos)
                     val snapshot = checkNotNull(source)
-                    val state = snapshot.entry(index).native
-                    val nbt = snapshot.nbt(index)
-                    val full = if (nbt == null) state.toBaseBlock() else state.toBaseBlock(LazyReference.computed(nbt))
-                    if (nativeWorld.setBlock(BlockVector3.at(pos.x, pos.y, pos.z), full, WRITE_EFFECTS)) changed++ else skipped++
+                    val companion = companionIndex(snapshot, index)
+                    if (companion == null) {
+                        requirePermission(pos)
+                        write(nativeWorld, snapshot, index)
+                    } else {
+                        val primary = if (checkNotNull(pairStates)[snapshot.paletteIndex(index)]!!.primary) index else companion
+                        val secondary = if (primary == index) companion else index
+                        for (part in intArrayOf(primary, secondary)) {
+                            val position = cells[part].position
+                            if (!world.isChunkLoaded(position.x shr 4, position.z shr 4))
+                                failure(ArcSchematicFailure.WORLD_UNAVAILABLE, "Schematic target chunk unloaded during mutation")
+                            requirePermission(position)
+                        }
+                        // One native pair is indivisible: at most one block may exceed the remaining tick budget.
+                        write(nativeWorld, snapshot, primary)
+                        write(nativeWorld, snapshot, secondary)
+                        placedCompanions.set(companion)
+                        consumed++
+                    }
                 }
                 index++
                 consumed++
@@ -136,6 +160,31 @@ internal class NativeSchematicMutation private constructor(
         }
         result?.let(completion::complete)
         return used
+    }
+
+    private fun companionIndex(snapshot: SchematicSnapshot, index: Int): Int? {
+        val states = checkNotNull(pairStates)
+        val first = states[snapshot.paletteIndex(index)] ?: return null
+        val position = snapshot.position(index)
+        val x = position.x.toLong() + first.offset.x
+        val y = position.y.toLong() + first.offset.y
+        val z = position.z.toLong() + first.offset.z
+        if (x !in snapshot.minimum.x.toLong()..snapshot.maximum.x.toLong() ||
+            y !in snapshot.minimum.y.toLong()..snapshot.maximum.y.toLong() ||
+            z !in snapshot.minimum.z.toLong()..snapshot.maximum.z.toLong()) return null
+        val companion = snapshot.index(x.toInt(), y.toInt(), z.toInt())
+        val second = states[snapshot.paletteIndex(companion)] ?: return null
+        val cell = cells[companion]
+        return companion.takeIf { SchematicBlockPairPolicy.matching(first, second) &&
+            !(options.ignoreAir && cell.isAir) && !(options.ignoreBarriers && cell.isBarrier) }
+    }
+
+    private fun write(nativeWorld: com.sk89q.worldedit.world.World, snapshot: SchematicSnapshot, index: Int) {
+        val pos = cells[index].position
+        val state = snapshot.entry(index).native
+        val nbt = snapshot.nbt(index)
+        val full = if (nbt == null) state.toBaseBlock() else state.toBaseBlock(LazyReference.computed(nbt))
+        if (nativeWorld.setBlock(BlockVector3.at(pos.x, pos.y, pos.z), full, WRITE_EFFECTS)) changed++ else skipped++
     }
 
     private fun repair(world: World, nativeWorld: com.sk89q.worldedit.world.World, cell: ArcSchematicBlock) {
