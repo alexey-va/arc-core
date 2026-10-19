@@ -189,6 +189,18 @@ class PaperPacketDisplays internal constructor(
             liveVehiclesByWorld.getOrPut(viewer.worldId, ::hashSetOf).add(viewer.entityId)
             epochs[viewer.id] = viewerEpochs[viewer.id] ?: 0L
         })
+        // Citizens PLAYER actors are native carriers, never online connection/viewer entries.
+        for (display in handles.values) {
+            val carrier = display.attachmentPlayer
+            if (carrier != null && carrier.uniqueId !in audienceById) {
+                yieldAll(BukkitPacketDisplayAudience.captureCarrierSteps(carrier) { snapshot ->
+                    audienceById[snapshot.id] = snapshot
+                    passengerSnapshots[snapshot.entityId] = snapshot.passengerEntityIds
+                    liveVehiclesByWorld.getOrPut(snapshot.worldId, ::hashSetOf).add(snapshot.entityId)
+                })
+            }
+            yield(Unit)
+        }
         for (participant in captureParticipants) {
             yieldAll(participant.captureSteps(currentAudience))
             yield(Unit)
@@ -401,24 +413,31 @@ internal object BukkitPacketDisplayAudience : PacketDisplayAudienceSource {
         // Paper's collection is a live view. If its iterator is invalidated, the owner discards
         // the incomplete sweep and retries; no partially captured audience is published.
         for (player in Bukkit.getOnlinePlayers()) {
-            if (!player.isValid) { yield(Unit); continue }
-            val location = player.location
-            val worldId = player.world.uid
-            val entityId = player.entityId
-            val tracked = hashSetOf<UUID>()
-            for (observer in player.getTrackedBy()) { tracked.add(observer.uniqueId); yield(Unit) }
-            val passengers = arrayListOf<Int>()
-            for (passenger in player.passengers) { passengers.add(passenger.entityId); yield(Unit) }
-            if (player.isValid && player.world.uid == worldId && player.entityId == entityId) {
+            yieldAll(captureCarrierSteps(player) { carrier ->
                 val eye = player.eyeLocation
                 val direction = eye.direction
                 // Paper's sent-chunk snapshot is one indivisible native getter.
-                accept(PacketDisplayViewer(player, player.uniqueId, worldId, entityId, tracked,
-                    location.x, location.y, location.z, player.sentChunkKeys, passengers,
-                    PacketDisplayView(eye.x, eye.y, eye.z, direction.x, direction.y, direction.z,
+                accept(carrier.copy(sentChunks = player.sentChunkKeys,
+                    view = PacketDisplayView(eye.x, eye.y, eye.z, direction.x, direction.y, direction.z,
                         afk?.isAfk(player.uniqueId) == true)))
-            }
-            yield(Unit)
+            })
         }
+    }.iterator()
+
+    /** Native tracking only: a Citizens carrier has no connection or player chunk loader. */
+    internal fun captureCarrierSteps(player: Player, accept: (PacketDisplayViewer) -> Unit): Iterator<Unit> = sequence {
+        if (!player.isValid) { yield(Unit); return@sequence }
+        val location = player.location
+        val worldId = player.world.uid
+        val entityId = player.entityId
+        val tracked = hashSetOf<UUID>()
+        for (observer in player.getTrackedBy()) { tracked.add(observer.uniqueId); yield(Unit) }
+        val passengers = arrayListOf<Int>()
+        for (passenger in player.passengers) { passengers.add(passenger.entityId); yield(Unit) }
+        if (player.isValid && player.world.uid == worldId && player.entityId == entityId) {
+            accept(PacketDisplayViewer(player, player.uniqueId, worldId, entityId, tracked,
+                location.x, location.y, location.z, emptySet(), passengers))
+        }
+        yield(Unit)
     }.iterator()
 }

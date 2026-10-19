@@ -83,7 +83,9 @@ with a different UUID or display kind destroys the old client entity before
 spawning the replacement.
 
 `PacketDisplay.attachTo(player)` mounts the same client-only entity ID as a
-passenger of that player's native entity. While mounted, the current main-thread
+passenger of that player's native entity, including a tracked Citizens PLAYER NPC.
+NPC carriers are captured separately from online viewers; no connection or sent-chunk
+loader is read for them. A weak native reference is released on detach/remove. While mounted, the current main-thread
 player position/world/chunk snapshot drives visibility and tracking; the display
 is not sent a world-position teleport each tick. Its `transformation` is the
 passenger-local pose, and `teleport(location)` records the world position used by

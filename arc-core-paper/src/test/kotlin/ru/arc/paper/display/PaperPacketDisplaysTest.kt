@@ -336,6 +336,52 @@ class PaperPacketDisplaysTest : FreeSpec({
         }
     }
 
+    "mounted Citizens player carriers are tracked without becoming online viewers or reading chunk loaders" {
+        failOnUnsupportedMockBukkitOperation {
+            MockBukkitTestRuntime.open().use { paper ->
+                val plugin = paper.loadPlugin<TestPaperPlugin>()
+                val world = paper.addSimpleWorld("citizen-carrier")
+                val observer = paper.addPlayer("Observer")
+                val carrier = RespawnAudiencePlayer(paper.server, "Resident").apply {
+                    setLocation(Location(world, 1.0, 64.0, 1.0))
+                    observers = setOf(observer)
+                }
+                val audience = MutableAudience().apply { values = listOf(viewer(observer, world.uid)) }
+                val transport = RecordingTransport()
+                testPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), audience).use { displays ->
+                    val label = displays.spawnText(carrier.location, Component.text("Resident"))
+                    label.attachTo(carrier)
+                    displays.refreshFully()
+                    val first = transport.forPlayer(observer).last()
+                    first.passengers shouldBe mapOf(carrier.entityId to listOf(label.entityId))
+                    first.frames.single().attachmentVehicleId shouldBe carrier.entityId
+                    carrier.sentChunkReads shouldBe 0
+                    transport.connections.containsKey(carrier.uniqueId) shouldBe false
+
+                    carrier.setLocation(Location(world, 4.0, 65.0, 1.0))
+                    displays.refreshFully()
+                    val moving = transport.forPlayer(observer).last().frames.single()
+                    moving.entityId shouldBe first.frames.single().entityId
+                    moving.x shouldBe 4.0
+                    moving.y shouldBe 65.0
+                    carrier.sentChunkReads shouldBe 0
+
+                    carrier.observers = emptySet()
+                    displays.refreshFully()
+                    transport.forPlayer(observer).last().frames shouldBe emptyList()
+                    carrier.observers = setOf(observer)
+                    displays.refreshFully()
+                    transport.forPlayer(observer).last().frames.single().entityId shouldBe label.entityId
+
+                    carrier.inWorld = false
+                    displays.refreshFully()
+                    transport.forPlayer(observer).last().frames shouldBe emptyList()
+                    transport.forPlayer(observer).last().passengers shouldBe emptyMap()
+                }
+            }
+        }
+    }
+
     "chunk resets survive a quick unload reload between snapshots and replacement connections clean up" {
         MockBukkitTestRuntime.open().use { paper ->
             val plugin = paper.loadPlugin<TestPaperPlugin>()
@@ -405,11 +451,12 @@ private class MutableAudience : TestPacketDisplayAudience() {
 private class RespawnAudiencePlayer(server: ServerMock, name: String) : PlayerMock(server, name) {
     var inWorld = true
     var sentChunkReads = 0
+    var observers = emptySet<Player>()
 
     // CraftEntity on Purpur 1.21.11-2568 requires both isAlive() and Entity.valid;
     // MockBukkit's default isValid() checks removal only.
     override fun isValid(): Boolean = !isDead && inWorld
-    override fun getTrackedBy(): Set<Player> = emptySet()
+    override fun getTrackedBy(): Set<Player> = observers
     override fun getSentChunkKeys(): Set<Long> {
         sentChunkReads++
         if (!inWorld) throw NullPointerException("Native player chunk loader is detached")

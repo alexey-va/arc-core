@@ -13,6 +13,7 @@ import org.bukkit.util.Transformation
 import org.joml.Quaternionf
 import org.joml.Vector3f
 import java.util.UUID
+import java.lang.ref.WeakReference
 
 /**
  * A client-only visual owned by [PaperPacketDisplays], never a Bukkit entity.
@@ -30,12 +31,14 @@ sealed class PacketDisplay protected constructor(
     private var positionWorldId = requireNotNull(location.world) { "A packet display must belong to a world" }.uid
     private var transform = DisplayTransform()
     private var attachedPlayerId: UUID? = null
+    private var attachedPlayer: WeakReference<Player>? = null
     private var visibleTo = mutableSetOf<UUID>()
     private var hiddenFrom = mutableSetOf<UUID>()
     private var active = true
     val isValid: Boolean get() = active && !owner.closed
     val location: Location get() = position.clone()
     internal val attachmentTargetId: UUID? get() = attachedPlayerId
+    internal val attachmentPlayer: Player? get() = attachedPlayer?.get()
     var isVisibleByDefault: Boolean = true
         set(value) { owner.checkThread(); if (field != value) { field = value; owner.visibilityChanged() } }
     /** Additional shared gate; never grants access denied by this handle's explicit audience. */
@@ -86,7 +89,8 @@ sealed class PacketDisplay protected constructor(
     }
 
     /**
-     * Mounts this client-only display on [player] without creating a server entity. The existing
+     * Mounts this client-only display on a native [player], including a Citizens player NPC,
+     * without creating a server entity. NPC carriers need no online connection. The existing
      * [transformation] becomes the passenger-local pose; the last [teleport] location remains its
      * detached position.
      */
@@ -95,6 +99,7 @@ sealed class PacketDisplay protected constructor(
         check(isValid) { "A removed packet display cannot be attached" }
         if (attachedPlayerId != player.uniqueId) owner.visibilityChanged()
         attachedPlayerId = player.uniqueId
+        attachedPlayer = WeakReference(player)
     }
 
     /** Returns this display to its last [teleport] position. */
@@ -102,6 +107,7 @@ sealed class PacketDisplay protected constructor(
         owner.checkThread()
         if (attachedPlayerId != null) owner.visibilityChanged()
         attachedPlayerId = null
+        attachedPlayer = null
     }
 
     fun showTo(player: Player) {
@@ -132,6 +138,7 @@ sealed class PacketDisplay protected constructor(
         active = false
         owner.visibilityChanged()
         attachedPlayerId = null
+        attachedPlayer = null
         audienceGroup = null
         owner.remove(this)
         visibleTo = mutableSetOf()
