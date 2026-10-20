@@ -229,6 +229,20 @@ class ProviderHost {
         exit_code, output = self.verify()
         self.assertEqual(0, exit_code, output)
 
+    def test_packet_npcs_require_the_shared_runtime_owner(self) -> None:
+        manifest = self.root / "arc-core-consumer.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace('"runtime"]', '"runtime", "paper-packet-npcs"]'),
+            encoding="utf-8",
+        )
+        self.write("src/main/kotlin/example/Residents.kt", "class Residents(val profile: PacketNpcProfile)\n")
+        exit_code, output = self.verify()
+        self.assertEqual(1, exit_code)
+        self.assertIn("PaperPacketNpcs", output)
+        self.write("src/main/kotlin/example/Residents.kt", "class Residents(val actors: PaperPacketNpcs)\n")
+        exit_code, output = self.verify()
+        self.assertEqual(0, exit_code, output)
+
     def test_optional_schematics_provider_module_is_version_checked(self) -> None:
         self.write_valid_provider_host()
         build = self.root / "build.gradle.kts"

@@ -103,7 +103,7 @@ internal interface PacketDisplayChannelBackend {
     fun flush(channel: Any)
 }
 
-private class PacketEventsChannelBackend(plugin: Plugin, source: String) : PacketDisplayChannelBackend {
+internal class PacketEventsChannelBackend(plugin: Plugin, source: String) : PacketDisplayChannelBackend {
     private val packets = PaperVisualPackets(plugin, source)
     override fun isOpen(channel: Any): Boolean = ChannelHelper.isOpen(channel)
 
@@ -591,13 +591,16 @@ internal class PacketDisplayAttachment internal constructor(
 
     /** Returns the coalescible remainder; a denied transaction never advances its baseline. */
     private fun process(batch: DeliveryBatch): Pending? {
-        val work = batch.pending
         val channel = channelRef.get()
         if (channel == null || !backend.isOpen(channel)) {
             invalidate(additionalCleanupIds = batch.previous.keys)
             if (closing.get()) closed.completeExceptionally(CancellationException("Packet display channel closed before cleanup"))
             return null
         }
+        val desiredFrames = batch.desired.filterValues { it.attachmentLease?.isActive(channel) != false }
+        val work = batch.pending.copy(desiredPassengers = batch.pending.desiredPassengers.mapValues { (_, ids) ->
+            ids.filter(desiredFrames::containsKey)
+        }.filterValues { it.isNotEmpty() })
         if (!synchronized(lock) { valid }) {
             synchronized(lock) { cleanupIds = cleanupIds + batch.previous.keys }
             return if (cleanup(channel)) null else work.copy(frames = emptyMap(), desiredPassengers = emptyMap())
@@ -616,7 +619,7 @@ internal class PacketDisplayAttachment internal constructor(
         val forceDetachVehicles = linkedSetOf<Int>()
         val resetVehicles = linkedSetOf<Int>()
         batch.previous.forEach { (id, old) ->
-            val current = batch.desired[id]
+            val current = desiredFrames[id]
             val reset = work.resetAll || old.chunkKey in work.resetChunks ||
                 (current != null && current.chunkKey in work.resetChunks)
             val replaced = current == null || !sameGeneration(old, current)
@@ -651,11 +654,12 @@ internal class PacketDisplayAttachment internal constructor(
                 }
                 wrote = true
                 destroys.forEach(acknowledged::remove)
+                destroys.forEach { id -> batch.previous[id]?.attachmentLease?.forgetChild(id) }
                 suspended.removeAll(destroys)
             }
             // Admit each entity's spawn+metadata/update atomically. Large scenes
             // can progressively appear even when their total size exceeds a burst.
-            val frames = batch.desired.values.toList()
+            val frames = desiredFrames.values.toList()
             val start = frames.indexOfFirst { it.entityId == resumeEntityId }.coerceAtLeast(0)
             for (offset in frames.indices) {
                 val desired = frames[(start + offset) % frames.size]
@@ -686,8 +690,14 @@ internal class PacketDisplayAttachment internal constructor(
                     }
                 }
                 if (packets.isNotEmpty()) {
+                    val carrierLease = current.attachmentLease
+                    val registeredChild = carrierLease?.hasChild(id) == true
+                    if (carrierLease?.registerChild(id, channel) == false) continue
                     synchronized(lock) { cleanupIds = cleanupIds + id }
                     if (!backend.tryWrite(channel, packets, false)) {
+                        // A false admission wrote nothing. Keep earlier admitted children,
+                        // but do not retain a new child for a spawn that never reached Netty.
+                        if (!registeredChild) carrierLease?.forgetChild(id)
                         synchronized(lock) { cleanupIds = cleanupIds - id }
                         resumeEntityId = id
                         // Resets were already applied by the destroy transaction.
@@ -701,7 +711,8 @@ internal class PacketDisplayAttachment internal constructor(
             }
             resumeEntityId = null
             val mountUpdates = work.desiredPassengers.mapValues { (vehicleId, displayIds) ->
-                displayIds.filter { id -> batch.desired[id]?.attachmentVehicleId == vehicleId && id in acknowledged }
+                displayIds.filter { id -> desiredFrames[id]?.attachmentVehicleId == vehicleId && id in acknowledged &&
+                    desiredFrames[id]?.attachmentLease?.isActive(channel) != false }
             }.filterValues { it.isNotEmpty() }
                 .filter { (vehicleId, displayIds) -> submittedPassengers[vehicleId] != displayIds }
             if (mountUpdates.isNotEmpty()) {
@@ -969,7 +980,8 @@ internal class PacketDisplayAttachment internal constructor(
 
         fun sameGeneration(old: PacketDisplayFrame, current: PacketDisplayFrame): Boolean =
             old.entityId == current.entityId && old.uuid == current.uuid &&
-                old.worldId == current.worldId && displayKind(old) == displayKind(current)
+                old.worldId == current.worldId && displayKind(old) == displayKind(current) &&
+                old.attachmentLease === current.attachmentLease
 
         fun visualStateChanged(old: PacketDisplayFrame, current: PacketDisplayFrame): Boolean =
             old.metadata.transform != current.metadata.transform || old.metadata.content != current.metadata.content

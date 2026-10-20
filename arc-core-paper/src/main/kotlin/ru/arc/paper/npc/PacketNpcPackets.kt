@@ -1,0 +1,91 @@
+package ru.arc.paper.npc
+
+import com.github.retrooper.packetevents.protocol.entity.data.EntityData
+import com.github.retrooper.packetevents.protocol.entity.data.EntityDataTypes
+import com.github.retrooper.packetevents.protocol.entity.pose.EntityPose
+import com.github.retrooper.packetevents.protocol.entity.type.EntityTypes
+import com.github.retrooper.packetevents.protocol.player.Equipment
+import com.github.retrooper.packetevents.protocol.player.GameMode
+import com.github.retrooper.packetevents.protocol.player.TextureProperty
+import com.github.retrooper.packetevents.protocol.player.UserProfile
+import com.github.retrooper.packetevents.util.Vector3d
+import com.github.retrooper.packetevents.util.Vector3i
+import com.github.retrooper.packetevents.wrapper.PacketWrapper
+import com.github.retrooper.packetevents.wrapper.play.server.*
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoUpdate.Action
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoUpdate.PlayerInfo
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerTeams.*
+import net.kyori.adventure.text.Component
+import net.kyori.adventure.text.format.NamedTextColor
+import java.util.EnumSet
+import java.util.Optional
+import kotlin.math.abs
+
+/** PacketEvents 2.12.1, Minecraft 1.21.11. Pure, invoked only on the connection event loop. */
+internal object PacketNpcPackets {
+    fun spawn(frame: PacketNpcFrame): List<PacketWrapper<*>> = buildList {
+        val profile = UserProfile(frame.profile.uuid, frame.profile.name, frame.profile.texture?.let {
+            listOf(TextureProperty("textures", it, frame.profile.signature))
+        }.orEmpty())
+        // Keep the profile for the entire visible lifetime so asynchronous client skin lookup
+        // can finish. UPDATE_LISTED=false prevents any tab-list entry from the first packet.
+        add(WrapperPlayServerPlayerInfoUpdate(EnumSet.of(Action.ADD_PLAYER, Action.UPDATE_LISTED, Action.UPDATE_GAME_MODE),
+            listOf(PlayerInfo(profile, false, 0, GameMode.SURVIVAL, null, null))))
+        add(WrapperPlayServerTeams(frame.teamName, TeamMode.CREATE,
+            ScoreBoardTeamInfo(Component.empty(), Component.empty(), Component.empty(),
+                NameTagVisibility.NEVER, CollisionRule.NEVER, NamedTextColor.WHITE, OptionData.NONE),
+            listOf(frame.profile.name)))
+        add(WrapperPlayServerSpawnEntity(frame.entityId, Optional.of(frame.profile.uuid), EntityTypes.PLAYER,
+            Vector3d(frame.x, frame.y, frame.z), frame.pitch, frame.bodyYaw, frame.headYaw, 0, Optional.empty()))
+        add(metadata(frame))
+        add(WrapperPlayServerEntityHeadLook(frame.entityId, frame.headYaw))
+        if (frame.equipment.isNotEmpty()) add(equipment(frame))
+    }
+
+    fun update(old: PacketNpcFrame, frame: PacketNpcFrame): List<PacketWrapper<*>> = buildList {
+        if (old.pose != frame.pose || old.bed != frame.bed) add(metadata(frame))
+        if (old.equipment != frame.equipment) add(equipment(frame))
+        val dx = frame.x - old.x
+        val dy = frame.y - old.y
+        val dz = frame.z - old.z
+        if (dx != 0.0 || dy != 0.0 || dz != 0.0 || old.bodyYaw != frame.bodyYaw || old.pitch != frame.pitch) {
+            // Quantized absolute endpoints prevent accumulated relative-movement rounding drift.
+            if (abs(dx) < 8.0 && abs(dy) < 8.0 && abs(dz) < 8.0) {
+                add(WrapperPlayServerEntityRelativeMoveAndRotation(frame.entityId, dx, dy, dz, frame.bodyYaw, frame.pitch, true))
+            } else {
+                add(WrapperPlayServerEntityTeleport(frame.entityId, Vector3d(frame.x, frame.y, frame.z), frame.bodyYaw, frame.pitch, true))
+            }
+        }
+        if (old.headYaw != frame.headYaw) add(WrapperPlayServerEntityHeadLook(frame.entityId, frame.headYaw))
+        // At most one recent gesture survives a coalesced burst, never historical animation replay.
+        if (old.swing != frame.swing) add(WrapperPlayServerEntityAnimation(frame.entityId, WrapperPlayServerEntityAnimation.EntityAnimationType.SWING_MAIN_ARM))
+        if (old.hurt != frame.hurt) add(WrapperPlayServerHurtAnimation(frame.entityId, frame.bodyYaw))
+    }
+
+    fun remove(frame: PacketNpcFrame, lease: PacketNpcLease?): List<PacketWrapper<*>> = buildList {
+        lease?.revoke()
+        val children = lease?.childIds() ?: intArrayOf()
+        if (children.isNotEmpty()) {
+            add(WrapperPlayServerSetPassengers(frame.entityId, intArrayOf()))
+            add(WrapperPlayServerDestroyEntities(*children))
+        }
+        add(WrapperPlayServerDestroyEntities(frame.entityId))
+        add(WrapperPlayServerPlayerInfoRemove(frame.profile.uuid))
+        add(WrapperPlayServerTeams(frame.teamName, TeamMode.REMOVE, null as ScoreBoardTeamInfo?, emptyList<String>()))
+    }
+
+    private fun equipment(frame: PacketNpcFrame) = WrapperPlayServerEntityEquipment(frame.entityId,
+        frame.equipment.map { (slot, item) -> Equipment(slot, item.copy()) })
+
+    internal fun metadata(frame: PacketNpcFrame): WrapperPlayServerEntityMetadata {
+        // Verified from the mapped 1.21.11 server's Entity/LivingEntity/Avatar defineId order:
+        // Entity has 0..7; LivingEntity adds 8..14 (sleeping position); Avatar adds main arm15
+        // and skin layers16. Player's old skin index17 is WRONG since the Avatar extraction.
+        return WrapperPlayServerEntityMetadata(frame.entityId, listOf(
+            EntityData(6, EntityDataTypes.ENTITY_POSE, EntityPose.valueOf(frame.pose.name)),
+            EntityData(14, EntityDataTypes.OPTIONAL_BLOCK_POSITION,
+                Optional.ofNullable(frame.bed?.let { Vector3i(it.x, it.y, it.z) })),
+            EntityData(16, EntityDataTypes.BYTE, 0x7f.toByte()),
+        ))
+    }
+}

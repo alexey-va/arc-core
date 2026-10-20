@@ -77,6 +77,7 @@ CAPABILITY_MODULES = {
     "paper-audience": {"arc-core-paper", "arc-core-paper-testing"},
     "paper-action-panels": {"arc-core-paper"},
     "paper-spatial-scenes": {"arc-core-paper"},
+    "paper-packet-npcs": {"arc-core-paper"},
     "paper-menu": {"arc-core-menu", "arc-core-paper-menu"},
     "paper-schematics": {"arc-core-paper-api"},
     "paper-block-protection": {"arc-core-paper-api", "arc-core-paper"},
@@ -92,6 +93,7 @@ PLATFORM_ONLY_CAPABILITIES = {
         "paper-audience",
         "paper-action-panels",
         "paper-spatial-scenes",
+        "paper-packet-npcs",
         "paper-menu",
         "paper-schematics",
         "paper-block-protection",
@@ -121,6 +123,7 @@ KNOWN_CAPABILITIES = {
     "paper-audience",
     "paper-action-panels",
     "paper-spatial-scenes",
+    "paper-packet-npcs",
     "paper-menu",
     "paper-schematics",
     "paper-block-protection",
@@ -163,6 +166,7 @@ CAPABILITY_EVIDENCE = {
     ),
     "paper-action-panels": (("main", re.compile(r"\bPaperActionPanels\b")),),
     "paper-spatial-scenes": (("main", re.compile(r"\bPacketDisplayScene\b")),),
+    "paper-packet-npcs": (("main", re.compile(r"\bPaperPacketNpcs\b")),),
     "paper-menu": (
         (
             "main",

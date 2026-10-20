@@ -2,6 +2,7 @@ package ru.arc.paper.display
 
 import com.github.retrooper.packetevents.protocol.item.ItemStack
 import net.kyori.adventure.text.Component
+import ru.arc.paper.npc.PacketNpcLease
 import java.util.UUID
 import kotlin.math.floor
 
@@ -18,6 +19,8 @@ internal data class PacketDisplayFrame(
     val worldId: UUID = UUID(0L, 0L),
     /** Native player entity ID when this client-only display is mounted. */
     val attachmentVehicleId: Int? = null,
+    /** Packet-carrier spawn generation, revalidated on the destination connection event loop. */
+    val attachmentLease: PacketNpcLease? = null,
 ) {
     val chunkKey: Long get() = (floor(x).toInt().shr(4).toLong() and 0xffffffffL) or
         (floor(z).toInt().shr(4).toLong() shl 32)

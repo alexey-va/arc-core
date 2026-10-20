@@ -227,11 +227,13 @@ class PaperPacketDisplays internal constructor(
             var visibilityBatchSize = 0
             for ((display, frame) in frames) {
                 val targetId = display.attachmentTargetId
+                val packetCarrier = display.attachmentNpc
+                val packetLease = packetCarrier?.lease(viewer.id)
                 var nativeCheck = targetId != null
                 // Carrier visibility and uncached scene predicates retain individual native steps.
                 if (nativeCheck && visibilityBatchSize != 0) { visibilityBatchSize = 0; yield(Unit) }
                 val carrier = targetId?.let(audienceById::get)
-                val carrierVisible = targetId == null || targetId == viewer.id ||
+                val carrierVisible = if (packetCarrier != null) packetLease != null else targetId == null || targetId == viewer.id ||
                     (carrier != null && audience.isCurrent(carrier) && viewer.id in carrier.trackedBy && viewer.player.canSee(carrier.player))
                 if (carrierVisible && frame.chunkKey in viewer.sentChunks && display.visibleTo(viewer, frame)) {
                     val group = display.audienceGroup
@@ -241,7 +243,7 @@ class PaperPacketDisplays internal constructor(
                         nativeCheck = true
                     }
                     if (group == null || groupVisibility[group] == true) {
-                        desired.add(frame)
+                        desired.add(if (packetLease == null) frame else frame.copy(attachmentLease = packetLease))
                         frame.attachmentVehicleId?.let { vehicleId ->
                             desiredPassengers.getOrPut(vehicleId, ::arrayListOf).add(frame.entityId)
                             nativePassengers[vehicleId] = passengerSnapshots[vehicleId].orEmpty()
@@ -267,7 +269,7 @@ class PaperPacketDisplays internal constructor(
             // These collections are detached and never mutated after handoff. Sorting/copies/merge run on Netty.
             connection.submitViewAsync(desired, viewer.view, resetChunks.remove(viewer.id).orEmpty(),
                 resetViewers.remove(viewer.id) || (previous != null && previous.worldId != viewer.worldId),
-                desiredPassengers, nativePassengers, liveVehiclesByWorld[viewer.worldId].orEmpty())
+                desiredPassengers, nativePassengers, liveVehiclesByWorld[viewer.worldId].orEmpty() + desiredPassengers.keys)
                 .also { admissions.add(it); track(it) }
             viewers[viewer.id] = ViewerState(connection, viewer.worldId)
             yield(Unit)

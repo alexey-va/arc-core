@@ -12,6 +12,7 @@ import org.bukkit.inventory.ItemStack
 import org.bukkit.util.Transformation
 import org.joml.Quaternionf
 import org.joml.Vector3f
+import ru.arc.paper.npc.PacketPlayerNpc
 import java.util.UUID
 import java.lang.ref.WeakReference
 
@@ -32,6 +33,7 @@ sealed class PacketDisplay protected constructor(
     private var transform = DisplayTransform()
     private var attachedPlayerId: UUID? = null
     private var attachedPlayer: WeakReference<Player>? = null
+    private var attachedNpc: WeakReference<PacketPlayerNpc>? = null
     private var visibleTo = mutableSetOf<UUID>()
     private var hiddenFrom = mutableSetOf<UUID>()
     private var active = true
@@ -39,6 +41,7 @@ sealed class PacketDisplay protected constructor(
     val location: Location get() = position.clone()
     internal val attachmentTargetId: UUID? get() = attachedPlayerId
     internal val attachmentPlayer: Player? get() = attachedPlayer?.get()
+    internal val attachmentNpc: PacketPlayerNpc? get() = attachedNpc?.get()
     var isVisibleByDefault: Boolean = true
         set(value) { owner.checkThread(); if (field != value) { field = value; owner.visibilityChanged() } }
     /** Additional shared gate; never grants access denied by this handle's explicit audience. */
@@ -98,17 +101,33 @@ sealed class PacketDisplay protected constructor(
     fun attachTo(player: Player) {
         owner.checkThread()
         check(isValid) { "A removed packet display cannot be attached" }
-        if (attachedPlayerId != player.uniqueId) owner.visibilityChanged()
+        if (attachedPlayerId != player.uniqueId || attachedNpc != null) owner.visibilityChanged()
         attachedPlayerId = player.uniqueId
         attachedPlayer = WeakReference(player)
+        attachedNpc = null
+    }
+
+    /**
+     * Uses the packet player's admitted per-viewer generation. Spawn and mount wait until
+     * that connection has received the actor; retirement destroys children before the actor.
+     * A packet carrier may be attached through only one display owner.
+     */
+    fun attachTo(npc: PacketPlayerNpc) {
+        owner.checkThread()
+        check(isValid && npc.isValid) { "Removed displays or NPCs cannot be attached" }
+        if (attachmentNpc !== npc || attachedPlayerId != null) owner.visibilityChanged()
+        attachedPlayerId = null
+        attachedPlayer = null
+        attachedNpc = WeakReference(npc)
     }
 
     /** Returns this display to its last [teleport] position. */
     fun detach() {
         owner.checkThread()
-        if (attachedPlayerId != null) owner.visibilityChanged()
+        if (attachedPlayerId != null || attachedNpc != null) owner.visibilityChanged()
         attachedPlayerId = null
         attachedPlayer = null
+        attachedNpc = null
     }
 
     fun showTo(player: Player) {
@@ -140,6 +159,7 @@ sealed class PacketDisplay protected constructor(
         owner.visibilityChanged()
         attachedPlayerId = null
         attachedPlayer = null
+        attachedNpc = null
         audienceGroup = null
         owner.remove(this)
         visibleTo = mutableSetOf()
@@ -160,13 +180,16 @@ sealed class PacketDisplay protected constructor(
     internal fun frame(attachedPlayer: PacketDisplayViewer? = null): PacketDisplayFrame? {
         val targetId = attachedPlayerId
         if (targetId != null && attachedPlayer?.id != targetId) return null
-        val worldId = attachedPlayer?.worldId ?: positionWorldId
+        val npc = attachmentNpc
+        if (attachedNpc != null && (npc == null || !npc.isValid)) return null
+        val npcLocation = npc?.location
+        val worldId = npcLocation?.world?.uid ?: attachedPlayer?.worldId ?: positionWorldId
         return PacketDisplayFrame(
             entityId = entityId,
             uuid = uniqueId,
-            x = attachedPlayer?.x ?: position.x,
-            y = attachedPlayer?.let { it.y + it.height } ?: position.y,
-            z = attachedPlayer?.z ?: position.z,
+            x = npcLocation?.x ?: attachedPlayer?.x ?: position.x,
+            y = npcLocation?.let { it.y + requireNotNull(npc).height } ?: attachedPlayer?.let { it.y + it.height } ?: position.y,
+            z = npcLocation?.z ?: attachedPlayer?.z ?: position.z,
             yaw = position.yaw,
             pitch = position.pitch,
             metadata = PacketDisplayMetadata(
@@ -181,7 +204,7 @@ sealed class PacketDisplay protected constructor(
             glowRgb = glowColorOverride?.asRGB() ?: -1, glowing = isGlowing,
         ),
             worldId = worldId,
-            attachmentVehicleId = attachedPlayer?.entityId.takeIf { targetId != null },
+            attachmentVehicleId = npc?.entityId ?: attachedPlayer?.entityId.takeIf { targetId != null },
         )
     }
 
