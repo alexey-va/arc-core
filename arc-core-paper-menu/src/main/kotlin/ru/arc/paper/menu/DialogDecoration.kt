@@ -93,6 +93,7 @@ class DialogDecoration(font: Key, positiveSpace: Int, negativeSpace: Int) {
     }
 
     private fun singleLine(text: Component, width: Int): Component? {
+        if (width < 1) return null
         val result = DialogTextLayout.layout(text, TextAlignment.CENTER, width + 8) as? TextLayoutResult.Aligned
         return result?.takeIf { it.lineCount == 1 }?.component
     }

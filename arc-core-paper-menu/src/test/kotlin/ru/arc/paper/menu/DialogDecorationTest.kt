@@ -86,6 +86,9 @@ class DialogDecorationTest : FreeSpec({
         output.ink.none { it.point == icon.codePoint } shouldBe true
         output.width shouldBe 146
         decoration.buttonLabel(long, 1024, frame, icon) shouldBe long
+        val narrow = measure(decoration.buttonLabel(Component.text("ОК"), 64, frame, icon)).single()
+        narrow.width shouldBe 60
+        narrow.ink.none { it.point == icon.codePoint } shouldBe true
     }
 
     "open corners and a divider have equal measured edges and preserve content" {
