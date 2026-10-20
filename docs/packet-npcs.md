@@ -26,6 +26,7 @@ actor.setEquipment(EquipmentSlot.HAND, tool)
 actor.teleport(nextPosition)
 actor.headYaw = lookingYaw
 actor.pitch = lookingPitch
+actor.scale = 0.5
 actor.swingMainHand()
 ```
 
@@ -44,6 +45,11 @@ walking interpolation. Coordinates are quantized to 1/4096 block before computin
 deltas, so rounding does not accumulate. A displacement of eight blocks or more
 uses an absolute teleport; a world change retires the previous generation.
 `bodyYaw`, `headYaw` and `pitch` are independent presentation controls.
+`scale` defaults to 1.0 and accepts finite values from 0.25 through 2.0. It sends
+the native `minecraft:scale` attribute on spawn and only on later scale changes,
+without replacing the actor or its attached displays. Standing/crouching
+`height`, `eyeHeight` and interaction width follow that scale. As in native
+1.21.11, sleeping dimensions and eye height remain fixed at 0.2 blocks.
 `PacketNpcPose.SLEEPING` plus `sleepingBed` supplies the pose and bed position;
 the consumer owns a real, correctly oriented bed and the feet anchor. Waking
 clears the bed metadata. The six player equipment slots, main-hand swing and hurt
@@ -62,7 +68,7 @@ caption.attachTo(actor)
 ```
 
 The existing display transformation remains passenger-local. Spawn uses the
-actor's pose-aware passenger origin. Use one display owner per carrier, as for a
+actor's pose/scale-aware passenger origin. Use one display owner per carrier, as for a
 native player attachment. No second display renderer or periodic world-teleport
 fallback is created.
 

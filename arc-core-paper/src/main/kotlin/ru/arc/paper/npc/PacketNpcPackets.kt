@@ -1,5 +1,6 @@
 package ru.arc.paper.npc
 
+import com.github.retrooper.packetevents.protocol.attribute.Attributes
 import com.github.retrooper.packetevents.protocol.entity.data.EntityData
 import com.github.retrooper.packetevents.protocol.entity.data.EntityDataTypes
 import com.github.retrooper.packetevents.protocol.entity.pose.EntityPose
@@ -38,12 +39,14 @@ internal object PacketNpcPackets {
         add(WrapperPlayServerSpawnEntity(frame.entityId, Optional.of(frame.profile.uuid), EntityTypes.PLAYER,
             Vector3d(frame.x, frame.y, frame.z), frame.pitch, frame.bodyYaw, frame.headYaw, 0, Optional.empty()))
         add(metadata(frame))
+        add(scale(frame))
         add(WrapperPlayServerEntityHeadLook(frame.entityId, frame.headYaw))
         if (frame.equipment.isNotEmpty()) add(equipment(frame))
     }
 
     fun update(old: PacketNpcFrame, frame: PacketNpcFrame): List<PacketWrapper<*>> = buildList {
         if (old.pose != frame.pose || old.bed != frame.bed) add(metadata(frame))
+        if (old.scale != frame.scale) add(scale(frame))
         if (old.equipment != frame.equipment) add(equipment(frame))
         val dx = frame.x - old.x
         val dy = frame.y - old.y
@@ -76,6 +79,9 @@ internal object PacketNpcPackets {
 
     private fun equipment(frame: PacketNpcFrame) = WrapperPlayServerEntityEquipment(frame.entityId,
         frame.equipment.map { (slot, item) -> Equipment(slot, item.copy()) })
+
+    private fun scale(frame: PacketNpcFrame) = WrapperPlayServerUpdateAttributes(frame.entityId,
+        listOf(WrapperPlayServerUpdateAttributes.Property(Attributes.SCALE, frame.scale, emptyList())))
 
     internal fun metadata(frame: PacketNpcFrame): WrapperPlayServerEntityMetadata {
         // Verified from the mapped 1.21.11 server's Entity/LivingEntity/Avatar defineId order:

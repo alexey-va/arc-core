@@ -182,6 +182,47 @@ class PaperPacketNpcsTest : FreeSpec({
             }
         }
     }
+
+    "scale bounds native pose dimensions and interaction hitbox agree" {
+        MockBukkitTestRuntime.open().use {
+            NpcFixture().use { f ->
+                val actor = f.spawn()
+                actor.scale shouldBe 1.0
+                for (invalid in listOf(.24, 2.01, Double.NaN, Double.POSITIVE_INFINITY)) {
+                    runCatching { actor.scale = invalid }.isFailure shouldBe true
+                }
+                actor.scale shouldBe 1.0
+                actor.scale = .5
+                actor.height shouldBe .9
+                actor.eyeHeight shouldBe .81
+                actor.pose = PacketNpcPose.CROUCHING
+                actor.height shouldBe .75
+                actor.eyeHeight shouldBe .635
+                actor.pose = PacketNpcPose.SLEEPING
+                actor.height shouldBe .2
+                actor.eyeHeight shouldBe .2
+                actor.pose = PacketNpcPose.STANDING
+                f.refresh()
+                var calls = 0
+                f.owner.onInteract = { _, _, _ -> calls++ }
+                fun click() = f.owner.interact(f.player.uniqueId, f.connection, actor.entityId,
+                    requireNotNull(f.connection.lease(actor.entityId)), PacketNpcInteraction.INTERACT)
+                click() // The normal adult eye ray passes over the child's head.
+                calls shouldBe 0
+                f.eye = Location(f.world, .2, 64.6, -2.0)
+                click() // Inside the adult width, outside the child's width.
+                calls shouldBe 0
+                f.eye = Location(f.world, .1, 64.6, -2.0)
+                click()
+                calls shouldBe 1
+                actor.scale = 1.0
+                f.refresh()
+                f.eye = Location(f.world, .2, 65.62, -2.0)
+                click()
+                calls shouldBe 2
+            }
+        }
+    }
 })
 
 private class NpcFixture : AutoCloseable {

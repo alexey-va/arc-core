@@ -50,8 +50,16 @@ class PacketPlayerNpc internal constructor(
     val location: Location get() { owner.checkThread(); return position.clone().also { it.yaw = bodyYaw; it.pitch = pitch } }
     val world: World get() { owner.checkThread(); return requireNotNull(position.world) }
     val isValid: Boolean get() = active && !owner.closed
-    val height: Double get() = when (pose) { PacketNpcPose.STANDING -> 1.8; PacketNpcPose.CROUCHING -> 1.5; PacketNpcPose.SLEEPING -> 0.2 }
-    val eyeHeight: Double get() = when (pose) { PacketNpcPose.STANDING -> 1.62; PacketNpcPose.CROUCHING -> 1.27; PacketNpcPose.SLEEPING -> 0.2 }
+    // Native 1.21.11 keeps SLEEPING_DIMENSIONS fixed; other poses scale their dimensions.
+    val height: Double get() = when (pose) { PacketNpcPose.STANDING -> 1.8 * scale; PacketNpcPose.CROUCHING -> 1.5 * scale; PacketNpcPose.SLEEPING -> 0.2 }
+    val eyeHeight: Double get() = when (pose) { PacketNpcPose.STANDING -> 1.62 * scale; PacketNpcPose.CROUCHING -> 1.27 * scale; PacketNpcPose.SLEEPING -> 0.2 }
+    /** Native minecraft:scale; no display proxy or server entity is created. */
+    var scale: Double = 1.0
+        set(value) {
+            owner.checkThread()
+            require(value.isFinite() && value in 0.25..2.0) { "NPC scale must be finite and between 0.25 and 2.0" }
+            field = value
+        }
     var bodyYaw: Float = location.yaw
         set(value) { owner.checkThread(); require(value.isFinite()); field = value }
     var headYaw: Float = location.yaw
@@ -131,7 +139,7 @@ class PacketPlayerNpc internal constructor(
         quantize(position.x), quantize(position.y), quantize(position.z),
         angle(bodyYaw), angle(headYaw), angle(pitch), pose,
         bed?.takeIf { pose == PacketNpcPose.SLEEPING }?.let { PacketNpcBed(it.blockX, it.blockY, it.blockZ) },
-        equipment, swing, hurt, lifetime,
+        equipment, swing, hurt, lifetime, scale = scale,
     )
 
     internal fun lease(viewerId: UUID): PacketNpcLease? = owner.lease(viewerId, entityId)
@@ -151,6 +159,7 @@ internal data class PacketNpcFrame(
     val equipment: Map<PacketSlot, PacketItem>,
     val swing: Long, val hurt: Long, val lifetime: AtomicBoolean,
     val audience: AtomicBoolean = AtomicBoolean(true),
+    val scale: Double = 1.0,
 ) {
     val chunkKey: Long get() = (floor(x).toInt().shr(4).toLong() and 0xffffffffL) or (floor(z).toInt().shr(4).toLong() shl 32)
     val teamName: String get() = "arcnpc${entityId.toString(36)}"

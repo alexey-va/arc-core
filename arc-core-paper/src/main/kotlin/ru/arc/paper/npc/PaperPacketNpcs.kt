@@ -184,7 +184,7 @@ class PaperPacketNpcs internal constructor(
         val location = actor.location
         if (player.location.distanceSquared(location) > actor.viewRange * actor.viewRange) return
         val reach = (player.getAttribute(Attribute.ENTITY_INTERACTION_RANGE)?.value ?: 3.0).coerceIn(0.0, 6.0) + 0.1
-        val halfWidth = if (actor.pose == PacketNpcPose.SLEEPING) 0.1 else 0.3
+        val halfWidth = if (actor.pose == PacketNpcPose.SLEEPING) 0.1 else 0.3 * actor.scale
         val box = BoundingBox(location.x - halfWidth, location.y, location.z - halfWidth,
             location.x + halfWidth, location.y + actor.height, location.z + halfWidth)
         val hit = box.rayTrace(eye.toVector(), eye.direction, reach) ?: return

@@ -7,6 +7,7 @@ import com.github.retrooper.packetevents.event.UserDisconnectEvent
 import com.github.retrooper.packetevents.manager.player.PlayerManager
 import com.github.retrooper.packetevents.manager.server.ServerManager
 import com.github.retrooper.packetevents.manager.server.ServerVersion
+import com.github.retrooper.packetevents.protocol.attribute.Attributes
 import com.github.retrooper.packetevents.protocol.ConnectionState
 import com.github.retrooper.packetevents.protocol.entity.pose.EntityPose
 import com.github.retrooper.packetevents.protocol.item.ItemStack
@@ -61,6 +62,11 @@ class PacketNpcTransportTest : FreeSpec({
         backend.writes.filterIsInstance<WrapperPlayServerEntityMetadata>().forEach {
             it.entityMetadata.single { value -> value.index == 16 }.value shouldBe 0x7f.toByte()
         }
+        backend.writes.filterIsInstance<WrapperPlayServerUpdateAttributes>().size shouldBe 48
+        backend.writes.filterIsInstance<WrapperPlayServerUpdateAttributes>().forEach {
+            it.properties.single().attribute shouldBe Attributes.SCALE
+            it.properties.single().value shouldBe 1.0
+        }
         backend.clear()
         repeat(10) { connection.submit(actors); backend.runAll() }
         backend.writes.size shouldBe 0
@@ -95,6 +101,37 @@ class PacketNpcTransportTest : FreeSpec({
         backend.writes.filterIsInstance<WrapperPlayServerEntityRelativeMoveAndRotation>().single().deltaX shouldBe 2.0 + 99 / 4096.0
         backend.writes.filterIsInstance<WrapperPlayServerEntityAnimation>().size shouldBe 1
         backend.writes.filterIsInstance<WrapperPlayServerSpawnEntity>().size shouldBe 0
+        java.lang.ref.Reference.reachabilityFence(channel)
+    }
+
+    "native scale is sent after spawn and only the latest changed value updates the same actor" {
+        val backend = NpcBackend()
+        val channel = Any()
+        val connection = PacketNpcConnection(channel, Logger.getAnonymousLogger(), backend)
+        val child = npcFrame().copy(scale = .5)
+        connection.submit(listOf(child)); backend.runAll()
+        val scale = backend.writes.filterIsInstance<WrapperPlayServerUpdateAttributes>().single()
+        scale.entityId shouldBe child.entityId
+        scale.properties.single().attribute shouldBe Attributes.SCALE
+        scale.properties.single().value shouldBe .5
+        scale.properties.single().modifiers shouldBe emptyList()
+        (backend.writes.indexOfFirst { it is WrapperPlayServerSpawnEntity } < backend.writes.indexOf(scale)) shouldBe true
+        val admitted = connection.lease(child.entityId)
+        backend.clear()
+        connection.submit(listOf(child)); backend.runAll()
+        backend.writes shouldBe emptyList()
+        backend.ordinary = false
+        connection.submit(listOf(child.copy(scale = .75))); backend.runOne()
+        connection.submit(listOf(child.copy(scale = 1.0)))
+        connection.submit(listOf(child.copy(scale = 1.25)))
+        backend.ordinary = true
+        backend.runAll()
+        backend.writes.size shouldBe 1
+        backend.writes.filterIsInstance<WrapperPlayServerUpdateAttributes>().single().properties.single().value shouldBe 1.25
+        (connection.lease(child.entityId) === admitted) shouldBe true
+        backend.clear()
+        connection.submit(listOf(child.copy(scale = 1.25)), resetAll = true); backend.runAll()
+        backend.writes.filterIsInstance<WrapperPlayServerUpdateAttributes>().single().properties.single().value shouldBe 1.25
         java.lang.ref.Reference.reachabilityFence(channel)
     }
 
