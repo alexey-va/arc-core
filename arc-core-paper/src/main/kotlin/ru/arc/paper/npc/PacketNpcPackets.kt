@@ -1,6 +1,7 @@
 package ru.arc.paper.npc
 
 import com.github.retrooper.packetevents.protocol.attribute.Attributes
+import com.github.retrooper.packetevents.protocol.entity.EntityPositionData
 import com.github.retrooper.packetevents.protocol.entity.data.EntityData
 import com.github.retrooper.packetevents.protocol.entity.data.EntityDataTypes
 import com.github.retrooper.packetevents.protocol.entity.pose.EntityPose
@@ -56,7 +57,11 @@ internal object PacketNpcPackets {
             if (abs(dx) < 8.0 && abs(dy) < 8.0 && abs(dz) < 8.0) {
                 add(WrapperPlayServerEntityRelativeMoveAndRotation(frame.entityId, dx, dy, dz, frame.bodyYaw, frame.pitch, true))
             } else {
-                add(WrapperPlayServerEntityTeleport(frame.entityId, Vector3d(frame.x, frame.y, frame.z), frame.bodyYaw, frame.pitch, true))
+                // In 1.21.11 ENTITY_TELEPORT moves the render position but leaves the
+                // client's VecDeltaCodec base unchanged. POSITION_SYNC resets both;
+                // the next relative step must start at the new authoritative position.
+                add(WrapperPlayServerEntityPositionSync(frame.entityId,
+                    EntityPositionData(Vector3d(frame.x, frame.y, frame.z), Vector3d.zero(), frame.bodyYaw, frame.pitch), true))
             }
         }
         if (old.headYaw != frame.headYaw) add(WrapperPlayServerEntityHeadLook(frame.entityId, frame.headYaw))

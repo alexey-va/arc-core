@@ -17,6 +17,7 @@ import com.github.retrooper.packetevents.protocol.player.EquipmentSlot
 import com.github.retrooper.packetevents.protocol.player.User
 import com.github.retrooper.packetevents.protocol.player.UserProfile
 import com.github.retrooper.packetevents.settings.PacketEventsSettings
+import com.github.retrooper.packetevents.util.Vector3d
 import com.github.retrooper.packetevents.wrapper.PacketWrapper
 import com.github.retrooper.packetevents.wrapper.play.server.*
 import io.kotest.core.spec.style.FreeSpec
@@ -82,6 +83,38 @@ class PacketNpcTransportTest : FreeSpec({
         backend.clear()
         connection.submit(walking); backend.runAll()
         backend.writes.size shouldBe 0
+        java.lang.ref.Reference.reachabilityFence(channel)
+    }
+
+    "summon then supplies and resumed walking use the new client delta base without respawning" {
+        val backend = NpcBackend()
+        val channel = Any()
+        val connection = PacketNpcConnection(channel, Logger.getAnonymousLogger(), backend)
+        val client = NpcClientPosition12111()
+        fun display(frame: PacketNpcFrame) {
+            backend.clear()
+            connection.submit(listOf(frame)); backend.runAll()
+            backend.writes.forEach(client::accept)
+        }
+        val previous = npcFrame().copy(x = -70.5, y = 71.0, z = -50.5)
+        display(previous)
+        val lease = connection.lease(previous.entityId)
+        val summoned = previous.copy(x = -49.5, y = 71.0, z = -36.5)
+        display(summoned)
+        client.position shouldBe Vector3d(summoned.x, summoned.y, summoned.z)
+        val seeds = ItemStack.builder().type(ItemTypes.WHEAT_SEEDS).amount(1).version(ClientVersion.V_1_21_11).build()
+        val supplied = summoned.copy(equipment = mapOf(EquipmentSlot.MAIN_HAND to seeds))
+        display(supplied)
+        backend.writes.filterIsInstance<WrapperPlayServerEntityEquipment>().size shouldBe 1
+        client.position shouldBe Vector3d(summoned.x, summoned.y, summoned.z)
+        val walking = supplied.copy(x = supplied.x + .125, z = supplied.z + .0625, bodyYaw = 45f)
+        display(walking)
+        backend.writes.filterIsInstance<WrapperPlayServerEntityRelativeMoveAndRotation>().size shouldBe 1
+        // With ENTITY_TELEPORT this decodes against previous, visibly rewinding 25 blocks
+        // despite the authoritative actor continuing normally from the summoned location.
+        client.position shouldBe Vector3d(walking.x, walking.y, walking.z)
+        client.deltaBase shouldBe client.position
+        (connection.lease(walking.entityId) === lease) shouldBe true
         java.lang.ref.Reference.reachabilityFence(channel)
     }
 
@@ -359,6 +392,29 @@ internal fun npcFrame(id: Int = 1) = PacketNpcFrame(
     id, PacketNpcProfile(UUID(0, id.toLong()), "npc$id", null, null), UUID(0, 99),
     0.0, 64.0, 0.0, 0f, 0f, 0f, PacketNpcPose.STANDING, null, emptyMap(), 0, 0, AtomicBoolean(true),
 )
+
+/** The position branches of the pinned 1.21.11 ClientPacketListener and VecDeltaCodec. */
+private class NpcClientPosition12111 {
+    var position: Vector3d = Vector3d.zero()
+        private set
+    var deltaBase: Vector3d = Vector3d.zero()
+        private set
+
+    fun accept(packet: PacketWrapper<*>) {
+        when (packet) {
+            is WrapperPlayServerSpawnEntity -> { position = packet.position; deltaBase = position }
+            is WrapperPlayServerEntityPositionSync -> { position = packet.values.position; deltaBase = position }
+            is WrapperPlayServerEntityTeleport -> position = packet.position // Deliberately does not update VecDeltaCodec.
+            is WrapperPlayServerEntityRelativeMoveAndRotation -> {
+                fun decode(base: Double, delta: Double): Double = if (delta == 0.0) base
+                    else (Math.round(base * 4096.0) + Math.round(delta * 4096.0)) / 4096.0
+                position = Vector3d(decode(deltaBase.x, packet.deltaX), decode(deltaBase.y, packet.deltaY),
+                    decode(deltaBase.z, packet.deltaZ))
+                deltaBase = position
+            }
+        }
+    }
+}
 
 internal class NpcBackend : PacketDisplayChannelBackend {
     val tasks = ArrayDeque<() -> Unit>()

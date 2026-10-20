@@ -43,7 +43,10 @@ profile and deletes its team.
 changes use relative move/look packets, preserving the vanilla remote-player
 walking interpolation. Coordinates are quantized to 1/4096 block before computing
 deltas, so rounding does not accumulate. A displacement of eight blocks or more
-uses an absolute teleport; a world change retires the previous generation.
+on any axis uses `ENTITY_POSITION_SYNC`, updating both the client position and its
+relative-movement base; a world change retires the previous generation. The
+1.21.11 `ENTITY_TELEPORT` handler leaves that base unchanged, so using it here
+would rewind the first subsequent walking step to the position before the jump.
 `bodyYaw`, `headYaw` and `pitch` are independent presentation controls.
 `scale` defaults to 1.0 and accepts finite values from 0.25 through 2.0. It sends
 the native `minecraft:scale` attribute on spawn and only on later scale changes,
@@ -117,7 +120,8 @@ extends `Avatar`, the historical player skin index 17 is incorrect. The checked
 PacketEvents 2.12.1 wrappers provide the matching metadata types and constructors.
 Do not broaden this version contract by reusing remembered indices.
 
-`PacketNpcTransportTest` covers 48 actors, idle deltas, relative movement, latest
+`PacketNpcTransportTest` covers 48 actors, idle deltas, relative movement, a summon
+followed by an equipment update and walking through the 1.21.11 position decoder, latest
 frame admission, sleep/equipment/gestures, lifecycle replay, input admission,
 partial-write retirement and display/carrier ordering.
 `PaperPacketNpcsTest` covers viewer world/range/chunk/session changes, main-thread
