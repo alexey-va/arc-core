@@ -491,7 +491,7 @@ private class PanelFixture(paper: MockBukkitTestRuntime, val profile: ActionPane
         displays = testPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), object : TestPacketDisplayAudience() {
             override fun checkThread() = Unit
             override fun capture() = listOf(PacketDisplayViewer(player, playerId, worldId, 1, emptySet(),
-                body.x, body.y, body.z, (-1..1).flatMap { x -> (-1..1).map { z -> Chunk.getChunkKey(x, z) } }.toSet()))
+                body.x, body.y, body.z, (-1..1).flatMap { x -> (-1..1).map { z -> Chunk.getChunkKey(x, z) } }.toSet(), height = 1.8))
         })
         current = frame("first")
         panels = PaperActionPanels(plugin, displays, object : ActionPanelController<String, String>() {

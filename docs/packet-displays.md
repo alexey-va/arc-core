@@ -92,9 +92,11 @@ passenger-local pose, and `teleport(location)` records the world position used b
 `detach()`. Set the local translation/rotation explicitly: the Core does not
 choose a hand/shoulder anchor or promise yaw inheritance. The caller must account
 for the native passenger attachment point when converting a feet-relative pose to
-this passenger-local transform; Core does not compensate for player height. Paper
-describes display passengers as appearing above the vehicle's head; the exact
-position is client-version behavior
+this passenger-local transform. Core snapshots the carrier's current native height
+and spawns the display at feet plus that height, preserving the local transform.
+This matches the 1.21.11 player passenger origin even before a rate-limited
+passenger link is admitted; it does not choose or alter the consumer's local pose.
+Paper describes display passengers as appearing above the vehicle's head
 ([Paper display entity docs](https://docs.papermc.io/paper/dev/display-entities/)).
 
 For each viewer, Core sends spawn+initial metadata before the passenger link, and

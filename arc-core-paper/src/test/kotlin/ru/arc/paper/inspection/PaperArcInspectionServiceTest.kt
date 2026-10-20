@@ -243,7 +243,7 @@ private class MutableAudience(private val player: Player) : TestPacketDisplayAud
         return if (player.isOnline) listOf(
             PacketDisplayViewer(
                 player, player.uniqueId, player.world.uid, player.entityId, emptySet(),
-                location.x, location.y, location.z, setOf(0L), player.passengers.map { it.entityId },
+                location.x, location.y, location.z, setOf(0L), player.passengers.map { it.entityId }, height = 1.8,
             ),
         ) else emptyList()
     }

@@ -506,7 +506,7 @@ private class SceneFixture(paper: MockBukkitTestRuntime) : AutoCloseable {
                 audienceCaptures++
                 return (if (present) listOf(player,other) else emptyList()).map { p -> PacketDisplayViewer(p,p.uniqueId,worldId,
                     if (p===player) 1 else 2, emptySet(),0.0,64.0,0.0,
-                    (-2..2).flatMap { x -> (-2..2).map { z -> Chunk.getChunkKey(x,z) } }.toSet()) }
+                    (-2..2).flatMap { x -> (-2..2).map { z -> Chunk.getChunkKey(x,z) } }.toSet(), height = 1.8) }
             }
         })
         controls = PaperSpatialControls(plugin, displays, object : SpatialControlController<String,String>() {

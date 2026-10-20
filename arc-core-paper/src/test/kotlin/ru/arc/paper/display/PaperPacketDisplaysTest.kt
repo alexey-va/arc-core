@@ -308,9 +308,13 @@ class PaperPacketDisplaysTest : FreeSpec({
             testPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), audience).use { displays ->
                 val display = displays.spawnText(Location(world, 1.0, 64.0, 1.0), Component.text("Held"))
                 display.attachTo(carrier)
+                display.transformation = Transformation(Vector3f(0f, .35f, 0f), Quaternionf(), Vector3f(1f), Quaternionf())
                 displays.refreshFully()
 
-                transport.forPlayer(carrier).last().frames.single().attachmentVehicleId shouldBe carrier.entityId
+                val initial = transport.forPlayer(carrier).last().frames.single()
+                initial.attachmentVehicleId shouldBe carrier.entityId
+                initial.y shouldBe 65.8
+                initial.metadata.transform.translation.y shouldBe .35f
                 transport.connections.containsKey(bystander.uniqueId) shouldBe false
 
                 audience.values = listOf(
@@ -332,6 +336,7 @@ class PaperPacketDisplaysTest : FreeSpec({
                 displays.refreshFully()
                 replacement.last().passengers shouldBe emptyMap()
                 replacement.last().frames.single().x shouldBe 3.0
+                replacement.last().frames.single().y shouldBe 66.0
             }
         }
     }
@@ -355,15 +360,17 @@ class PaperPacketDisplaysTest : FreeSpec({
                     val first = transport.forPlayer(observer).last()
                     first.passengers shouldBe mapOf(carrier.entityId to listOf(label.entityId))
                     first.frames.single().attachmentVehicleId shouldBe carrier.entityId
+                    first.frames.single().y shouldBe 65.8
                     carrier.sentChunkReads shouldBe 0
                     transport.connections.containsKey(carrier.uniqueId) shouldBe false
 
                     carrier.setLocation(Location(world, 4.0, 65.0, 1.0))
+                    carrier.nativeHeight = 1.5
                     displays.refreshFully()
                     val moving = transport.forPlayer(observer).last().frames.single()
                     moving.entityId shouldBe first.frames.single().entityId
                     moving.x shouldBe 4.0
-                    moving.y shouldBe 65.0
+                    moving.y shouldBe 66.5
                     carrier.sentChunkReads shouldBe 0
 
                     carrier.observers = emptySet()
@@ -439,7 +446,7 @@ private fun viewer(
     trackedBy: Set<UUID> = emptySet(),
 ) = PacketDisplayViewer(
     player, player.uniqueId, world, player.entityId, trackedBy, x, 64.0, 1.0, chunks,
-    player.passengers.map { it.entityId },
+    player.passengers.map { it.entityId }, height = 1.8,
 )
 
 private class MutableAudience : TestPacketDisplayAudience() {
@@ -452,11 +459,13 @@ private class RespawnAudiencePlayer(server: ServerMock, name: String) : PlayerMo
     var inWorld = true
     var sentChunkReads = 0
     var observers = emptySet<Player>()
+    var nativeHeight = 1.8
 
     // CraftEntity on Purpur 1.21.11-2568 requires both isAlive() and Entity.valid;
     // MockBukkit's default isValid() checks removal only.
     override fun isValid(): Boolean = !isDead && inWorld
     override fun getTrackedBy(): Set<Player> = observers
+    override fun getHeight(): Double = nativeHeight
     override fun getSentChunkKeys(): Set<Long> {
         sentChunkReads++
         if (!inWorld) throw NullPointerException("Native player chunk loader is detached")

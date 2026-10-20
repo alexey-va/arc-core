@@ -110,7 +110,7 @@ class PaperPacketDisplayBudgetTest : FreeSpec({
                 val audience = object : TestPacketDisplayAudience() {
                     override fun checkThread() = Unit
                     override fun capture() = players.map { PacketDisplayViewer(it, it.uniqueId, world.uid, it.entityId,
-                        emptySet(), 0.0, 64.0, 0.0, setOf(0L)) }
+                        emptySet(), 0.0, 64.0, 0.0, setOf(0L), height = 1.8) }
                 }
                 val displays = PaperPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), audience,
                     work, false, cleanup, java.util.function.LongSupplier { tick })
@@ -332,7 +332,7 @@ class PaperPacketDisplayBudgetTest : FreeSpec({
 private fun fixedAudience(player: Player?, world: UUID) = object : TestPacketDisplayAudience() {
     override fun checkThread() = Unit
     override fun capture() = player?.let { listOf(PacketDisplayViewer(it, it.uniqueId, world, it.entityId,
-        emptySet(), 0.0, 64.0, 0.0, setOf(0L))) }.orEmpty()
+        emptySet(), 0.0, 64.0, 0.0, setOf(0L), height = 1.8)) }.orEmpty()
 }
 private class QueueCleanup : ArcNativeCleanupService {
     val scheduler = TestTaskScheduler()

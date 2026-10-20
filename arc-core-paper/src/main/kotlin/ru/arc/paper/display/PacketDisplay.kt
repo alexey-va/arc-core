@@ -92,7 +92,8 @@ sealed class PacketDisplay protected constructor(
      * Mounts this client-only display on a native [player], including a Citizens player NPC,
      * without creating a server entity. NPC carriers need no online connection. The existing
      * [transformation] becomes the passenger-local pose; the last [teleport] location remains its
-     * detached position.
+     * detached position. Initial spawn uses the native passenger origin above the carrier's
+     * feet, so delayed passenger-link admission does not first show the local pose at its feet.
      */
     fun attachTo(player: Player) {
         owner.checkThread()
@@ -164,7 +165,7 @@ sealed class PacketDisplay protected constructor(
             entityId = entityId,
             uuid = uniqueId,
             x = attachedPlayer?.x ?: position.x,
-            y = attachedPlayer?.y ?: position.y,
+            y = attachedPlayer?.let { it.y + it.height } ?: position.y,
             z = attachedPlayer?.z ?: position.z,
             yaw = position.yaw,
             pitch = position.pitch,

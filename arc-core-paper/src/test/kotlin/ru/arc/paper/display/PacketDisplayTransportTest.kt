@@ -28,7 +28,8 @@ class PacketDisplayTransportTest : FreeSpec({
 
     "AFK pauses front-facing motion content and new spawns but preserves privacy removal and latest resume" {
         val backend = RecordingPacketBackend()
-        val connection = PacketDisplayAttachment(Any(), Logger.getAnonymousLogger(), backend)
+        val channel = Any()
+        val connection = PacketDisplayAttachment(channel, Logger.getAnonymousLogger(), backend)
         val active = PacketDisplayView(0.0, 64.0, 0.0, 0.0, 0.0, 1.0)
         val afk = active.copy(afk = true)
         val first = frame().copy(z = 8.0, metadata = frame().metadata.copy(interpolationDuration = 1, teleportDuration = 1))
@@ -51,6 +52,7 @@ class PacketDisplayTransportTest : FreeSpec({
         backend.clear()
         connection.submitViewAsync(listOf(latest, added), active); backend.runAll()
         backend.writes.filterIsInstance<WrapperPlayServerEntityMetadata>().single().metadataValue(9) shouldBe 1
+        java.lang.ref.Reference.reachabilityFence(channel)
     }
 
     "AFK initial scenes and chunk replays defer spawns while reset and terminal cleanup remain active" {
@@ -670,15 +672,20 @@ class PacketDisplayTransportTest : FreeSpec({
         backend.writes.filterIsInstance<WrapperPlayServerSetPassengers>().single().passengers.toList() shouldBe listOf(11)
     }
 
-    "mount admission retries without a passenger link before spawn and metadata are admitted" {
+    "delayed mount admission keeps the initial display at its captured passenger origin" {
         val backend = RecordingPacketBackend().apply { ordinaryTransactions = 1 }
         val connection = PacketDisplayAttachment(Any(), Logger.getAnonymousLogger(), backend)
-        val mounted = frame().copy(attachmentVehicleId = 77)
+        val initial = frame()
+        val mounted = initial.copy(y = 65.8, attachmentVehicleId = 77,
+            metadata = initial.metadata.copy(transform = DisplayTransform(translation = DisplayVector(0f, .35f, 0f))))
         connection.submit(listOf(mounted), desiredPassengers = mapOf(77 to listOf(mounted.entityId)))
         backend.tasks.removeFirst().invoke()
         backend.writes.filterIsInstance<WrapperPlayServerSpawnEntity>().size shouldBe 1
         backend.writes.filterIsInstance<WrapperPlayServerEntityMetadata>().size shouldBe 1
         backend.writes.filterIsInstance<WrapperPlayServerSetPassengers>().size shouldBe 0
+        backend.writes.filterIsInstance<WrapperPlayServerSpawnEntity>().single().position.y shouldBe 65.8
+        (backend.writes.filterIsInstance<WrapperPlayServerEntityMetadata>().single().metadataValue(11)
+            as com.github.retrooper.packetevents.util.Vector3f).y shouldBe .35f
 
         backend.ordinaryTransactions = 1
         backend.runAll()

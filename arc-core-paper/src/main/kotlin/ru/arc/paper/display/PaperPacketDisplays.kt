@@ -403,6 +403,8 @@ internal data class PacketDisplayViewer(
     val sentChunks: Set<Long>,
     val passengerEntityIds: List<Int> = emptyList(),
     val view: PacketDisplayView? = null,
+    /** Native player passenger origin is at its current, pose/scale-aware height. */
+    val height: Double,
 )
 
 internal object BukkitPacketDisplayAudience : PacketDisplayAudienceSource {
@@ -431,13 +433,14 @@ internal object BukkitPacketDisplayAudience : PacketDisplayAudienceSource {
         val location = player.location
         val worldId = player.world.uid
         val entityId = player.entityId
+        val height = player.height
         val tracked = hashSetOf<UUID>()
         for (observer in player.getTrackedBy()) { tracked.add(observer.uniqueId); yield(Unit) }
         val passengers = arrayListOf<Int>()
         for (passenger in player.passengers) { passengers.add(passenger.entityId); yield(Unit) }
         if (player.isValid && player.world.uid == worldId && player.entityId == entityId) {
             accept(PacketDisplayViewer(player, player.uniqueId, worldId, entityId, tracked,
-                location.x, location.y, location.z, emptySet(), passengers))
+                location.x, location.y, location.z, emptySet(), passengers, height = height))
         }
         yield(Unit)
     }.iterator()
