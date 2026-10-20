@@ -4,6 +4,8 @@ import ru.arc.paper.api.*
 import java.nio.file.Path
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
+import java.util.function.BooleanSupplier
+import java.util.function.Consumer
 
 /** Stable native service identity while the host prepares its file-backed limits. */
 internal class PreparingSchematicService : ArcSchematicService, AutoCloseable {
@@ -97,6 +99,20 @@ internal class PreparingSchematicService : ArcSchematicService, AutoCloseable {
         }
 
         override fun paste(snapshot: ArcSchematicSnapshot, target: ArcSchematicPasteTarget, options: ArcSchematicPasteOptions) = active().paste(snapshot, target, options)
+        override fun paste(
+            snapshot: ArcSchematicSnapshot,
+            target: ArcSchematicPasteTarget,
+            options: ArcSchematicPasteOptions,
+            acceptedBlock: Consumer<ArcSchematicBlock>,
+        ) = active().paste(snapshot, target, options, acceptedBlock)
+        override fun paste(
+            snapshot: ArcSchematicSnapshot,
+            target: ArcSchematicPasteTarget,
+            options: ArcSchematicPasteOptions,
+            onPlaced: Consumer<ArcSchematicBlock>,
+            ready: BooleanSupplier,
+            intervalTicks: Int,
+        ) = active().paste(snapshot, target, options, onPlaced, ready, intervalTicks)
         override fun repairConnections(worldId: UUID, blocks: List<ArcSchematicBlock>) = active().repairConnections(worldId, blocks)
 
         override fun close() {

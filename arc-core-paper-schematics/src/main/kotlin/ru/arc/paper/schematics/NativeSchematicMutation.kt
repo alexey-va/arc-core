@@ -24,6 +24,9 @@ import java.util.AbstractList
 import java.util.BitSet
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
+import java.util.function.BooleanSupplier
+import java.util.function.Consumer
+import java.util.logging.Level
 
 /** Constructed on a worker. All world access belongs to [step] on the Paper thread. */
 internal class NativeSchematicMutation private constructor(
@@ -32,6 +35,9 @@ internal class NativeSchematicMutation private constructor(
     private val cells: List<ArcSchematicBlock>,
     private val source: SchematicSnapshot?,
     private val options: ArcSchematicPasteOptions,
+    private var acceptedBlock: Consumer<ArcSchematicBlock>?,
+    private val placementReady: BooleanSupplier?,
+    private val intervalTicks: Int,
 ) : SchematicMainThread.Work {
     val completion = CompletableFuture<ArcSchematicMutationResult>()
     private val lock = Any()
@@ -46,6 +52,8 @@ internal class NativeSchematicMutation private constructor(
     private var chunkIndex = 0
     private val minimumY: Int
     private val maximumY: Int
+    private var tick = 0L
+    private var nextTick = 0L
 
     init {
         val needed = LinkedHashSet<Pair<Int, Int>>()
@@ -64,6 +72,11 @@ internal class NativeSchematicMutation private constructor(
     }
 
     override val done get() = completion.isDone
+
+    override fun canRun(tick: Long): Boolean {
+        this.tick = tick
+        return placementReady == null || tick >= nextTick
+    }
 
     fun cancel(): Boolean {
         val result = synchronized(lock) {
@@ -89,8 +102,10 @@ internal class NativeSchematicMutation private constructor(
 
     override fun step(budget: Int): Int {
         var result: ArcSchematicMutationResult? = null
-        val used = synchronized(lock) {
+        val accepted = if (acceptedBlock == null) null else mutableListOf<ArcSchematicBlock>()
+        val used = try { synchronized(lock) {
             if (completion.isDone || cancelled) return 0
+            if (placementReady != null && tick < nextTick) return 0
             check(Bukkit.isPrimaryThread()) { "Schematic world mutations require the Paper primary thread" }
             val world = Bukkit.getWorld(worldId) ?: failure(ArcSchematicFailure.WORLD_UNAVAILABLE, "Schematic target world is unavailable")
             if (cells.isNotEmpty() && (minimumY < world.minHeight || maximumY >= world.maxHeight)) {
@@ -108,6 +123,7 @@ internal class NativeSchematicMutation private constructor(
             }
             if (chunkIndex < chunks.size) return@synchronized consumed
             val nativeWorld = BukkitAdapter.adapt(world)
+            var acceptedUnit = false
             while (index < cells.size && consumed < budget) {
                 if (!repairing && placedCompanions[index]) {
                     // The companion was charged when written; charge this bookkeeping visit too so a full
@@ -118,17 +134,27 @@ internal class NativeSchematicMutation private constructor(
                 }
                 val cell = cells[index]
                 val pos = cell.position
+                val ignored = (options.ignoreAir && cell.isAir) || (options.ignoreBarriers && cell.isBarrier)
+                if (placementReady != null && acceptedUnit && (repairing || !ignored)) break
                 if (!world.isChunkLoaded(pos.x shr 4, pos.z shr 4)) failure(ArcSchematicFailure.WORLD_UNAVAILABLE, "Schematic target chunk unloaded during mutation")
+                val before = changed
+                if (placementReady != null && (repairing || !ignored)) {
+                    if (!placementReady.asBoolean) {
+                        nextTick = tick + 1
+                        break
+                    }
+                    if (completion.isDone || cancelled) break
+                }
                 if (repairing) {
                     repair(world, nativeWorld, cell)
-                } else if ((options.ignoreAir && cell.isAir) || (options.ignoreBarriers && cell.isBarrier)) {
+                } else if (ignored) {
                     skipped++
                 } else {
                     val snapshot = checkNotNull(source)
                     val companion = companionIndex(snapshot, index)
                     if (companion == null) {
                         requirePermission(pos)
-                        write(nativeWorld, snapshot, index)
+                        write(nativeWorld, snapshot, index, accepted)
                     } else {
                         val primary = if (checkNotNull(pairStates)[snapshot.paletteIndex(index)]!!.primary) index else companion
                         val secondary = if (primary == index) companion else index
@@ -139,14 +165,18 @@ internal class NativeSchematicMutation private constructor(
                             requirePermission(position)
                         }
                         // One native pair is indivisible: at most one block may exceed the remaining tick budget.
-                        write(nativeWorld, snapshot, primary)
-                        write(nativeWorld, snapshot, secondary)
+                        write(nativeWorld, snapshot, primary, accepted)
+                        write(nativeWorld, snapshot, secondary, accepted)
                         placedCompanions.set(companion)
                         consumed++
                     }
                 }
                 index++
                 consumed++
+                if (placementReady != null && changed != before) {
+                    nextTick = tick + intervalTicks
+                    acceptedUnit = true
+                }
             }
             if (index == cells.size) {
                 if (!repairing && options.repairConnections) {
@@ -157,6 +187,10 @@ internal class NativeSchematicMutation private constructor(
                 }
             }
             consumed
+        } } finally {
+            // Emit after the indivisible native batch: a reentrant observer cancellation cannot
+            // complete the operation while this same batch still has world writes to perform.
+            accepted?.forEach(::observeAccepted)
         }
         result?.let(completion::complete)
         return used
@@ -179,12 +213,29 @@ internal class NativeSchematicMutation private constructor(
             !(options.ignoreAir && cell.isAir) && !(options.ignoreBarriers && cell.isBarrier) }
     }
 
-    private fun write(nativeWorld: com.sk89q.worldedit.world.World, snapshot: SchematicSnapshot, index: Int) {
+    private fun write(nativeWorld: com.sk89q.worldedit.world.World, snapshot: SchematicSnapshot, index: Int, accepted: MutableList<ArcSchematicBlock>?) {
         val pos = cells[index].position
         val state = snapshot.entry(index).native
         val nbt = snapshot.nbt(index)
         val full = if (nbt == null) state.toBaseBlock() else state.toBaseBlock(LazyReference.computed(nbt))
-        if (nativeWorld.setBlock(BlockVector3.at(pos.x, pos.y, pos.z), full, WRITE_EFFECTS)) changed++ else skipped++
+        if (nativeWorld.setBlock(BlockVector3.at(pos.x, pos.y, pos.z), full, WRITE_EFFECTS)) {
+            changed++
+            accepted?.add(cells[index])
+        } else skipped++
+    }
+
+    private fun observeAccepted(block: ArcSchematicBlock) {
+        val observer = acceptedBlock ?: return
+        try {
+            observer.accept(block)
+        } catch (problem: Throwable) {
+            acceptedBlock = null
+            Bukkit.getLogger().log(
+                Level.WARNING,
+                "Schematic accepted-write observer disabled for owner=$owner world=$worldId position=${block.position}; native mutation continues",
+                problem,
+            )
+        }
     }
 
     private fun repair(world: World, nativeWorld: com.sk89q.worldedit.world.World, cell: ArcSchematicBlock) {
@@ -216,7 +267,18 @@ internal class NativeSchematicMutation private constructor(
             .with(SideEffect.POI_UPDATE, SideEffect.State.ON)
         private val REPAIR_EFFECTS = WRITE_EFFECTS.with(SideEffect.VALIDATION, SideEffect.State.ON)
 
-        fun paste(owner: String, snapshot: SchematicSnapshot, target: ArcSchematicPasteTarget, options: ArcSchematicPasteOptions): NativeSchematicMutation {
+        fun paste(
+            owner: String,
+            snapshot: SchematicSnapshot,
+            target: ArcSchematicPasteTarget,
+            options: ArcSchematicPasteOptions,
+            acceptedBlock: Consumer<ArcSchematicBlock>? = null,
+            ready: BooleanSupplier? = null,
+            intervalTicks: Int = 0,
+        ): NativeSchematicMutation {
+            require(ready == null && intervalTicks == 0 || ready != null && intervalTicks >= 1) {
+                "Paced schematic paste requires readiness and an interval of at least one tick"
+            }
             val cells = object : AbstractList<ArcSchematicBlock>() {
                 override val size get() = snapshot.volume.toInt()
                 override fun get(index: Int): ArcSchematicBlock {
@@ -229,11 +291,11 @@ internal class NativeSchematicMutation private constructor(
                     ))
                 }
             }
-            return NativeSchematicMutation(owner, target.worldId, cells, snapshot, options)
+            return NativeSchematicMutation(owner, target.worldId, cells, snapshot, options, acceptedBlock, ready, intervalTicks)
         }
 
         fun repair(owner: String, worldId: UUID, cells: List<ArcSchematicBlock>): NativeSchematicMutation =
-            NativeSchematicMutation(owner, worldId, cells, null, ArcSchematicPasteOptions(false, false, false))
+            NativeSchematicMutation(owner, worldId, cells, null, ArcSchematicPasteOptions(false, false, false), null, null, 0)
     }
 }
 

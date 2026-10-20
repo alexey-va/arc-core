@@ -34,6 +34,8 @@ import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.function.BooleanSupplier
+import java.util.function.Consumer
 
 /** Optional WorldEdit integration, installed and closed once by the ArcCore host. */
 class PaperSchematicServiceProvider(
@@ -406,6 +408,26 @@ internal class SharedSchematicService(
 
         override fun paste(snapshot: ArcSchematicSnapshot, target: ArcSchematicPasteTarget, options: ArcSchematicPasteOptions): ArcSchematicOperation =
             mutation { NativeSchematicMutation.paste(owner, owned(snapshot), target, options) }
+
+        override fun paste(
+            snapshot: ArcSchematicSnapshot,
+            target: ArcSchematicPasteTarget,
+            options: ArcSchematicPasteOptions,
+            acceptedBlock: Consumer<ArcSchematicBlock>,
+        ): ArcSchematicOperation =
+            mutation { NativeSchematicMutation.paste(owner, owned(snapshot), target, options, acceptedBlock) }
+
+        override fun paste(
+            snapshot: ArcSchematicSnapshot,
+            target: ArcSchematicPasteTarget,
+            options: ArcSchematicPasteOptions,
+            onPlaced: Consumer<ArcSchematicBlock>,
+            ready: BooleanSupplier,
+            intervalTicks: Int,
+        ): ArcSchematicOperation {
+            require(intervalTicks >= 1) { "Schematic paste interval must be at least one tick" }
+            return mutation { NativeSchematicMutation.paste(owner, owned(snapshot), target, options, onPlaced, ready, intervalTicks) }
+        }
 
         override fun repairConnections(worldId: UUID, blocks: List<ArcSchematicBlock>): ArcSchematicOperation = mutation {
             if (blocks.size > settings.maximumVolume) failure(ArcSchematicFailure.LIMIT_EXCEEDED, "Connection repair exceeds the block limit")

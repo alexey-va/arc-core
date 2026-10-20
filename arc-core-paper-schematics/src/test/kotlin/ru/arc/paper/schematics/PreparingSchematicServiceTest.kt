@@ -6,11 +6,47 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import ru.arc.paper.api.ArcSchematicLibrary
+import ru.arc.paper.api.ArcSchematicBlock
+import ru.arc.paper.api.ArcSchematicOperation
+import ru.arc.paper.api.ArcSchematicPasteOptions
+import ru.arc.paper.api.ArcSchematicPasteTarget
+import ru.arc.paper.api.ArcSchematicPoint
 import ru.arc.paper.api.ArcSchematicSnapshot
 import java.nio.file.Path
+import java.util.UUID
 import java.util.concurrent.CompletableFuture
+import java.util.function.BooleanSupplier
+import java.util.function.Consumer
 
 class PreparingSchematicServiceTest : FunSpec({
+    test("all paste signatures forward exact arguments to the active library") {
+        val facade = PreparingSchematicService()
+        val library = facade.open("paste", Path.of("root"))
+        val actual = mockk<ArcSchematicLibrary>(relaxed = true)
+        val service = mockk<SharedSchematicService>(relaxed = true)
+        every { service.open("paste", any()) } returns actual
+        facade.attach(service)
+        val snapshot = mockk<ArcSchematicSnapshot>()
+        val target = ArcSchematicPasteTarget(UUID(0, 1), ArcSchematicPoint(4, 64, 6))
+        val options = ArcSchematicPasteOptions(false, true, false)
+        val acceptedBlock = Consumer<ArcSchematicBlock> {}
+        val ready = BooleanSupplier { true }
+        val oldOperation = mockk<ArcSchematicOperation>()
+        val observedOperation = mockk<ArcSchematicOperation>()
+        val pacedOperation = mockk<ArcSchematicOperation>()
+        every { actual.paste(snapshot, target, options) } returns oldOperation
+        every { actual.paste(snapshot, target, options, acceptedBlock) } returns observedOperation
+        every { actual.paste(snapshot, target, options, acceptedBlock, ready, 5) } returns pacedOperation
+
+        library.paste(snapshot, target, options) shouldBe oldOperation
+        library.paste(snapshot, target, options, acceptedBlock) shouldBe observedOperation
+        library.paste(snapshot, target, options, acceptedBlock, ready, 5) shouldBe pacedOperation
+        verify(exactly = 1) { actual.paste(snapshot, target, options) }
+        verify(exactly = 1) { actual.paste(snapshot, target, options, acceptedBlock) }
+        verify(exactly = 1) { actual.paste(snapshot, target, options, acceptedBlock, ready, 5) }
+        facade.close()
+    }
+
     test("cold libraries wait for prepared limits without blocking or reading files") {
         val facade = PreparingSchematicService()
         val library = facade.open("consumer", Path.of("missing-root"))

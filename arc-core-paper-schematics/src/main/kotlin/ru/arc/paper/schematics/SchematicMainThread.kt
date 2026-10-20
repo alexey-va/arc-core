@@ -14,6 +14,8 @@ internal class SchematicMainThread(scheduler: TaskScheduler, private val setting
     internal interface Work {
         /** Returns consumed budget; [done] must become true when no work remains. */
         fun step(budget: Int): Int
+        /** Primary-thread, memory-only eligibility. False yields until a later tick. */
+        fun canRun(tick: Long): Boolean = true
         val done: Boolean
         fun fail(problem: Throwable)
     }
@@ -21,8 +23,10 @@ internal class SchematicMainThread(scheduler: TaskScheduler, private val setting
     private val monitor = Any()
     private val palettes = ArrayDeque<Work>()
     private val mutations = ArrayDeque<Work>()
+    private val waitingMutations = ArrayDeque<Work>()
     private var closed = false
     private var current: Work? = null
+    private var tick = 0L
     private val task: ScheduledTask = scheduler.runTimer(1, 1, Runnable(::tick))
 
     fun enqueueMutation(work: Work) = enqueue(mutations, work)
@@ -31,7 +35,7 @@ internal class SchematicMainThread(scheduler: TaskScheduler, private val setting
         // Release the queue's reference before request admission is released or
         // any client callback can submit another cancelled operation.
         val detached = completion.handle { value, problem ->
-            synchronized(monitor) { mutations.remove(work) }
+            synchronized(monitor) { mutations.remove(work); waitingMutations.remove(work) }
             if (problem != null) throw CompletionException(problem)
             value
         }
@@ -39,7 +43,7 @@ internal class SchematicMainThread(scheduler: TaskScheduler, private val setting
         return detached
     }
 
-    internal fun queuedMutations(): Int = synchronized(monitor) { mutations.size }
+    internal fun queuedMutations(): Int = synchronized(monitor) { mutations.size + waitingMutations.size }
 
     fun <T, R> palette(values: List<T>, convert: (T) -> R): CompletableFuture<List<R>> {
         val future = CompletableFuture<List<R>>()
@@ -70,19 +74,26 @@ internal class SchematicMainThread(scheduler: TaskScheduler, private val setting
     }
 
     private fun tick() {
+        tick++
+        synchronized(monitor) {
+            mutations.addAll(waitingMutations)
+            waitingMutations.clear()
+        }
         drain(palettes, settings.palettePerTick)
-        drain(mutations, settings.blocksPerTick)
+        drain(mutations, settings.blocksPerTick, waitingMutations)
     }
 
-    private fun drain(queue: ArrayDeque<Work>, maximum: Int) {
+    private fun drain(queue: ArrayDeque<Work>, maximum: Int, waiting: ArrayDeque<Work>? = null) {
         var remaining = maximum
         while (remaining > 0) {
             val work = synchronized(monitor) {
                 if (closed) null else queue.pollFirst()?.also { current = it }
             } ?: return
+            var wait = false
             try {
-                val used = work.step(remaining)
+                val used = if (waiting == null || work.canRun(tick)) work.step(remaining) else 1
                 remaining -= maxOf(used, 1)
+                wait = waiting != null && !work.done && !work.canRun(tick)
             } catch (problem: Throwable) {
                 // A failed batch may already have consumed its full allowance.
                 // Do not grant the same unknown remainder to another operation.
@@ -91,7 +102,9 @@ internal class SchematicMainThread(scheduler: TaskScheduler, private val setting
             }
             val rejected = synchronized(monitor) {
                 current = null
-                if (!closed && !work.done) queue.addLast(work)
+                if (!closed && !work.done) {
+                    if (wait) checkNotNull(waiting).addLast(work) else queue.addLast(work)
+                }
                 closed && !work.done
             }
             if (rejected) work.fail(ArcSchematicException(ArcSchematicFailure.CLOSED, "Schematic provider is closed"))
@@ -102,9 +115,10 @@ internal class SchematicMainThread(scheduler: TaskScheduler, private val setting
         val abandoned = synchronized(monitor) {
             if (closed) return
             closed = true
-            (palettes.toList() + mutations.toList() + listOfNotNull(current)).also {
+            (palettes.toList() + mutations.toList() + waitingMutations.toList() + listOfNotNull(current)).also {
                 palettes.clear()
                 mutations.clear()
+                waitingMutations.clear()
             }
         }
         task.cancel()

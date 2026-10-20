@@ -285,6 +285,35 @@ class SchematicRuntimeTest : FreeSpec({
         }
     }
 
+    "yielded work is visited once per tick while ordinary work keeps spending the shared budget" {
+        val scheduler = TestTaskScheduler()
+        SchematicMainThread(scheduler, settings().copy(blocksPerTick = 8)).use { main ->
+            var latestTick = 0L
+            var nextTick = 0L
+            var pacedSteps = 0
+            main.enqueueMutation(object : SchematicMainThread.Work {
+                override val done get() = pacedSteps == 2
+                override fun canRun(tick: Long): Boolean { latestTick = tick; return tick >= nextTick }
+                override fun step(budget: Int): Int { pacedSteps++; nextTick = latestTick + 5; return 1 }
+                override fun fail(problem: Throwable) { throw problem }
+            })
+            var ordinarySteps = 0
+            main.enqueueMutation(object : SchematicMainThread.Work {
+                override val done get() = ordinarySteps == 4
+                override fun step(budget: Int): Int { ordinarySteps++; return 1 }
+                override fun fail(problem: Throwable) { throw problem }
+            })
+            scheduler.tick()
+            pacedSteps shouldBe 1
+            ordinarySteps shouldBe 4
+            scheduler.tick(4)
+            pacedSteps shouldBe 1
+            scheduler.tick()
+            pacedSteps shouldBe 2
+            main.queuedMutations() shouldBe 0
+        }
+    }
+
     "cancelled native work releases its queue reference before caller completion without a tick" {
         val scheduler = TestTaskScheduler()
         SchematicMainThread(scheduler, settings()).use { main ->

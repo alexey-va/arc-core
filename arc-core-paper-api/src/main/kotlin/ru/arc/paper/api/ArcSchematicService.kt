@@ -3,6 +3,8 @@ package ru.arc.paper.api
 import java.nio.file.Path
 import java.util.UUID
 import java.util.function.BiConsumer
+import java.util.function.BooleanSupplier
+import java.util.function.Consumer
 import java.util.concurrent.CompletableFuture
 
 /** One host-wide budget, shared by every library and consumer. No files are read at installation. */
@@ -104,6 +106,54 @@ interface ArcSchematicLibrary : AutoCloseable {
      * undo or a durable transaction; those remain the caller's responsibility.
      */
     fun paste(snapshot: ArcSchematicSnapshot, target: ArcSchematicPasteTarget, options: ArcSchematicPasteOptions): ArcSchematicOperation
+
+    /**
+     * [paste] with a best-effort observer for accepted native writes. [acceptedBlock] runs on
+     * Paper's primary thread after each bounded native batch, with world coordinates and the
+     * requested after-state, only when native setBlock returned true. No-op, ignored, denied,
+     * repair-only and unperformed cancelled writes are not observed. Writes accepted before
+     * cancellation or a later failure may still be observed.
+     *
+     * Keep the observer bounded and non-blocking; it supplies no durability or transaction
+     * acknowledgement. Its first thrown failure is logged once and disables it for this
+     * operation without failing, retrying or changing the accounting of accepted writes.
+     * Providers without this overload reject it before starting a mutation.
+     */
+    fun paste(
+        snapshot: ArcSchematicSnapshot,
+        target: ArcSchematicPasteTarget,
+        options: ArcSchematicPasteOptions,
+        acceptedBlock: Consumer<ArcSchematicBlock>,
+    ): ArcSchematicOperation = throw ArcSchematicException(
+        ArcSchematicFailure.UNSUPPORTED_CONTENT, "Accepted schematic write observation is unavailable",
+    )
+
+    /**
+     * Opt-in paced paste: at most one accepted native unit (one block or an indivisible pair)
+     * per [intervalTicks], which must be at least one. Ignored and native no-op cells still
+     * consume the shared bounded budget and may be skipped within that interval.
+     *
+     * [ready] runs on Paper immediately before each native unit. False retains the unfinished
+     * operation for a later tick without writing, completing or cancelling it; throwing fails
+     * the operation before that unit writes. Keep it bounded and non-blocking. Cancellation
+     * and library/provider close also stop waiting operations. Connection-repair writes obey
+     * the same pacing and readiness gate, without placement observations.
+     *
+     * [onPlaced] follows the four-argument observer contract: accepted writes are observed in
+     * the same tick after the native unit, before normal completion. Observer failure cannot
+     * fail or retry the mutation. Providers without paced paste reject before mutation.
+     */
+    fun paste(
+        snapshot: ArcSchematicSnapshot,
+        target: ArcSchematicPasteTarget,
+        options: ArcSchematicPasteOptions,
+        onPlaced: Consumer<ArcSchematicBlock>,
+        ready: BooleanSupplier,
+        intervalTicks: Int,
+    ): ArcSchematicOperation {
+        require(intervalTicks >= 1) { "Schematic paste interval must be at least one tick" }
+        throw ArcSchematicException(ArcSchematicFailure.UNSUPPORTED_CONTENT, "Paced schematic paste is unavailable")
+    }
 
     /**
      * Repairs native fence/wall/pane shapes only at supplied WORLD coordinates.

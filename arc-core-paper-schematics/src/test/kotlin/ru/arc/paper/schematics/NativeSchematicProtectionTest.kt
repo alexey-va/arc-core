@@ -18,6 +18,7 @@ import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
 import io.mockk.verify
+import org.bukkit.Bukkit
 import org.bukkit.Material
 import org.bukkit.World
 import org.bukkit.block.data.BlockData
@@ -35,20 +36,221 @@ import ru.arc.paper.testing.MockBukkitTestRuntime
 import ru.arc.paper.testing.failOnUnsupportedMockBukkitOperation
 import java.util.UUID
 import java.util.concurrent.CompletionException
+import java.util.function.BooleanSupplier
+import java.util.function.Consumer
 
 class NativeSchematicProtectionTest : FunSpec({
+    test("paced paste waits for readiness, skips native no-ops and admits one unit per interval without blocking ordinary paste") {
+        nativeScenario { _, world, nativeWorld, nativeState ->
+            val scheduler = TestTaskScheduler()
+            var tick = 0
+            var ready = false
+            var readinessChecks = 0
+            val writes = mutableListOf<Pair<Int, BlockVector3>>()
+            every { nativeWorld.setBlock(any(), any<BaseBlock>(), any<SideEffectSet>()) } answers {
+                val position = firstArg<BlockVector3>()
+                writes += tick to position
+                position.x() != 1
+            }
+            val accepted = mutableListOf<Pair<Int, ArcSchematicPoint>>()
+            var observedBeforeCompletion = true
+            lateinit var paced: NativeSchematicMutation
+            paced = NativeSchematicMutation.paste("builder", protectionSnapshot(3, nativeState),
+                ArcSchematicPasteTarget(world.uid, ArcSchematicPoint(1, 64, 1)), ArcSchematicPasteOptions(false, false, false),
+                Consumer {
+                    observedBeforeCompletion = observedBeforeCompletion && !paced.completion.isDone
+                    accepted += tick to it.position
+                }, BooleanSupplier { readinessChecks++; ready }, 5)
+            val ordinary = NativeSchematicMutation.paste("ordinary", protectionSnapshot(2, nativeState),
+                ArcSchematicPasteTarget(world.uid, ArcSchematicPoint(9, 64, 1)), ArcSchematicPasteOptions(false, false, false))
+            SchematicMainThread(scheduler, ArcSchematicCacheSettings.defaults().copy(blocksPerTick = 32)).use { main ->
+                fun advance(ticks: Int = 1) { repeat(ticks) { tick++; scheduler.tick() } }
+                main.enqueueMutation(paced, paced.completion)
+                main.enqueueMutation(ordinary, ordinary.completion)
+                advance()
+                readinessChecks shouldBe 1
+                accepted shouldBe emptyList()
+                ordinary.completion.join().changed shouldBe 2
+                writes.map { it.second.x() } shouldBe listOf(9, 10)
+                paced.completion.isDone shouldBe false
+
+                ready = true
+                advance()
+                accepted shouldBe listOf(2 to ArcSchematicPoint(2, 64, 1))
+                readinessChecks shouldBe 3 // False once, then one no-op and one accepted unit.
+                advance(4)
+                readinessChecks shouldBe 3
+                ready = false
+                advance()
+                readinessChecks shouldBe 4
+                paced.completion.isDone shouldBe false
+                ready = true
+                advance()
+                accepted shouldBe listOf(2 to ArcSchematicPoint(2, 64, 1), 8 to ArcSchematicPoint(3, 64, 1))
+                paced.completion.join().let { it.changed shouldBe 2; it.skipped shouldBe 1; it.cancelled shouldBe false }
+                observedBeforeCompletion shouldBe true
+                main.queuedMutations() shouldBe 0
+                writes.map { it.first to it.second.x() } shouldBe listOf(1 to 9, 1 to 10, 2 to 1, 2 to 2, 8 to 3)
+            }
+        }
+    }
+
+    test("paced paste accepts a native pair as one unit and observes both halves before completion") {
+        nativeScenario { _, world, nativeWorld, nativeState ->
+            val scheduler = TestTaskScheduler()
+            val target = ArcSchematicPasteTarget(world.uid, ArcSchematicPoint(1, 64, 1))
+            val options = ArcSchematicPasteOptions(false, false, false)
+            val ready = BooleanSupplier { true }
+            shouldThrow<IllegalArgumentException> {
+                NativeSchematicMutation.paste("builder", pairSnapshot(nativeState), target, options, Consumer {}, ready, 0)
+            }
+            val accepted = mutableListOf<ArcSchematicPoint>()
+            var observedBeforeCompletion = true
+            lateinit var paced: NativeSchematicMutation
+            paced = NativeSchematicMutation.paste("builder", pairSnapshot(nativeState), target, options,
+                Consumer {
+                    observedBeforeCompletion = observedBeforeCompletion && !paced.completion.isDone
+                    accepted += it.position
+                }, ready, 5)
+            SchematicMainThread(scheduler, ArcSchematicCacheSettings.defaults()).use { main ->
+                main.enqueueMutation(paced, paced.completion)
+                scheduler.tick()
+                paced.completion.join().changed shouldBe 2
+                accepted shouldBe listOf(ArcSchematicPoint(2, 64, 1), ArcSchematicPoint(1, 64, 1))
+                observedBeforeCompletion shouldBe true
+                verify(exactly = 2) { nativeWorld.setBlock(any(), any<BaseBlock>(), any<SideEffectSet>()) }
+            }
+        }
+    }
+
+    test("a throwing readiness gate fails before the native unit writes") {
+        nativeScenario { _, world, nativeWorld, nativeState ->
+            val scheduler = TestTaskScheduler()
+            val problem = IllegalStateException("readiness failed")
+            val work = NativeSchematicMutation.paste("builder", protectionSnapshot(1, nativeState),
+                ArcSchematicPasteTarget(world.uid, ArcSchematicPoint(1, 64, 1)), ArcSchematicPasteOptions(false, false, false),
+                Consumer {}, BooleanSupplier { throw problem }, 5)
+            SchematicMainThread(scheduler, ArcSchematicCacheSettings.defaults()).use { main ->
+                val completion = main.enqueueMutation(work, work.completion)
+                scheduler.tick()
+                val failure = shouldThrow<CompletionException> { completion.join() }.cause as ArcSchematicException
+                failure.reason shouldBe ArcSchematicFailure.IO_ERROR
+                failure.cause shouldBe problem
+                main.queuedMutations() shouldBe 0
+                verify(exactly = 0) { nativeWorld.setBlock(any(), any<BaseBlock>(), any<SideEffectSet>()) }
+            }
+        }
+    }
+
+    test("cancellation and provider close release paused work without writing") {
+        nativeScenario { _, world, nativeWorld, nativeState ->
+            val scheduler = TestTaskScheduler()
+            var observations = 0
+            fun paused(x: Int) = NativeSchematicMutation.paste("builder", protectionSnapshot(1, nativeState),
+                ArcSchematicPasteTarget(world.uid, ArcSchematicPoint(x, 64, 1)), ArcSchematicPasteOptions(false, false, false),
+                Consumer { observations++ }, BooleanSupplier { false }, 5)
+            val cancelled = paused(1)
+            val closed = paused(5)
+            SchematicMainThread(scheduler, ArcSchematicCacheSettings.defaults()).use { main ->
+                val cancellation = main.enqueueMutation(cancelled, cancelled.completion)
+                val closure = main.enqueueMutation(closed, closed.completion)
+                scheduler.tick()
+                main.queuedMutations() shouldBe 2
+                cancelled.cancel() shouldBe true
+                cancellation.join().let { it.changed shouldBe 0; it.cancelled shouldBe true }
+                main.queuedMutations() shouldBe 1
+                main.close()
+                (shouldThrow<CompletionException> { closure.join() }.cause as ArcSchematicException).reason shouldBe ArcSchematicFailure.CLOSED
+                main.queuedMutations() shouldBe 0
+                scheduler.tick(3)
+                observations shouldBe 0
+                verify(exactly = 0) { nativeWorld.setBlock(any(), any<BaseBlock>(), any<SideEffectSet>()) }
+            }
+        }
+    }
+
+    test("accepted write observations use world coordinates and exclude no-ops, denied and unperformed cancelled writes") {
+        nativeScenario { paper, world, nativeWorld, nativeState ->
+            val calls = mutableListOf<BlockVector3>()
+            every { nativeWorld.setBlock(any(), any<BaseBlock>(), any<SideEffectSet>()) } answers {
+                firstArg<BlockVector3>().let { calls += it; it.x() == 1 }
+            }
+            val plugin = paper.createSimplePlugin("ObservedProtection")
+            paper.server.servicesManager.register(ArcBlockProtectionService::class.java,
+                ArcBlockProtectionService { id, x, _, _ -> id == world.uid && x == 3 }, plugin, ServicePriority.Normal)
+            val accepted = mutableListOf<ArcSchematicBlock>()
+            val observer = Consumer<ArcSchematicBlock> { cell ->
+                Bukkit.isPrimaryThread() shouldBe true
+                calls.contains(BlockVector3.at(cell.position.x, cell.position.y, cell.position.z)) shouldBe true
+                accepted += cell
+            }
+            val snapshot = protectionSnapshot(3, nativeState)
+            val work = NativeSchematicMutation.paste("builder", snapshot,
+                ArcSchematicPasteTarget(world.uid, ArcSchematicPoint(1, 64, 1)), ArcSchematicPasteOptions(false, false, false), observer)
+            val denied = shouldThrow<ArcSchematicException> { work.step(4) }
+            denied.reason shouldBe ArcSchematicFailure.PROTECTED_AREA
+            work.fail(denied)
+            accepted shouldBe listOf(ArcSchematicBlock(ArcSchematicPoint(1, 64, 1), "minecraft:stone", false, false))
+            calls shouldBe listOf(BlockVector3.at(1, 64, 1), BlockVector3.at(2, 64, 1))
+
+            every { nativeWorld.setBlock(any(), any<BaseBlock>(), any<SideEffectSet>()) } answers {
+                calls += firstArg<BlockVector3>(); true
+            }
+            val cancelled = NativeSchematicMutation.paste("builder", snapshot,
+                ArcSchematicPasteTarget(world.uid, ArcSchematicPoint(5, 64, 1)), ArcSchematicPasteOptions(false, false, false), observer)
+            cancelled.step(2) shouldBe 2
+            cancelled.cancel() shouldBe true
+            cancelled.step(10) shouldBe 0
+            cancelled.completion.join().let { it.changed shouldBe 1; it.cancelled shouldBe true }
+            accepted.map { it.position } shouldBe listOf(ArcSchematicPoint(1, 64, 1), ArcSchematicPoint(5, 64, 1))
+            calls.size shouldBe 3
+        }
+    }
+
+    test("a failed cosmetic observer is disabled without failing or retrying accepted writes") {
+        nativeScenario { _, world, nativeWorld, nativeState ->
+            var observations = 0
+            val work = NativeSchematicMutation.paste("builder", protectionSnapshot(3, nativeState),
+                ArcSchematicPasteTarget(world.uid, ArcSchematicPoint(1, 64, 1)), ArcSchematicPasteOptions(false, false, false),
+                Consumer { observations++; throw IllegalStateException("cosmetic observer failed") })
+            work.step(2) shouldBe 2
+            work.step(10) shouldBe 2
+            work.completion.join().let { it.changed shouldBe 3; it.skipped shouldBe 0; it.cancelled shouldBe false }
+            observations shouldBe 1
+            verify(exactly = 3) { nativeWorld.setBlock(any(), any<BaseBlock>(), any<SideEffectSet>()) }
+        }
+    }
+
+    test("observer cancellation follows the completed native batch and prevents later writes") {
+        nativeScenario { _, world, nativeWorld, nativeState ->
+            val accepted = mutableListOf<ArcSchematicBlock>()
+            lateinit var work: NativeSchematicMutation
+            work = NativeSchematicMutation.paste("builder", protectionSnapshot(3, nativeState),
+                ArcSchematicPasteTarget(world.uid, ArcSchematicPoint(1, 64, 1)), ArcSchematicPasteOptions(false, false, false),
+                Consumer { accepted += it; work.cancel() })
+            work.step(3) shouldBe 3 // One chunk check and two accepted writes before observing this batch.
+            work.completion.join().let { it.changed shouldBe 2; it.cancelled shouldBe true }
+            accepted.map { it.position } shouldBe listOf(ArcSchematicPoint(1, 64, 1), ArcSchematicPoint(2, 64, 1))
+            work.step(10) shouldBe 0
+            verify(exactly = 2) { nativeWorld.setBlock(any(), any<BaseBlock>(), any<SideEffectSet>()) }
+        }
+    }
+
     for (vertical in listOf(false, true)) test("a matching pair writes primary first without yielding with one block left vertical=$vertical") {
         nativeScenario { _, world, nativeWorld, nativeState ->
             val written = mutableListOf<BlockVector3>()
+            val accepted = mutableListOf<BlockVector3>()
             every { nativeWorld.setBlock(any(), any<BaseBlock>(), any<SideEffectSet>()) } answers { written += firstArg<BlockVector3>(); true }
             val work = NativeSchematicMutation.paste("builder", pairSnapshot(nativeState, vertical),
-                ArcSchematicPasteTarget(world.uid, ArcSchematicPoint(1, 64, 1)), ArcSchematicPasteOptions(false, false, false))
+                ArcSchematicPasteTarget(world.uid, ArcSchematicPoint(1, 64, 1)), ArcSchematicPasteOptions(false, false, false),
+                Consumer { accepted += BlockVector3.at(it.position.x, it.position.y, it.position.z) })
             work.step(2) shouldBe 3 // One chunk check, then both halves even though only one unit remains.
             written shouldBe if (vertical) listOf(BlockVector3.at(1, 64, 1), BlockVector3.at(1, 65, 1))
                 else listOf(BlockVector3.at(2, 64, 1), BlockVector3.at(1, 64, 1))
             work.step(1) shouldBe 1 // Bounded bookkeeping visit, without writing the companion again.
             work.completion.join().let { it.changed shouldBe 2; it.skipped shouldBe 0 }
             written.size shouldBe 2
+            accepted shouldBe written
         }
     }
 
