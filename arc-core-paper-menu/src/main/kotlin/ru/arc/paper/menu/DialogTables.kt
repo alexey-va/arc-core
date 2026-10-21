@@ -12,7 +12,7 @@ import ru.arc.text.TextLayoutResult
 import kotlin.math.abs
 
 /**
- * RusCrafting pack adapter for two-column native dialog tables (gallery T13–T18).
+ * RusCrafting pack adapter for native dialog tables (gallery T13–T18).
  * The existing core text engine owns measurement and wrapping; this adapter owns
  * the pack's 9px frame tiles, their joins and the client-approved cell insets.
  * Pure after font initialization; no player state, actions or markup parsing.
@@ -70,6 +70,77 @@ object DialogTables {
         width: Int = 320,
         columns: Columns = Columns.AUTO,
     ): PaperDialogBody = PaperDialogBody(render(rows, headers, frame, width, columns, spec).component, width)
+
+    /**
+     * Independent measured columns with fixed relative widths. Rows and optional
+     * headers must match [columnWeights]; every weight is positive. Uses the same
+     * pack tiles and cell insets as the paired table, wrapping each cell without
+     * moving its neighbours. Unknown metrics retain every cell as readable text.
+     */
+    fun body(
+        rows: List<List<Component>>,
+        headers: List<Component>?,
+        frame: Frame,
+        width: Int,
+        columnWeights: List<Int>,
+    ): PaperDialogBody {
+        require(width in 9..1024) { "Dialog table width must be in 9..1024 GUI pixels" }
+        require(columnWeights.size in 2..8 && columnWeights.all { it > 0 }) { "Dialog tables require 2..8 positive column weights" }
+        val count = columnWeights.size
+        require(rows.all { it.size == count } && (headers == null || headers.size == count)) { "Dialog table cells must match column weights" }
+        val heading = headers?.map { it.colorIfAbsent(headerColor).decorate(TextDecoration.BOLD) }
+        val values = rows.map { row -> row.mapIndexed { index, cell -> cell.colorIfAbsent(if (index == 0) labelColor else valueColor) } }
+        val allRows = listOfNotNull(heading) + values
+        fun fallback() = PaperDialogBody(lines(allRows.map { row ->
+            join(row.flatMapIndexed { index, cell -> if (index == 0) listOf(cell) else listOf(Component.text(" · ", valueColor), cell) })
+        }), width)
+        val tiles = (width - 8 - MIN_OUTER_INSET * 2 - 1) / TILE
+        val repeats = tiles - count - 1
+        if (repeats < count * 2 || allRows.isEmpty() || allRows.size > 64) return fallback()
+        val totalWeight = columnWeights.sumOf { it.toLong() }
+        val available = repeats - count * 2
+        var previous = 0
+        var weight = 0L
+        val lengths = columnWeights.map { part ->
+            weight += part
+            val cumulative = (available * weight / totalWeight).toInt()
+            (2 + cumulative - previous).also { previous = cumulative }
+        }
+        val padding = TEXT_START - frame.leftAdvance
+        val widths = lengths.mapIndexed { index, length ->
+            TILE * (length + 1) - if (index == 0) TEXT_START else frame.innerAdvance + padding
+        }
+        val measured = allRows.map { row -> row.mapIndexed { index, cell -> cellLines(cell, widths[index]) ?: return fallback() } }
+        if (measured.sumOf { row -> row.maxOf { it.size } } > 192) return fallback()
+        val borderWidth = tiles * TILE + 1
+        val outerLeft = (width - 8 - borderWidth) / 2
+        val outerRight = width - 8 - borderWidth - outerLeft
+        fun outside(content: Component) = join(listOf(gap(outerLeft), content, gap(outerRight)))
+        fun border(start: Int, line: Int, middle: Int, end: Int) = outside(glued(frame, buildList {
+            add(start)
+            lengths.forEachIndexed { index, length ->
+                repeat(length) { add(line) }
+                add(if (index == lengths.lastIndex) end else middle)
+            }
+        }).append(gap(if (end == 10) 10 - frame.rightJointAdvance else 0)))
+        val output = mutableListOf(border(0, 1, 2, 3))
+        measured.forEachIndexed { index, cells ->
+            repeat(cells.maxOf { it.size }) { line ->
+                output += outside(join(buildList {
+                    cells.forEachIndexed { column, cell ->
+                        add(glyph(frame.base + if (column == 0) 4 else 5))
+                        add(gap(padding))
+                        add(cell.getOrElse(line) { gap(widths[column]) })
+                    }
+                    add(glyph(frame.base + 6))
+                    add(gap(10 - frame.rightAdvance))
+                }))
+            }
+            if (heading != null && index == 0 && index < measured.lastIndex) output += border(7, 8, 9, 10)
+        }
+        output += border(11, 12, 13, 14)
+        return PaperDialogBody(lines(output), width)
+    }
 
     /**
      * One text block inside a single pack frame. [width] includes the native

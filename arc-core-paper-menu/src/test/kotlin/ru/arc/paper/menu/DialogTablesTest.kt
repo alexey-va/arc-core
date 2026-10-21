@@ -1,6 +1,7 @@
 package ru.arc.paper.menu
 
 import com.google.gson.JsonParser
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FreeSpec
 import io.kotest.matchers.shouldBe
 import net.kyori.adventure.key.Key
@@ -103,6 +104,43 @@ class DialogTablesTest : FreeSpec({
             val result = DialogTables.render(rows, Component.text("Параметр") to Component.text("Значение"), frame, width)
             require(result is DialogTables.Result.Framed)
             lineWidths(result.component).forEach { it shouldBe width - 8 }
+        }
+    }
+
+    "independent material columns keep three dividers and every wrapped cell aligned" {
+        val headers = listOf("Предмет", "Запас", "Нужно", "У вас").map(Component::text)
+        val rows = listOf(
+            listOf("Резная книжная полка", "3", "4", "64"),
+            listOf("Очень длинное имя строительного материала", "9000001", "2000003", "0"),
+            listOf("Факел", "", "34", "0"),
+        ).map { row -> row.map(Component::text) }
+        for (frame in DialogTables.Frame.entries) for (width in listOf(320, 400, 468)) {
+            val body = DialogTables.body(rows, headers, frame, width, listOf(5, 2, 2, 2))
+            countCodePoint(body.text, frame.base + 2) shouldBe 3
+            countCodePoint(body.text, frame.base + 9) shouldBe 3
+            countCodePoint(body.text, frame.base + 13) shouldBe 3
+            lineWidths(body.text).forEach { it shouldBe width - 8 }
+            val content = PlainTextComponentSerializer.plainText().serialize(body.text).lineSequence()
+                .filter { it.contains((frame.base + 4).toChar()) }.map { it.split((frame.base + 5).toChar()) }.toList()
+            for (column in headers.indices) {
+                content.joinToString("") { textWithoutPackGlyphs(Component.text(it[column])) }.filterNot(Char::isWhitespace) shouldBe
+                    (listOf(headers) + rows).joinToString("") {
+                        PlainTextComponentSerializer.plainText().serialize(it[column])
+                    }.filterNot(Char::isWhitespace)
+            }
+        }
+    }
+
+    "multi column fallback preserves data and invalid cell counts fail before rendering" {
+        val unknown = Component.text("custom value").font(Key.key("unknown:font"))
+        val row = listOf(Component.text("Material"), unknown, Component.text("7"), Component.text("9"))
+        val fallback = DialogTables.body(listOf(row), null, DialogTables.Frame.EPIC, 400, listOf(5, 2, 2, 2))
+        PlainTextComponentSerializer.plainText().serialize(fallback.text) shouldBe "Material · custom value · 7 · 9"
+        shouldThrow<IllegalArgumentException> {
+            DialogTables.body(listOf(row), null, DialogTables.Frame.EPIC, 400, listOf(1, 1))
+        }
+        shouldThrow<IllegalArgumentException> {
+            DialogTables.body(listOf(row), null, DialogTables.Frame.EPIC, 400, listOf(1, 0, 1, 1))
         }
     }
 
