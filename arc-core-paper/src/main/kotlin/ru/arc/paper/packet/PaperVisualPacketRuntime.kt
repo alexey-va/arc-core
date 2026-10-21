@@ -11,6 +11,7 @@ import ru.arc.metrics.core.MetricPoint
 import ru.arc.observability.StructuredDebugLine
 import ru.arc.paper.api.ArcVisualPacketBudget
 import ru.arc.paper.api.VisualPacketAdmission
+import java.util.Collections
 import java.util.WeakHashMap
 import kotlin.math.round
 
@@ -25,9 +26,9 @@ class PaperVisualPacketRuntime internal constructor(
     private val hostPlugin: Plugin? = null,
 ) : ArcVisualPacketBudget, AutoCloseable {
     private val monitor = Any()
-    private var settings = initialSettings
+    private var settings = initialSettings.immutable()
     private val serverBucket = TokenBucket(initialSettings.serverRateBitsPerSecond, initialSettings.serverCapacityBits, nanoTime())
-    private val viewerBuckets = WeakHashMap<Any, TokenBucket>()
+    private val viewerBuckets = WeakHashMap<Any, ViewerBuckets>()
     private val sources = LinkedHashMap<String, SourceCounters>()
     private var closed = false
     private var ready = true
@@ -64,9 +65,8 @@ class PaperVisualPacketRuntime internal constructor(
 
             val now = nanoTime()
             serverBucket.refill(now)
-            val viewerBucket = viewerBuckets.getOrPut(connection) {
-                TokenBucket(settings.viewerRateBitsPerSecond, settings.viewerCapacityBits, now)
-            }
+            val viewerBucket = viewerBuckets.getOrPut(connection) { ViewerBuckets(settings, now) }
+                .forSource(source, settings, now)
             viewerBucket.refill(now)
             val costBits = bytes.toLong() * BITS_PER_BYTE
 
@@ -112,26 +112,39 @@ class PaperVisualPacketRuntime internal constructor(
     fun reload(config: Config) {
         // Config turns an unreadable/malformed YAML document into an empty map.
         // Bootstrap may use defaults, but reload must not silently reset live limits.
-        require(listOf("server-mbps", "viewer-mbps", "burst-ms", "log-interval-seconds", "verbose-logs").any(config::exists)) {
+        require(listOf("server-mbps", "viewer-mbps", SOURCE_VIEWER_CONFIG_KEY, "burst-ms", "log-interval-seconds", "verbose-logs").any(config::exists)) {
             "No visual packet settings were loaded; keep at least one explicit setting"
         }
         updateSettings(Settings.from(config))
     }
 
     fun updateSettings(candidate: Settings) {
+        val next = candidate.immutable()
         synchronized(monitor) {
             check(!closed) { "Visual packet runtime is closed" }
             val previous = settings
             val now = nanoTime()
-            serverBucket.update(candidate.serverRateBitsPerSecond, candidate.serverCapacityBits, now)
+            serverBucket.update(next.serverRateBitsPerSecond, next.serverCapacityBits, now)
             viewerBuckets.values.forEach { bucket ->
-                bucket.update(candidate.viewerRateBitsPerSecond, candidate.viewerCapacityBits, now)
+                bucket.update(previous, next, now)
             }
-            settings = candidate
+            settings = next
             ready = true
-            if (previous.logIntervalSeconds != candidate.logIntervalSeconds) {
-                restartReporter(candidate.logIntervalSeconds)
+            if (previous.logIntervalSeconds != next.logIntervalSeconds) {
+                restartReporter(next.logIntervalSeconds)
             }
+            reportPolicy()
+        }
+    }
+
+    /** Install/reload readback does not depend on traffic or an overload warning. */
+    private fun reportPolicy() {
+        val logger = hostPlugin?.logger ?: return
+        logger.info(line("status" to "policy", "server_limit_mbps" to settings.serverMbps,
+            "viewer_limit_mbps" to settings.viewerMbps, "burst_ms" to settings.burstMillis,
+            "source_overrides" to settings.sourceViewerMbps.size))
+        settings.sourceViewerMbps.toSortedMap().forEach { (source, rate) ->
+            logger.info(line("status" to "source_policy", "source" to source, "viewer_limit_mbps" to rate))
         }
     }
 
@@ -330,6 +343,7 @@ class PaperVisualPacketRuntime internal constructor(
         val burstMillis: Long = DEFAULT_BURST_MILLIS,
         val logIntervalSeconds: Long = DEFAULT_LOG_INTERVAL_SECONDS,
         val verboseLogs: Boolean = false,
+        val sourceViewerMbps: Map<String, Double> = emptyMap(),
     ) {
         init {
             require(serverMbps.isFinite() && serverMbps in MIN_RATE_MBPS..MAX_RATE_MBPS) {
@@ -337,6 +351,13 @@ class PaperVisualPacketRuntime internal constructor(
             }
             require(viewerMbps.isFinite() && viewerMbps in MIN_RATE_MBPS..MAX_RATE_MBPS) {
                 "viewer-mbps must be between $MIN_RATE_MBPS and $MAX_RATE_MBPS"
+            }
+            require(sourceViewerMbps.size <= MAX_SOURCES) { "$SOURCE_VIEWER_CONFIG_KEY supports at most $MAX_SOURCES sources" }
+            sourceViewerMbps.forEach { (source, rate) ->
+                require(SOURCE_PATTERN.matches(source)) { "$SOURCE_VIEWER_CONFIG_KEY needs a stable source name: $source" }
+                require(rate.isFinite() && rate in MIN_RATE_MBPS..MAX_RATE_MBPS) {
+                    "$SOURCE_VIEWER_CONFIG_KEY.$source must be between $MIN_RATE_MBPS and $MAX_RATE_MBPS"
+                }
             }
             require(burstMillis in MIN_BURST_MILLIS..MAX_BURST_MILLIS) {
                 "burst-ms must be between $MIN_BURST_MILLIS and $MAX_BURST_MILLIS"
@@ -350,6 +371,8 @@ class PaperVisualPacketRuntime internal constructor(
         internal val viewerRateBitsPerSecond = viewerMbps * BITS_PER_MEGABIT
         internal val serverCapacityBits = serverRateBitsPerSecond * burstMillis / MILLIS_PER_SECOND
         internal val viewerCapacityBits = viewerRateBitsPerSecond * burstMillis / MILLIS_PER_SECOND
+
+        internal fun immutable() = copy(sourceViewerMbps = Collections.unmodifiableMap(LinkedHashMap(sourceViewerMbps)))
 
         companion object {
             @JvmStatic
@@ -377,12 +400,27 @@ class PaperVisualPacketRuntime internal constructor(
                         default
                     }
 
+                val sourceRates = if (!config.exists(SOURCE_VIEWER_CONFIG_KEY)) emptyMap() else {
+                    val raw = config.map[SOURCE_VIEWER_CONFIG_KEY]
+                    require(raw is Map<*, *>) { "$SOURCE_VIEWER_CONFIG_KEY must be a source-to-rate map" }
+                    raw.entries.associate { (key, value) ->
+                        val source = requireNotNull(key as? String) { "$SOURCE_VIEWER_CONFIG_KEY keys must be source names" }
+                        val rate = when (value) {
+                            is Number -> value.toDouble()
+                            is String -> value.toDoubleOrNull()
+                            else -> null
+                        }
+                        source to requireNotNull(rate) { "$SOURCE_VIEWER_CONFIG_KEY.$source must be numeric" }
+                    }
+                }
+
                 return Settings(
                     serverMbps = number("server-mbps", DEFAULT_SERVER_MBPS),
                     viewerMbps = number("viewer-mbps", DEFAULT_VIEWER_MBPS),
                     burstMillis = integer("burst-ms", DEFAULT_BURST_MILLIS),
                     logIntervalSeconds = integer("log-interval-seconds", DEFAULT_LOG_INTERVAL_SECONDS),
                     verboseLogs = boolean("verbose-logs", false),
+                    sourceViewerMbps = sourceRates,
                 )
             }
         }
@@ -535,12 +573,46 @@ class PaperVisualPacketRuntime internal constructor(
         }
     }
 
+    /** One ordinary shared lane plus at most the configured source lanes per weak connection. */
+    private class ViewerBuckets(settings: Settings, now: Long) {
+        private val ordinary = TokenBucket(settings.viewerRateBitsPerSecond, settings.viewerCapacityBits, now)
+        private val overrides = mutableMapOf<String, TokenBucket>()
+
+        fun forSource(source: String, settings: Settings, now: Long): TokenBucket {
+            val rate = settings.sourceViewerMbps[source] ?: return ordinary
+            return overrides.getOrPut(source) { sourceBucket(rate, settings.burstMillis, now) }
+        }
+
+        fun update(previous: Settings, next: Settings, now: Long) {
+            ordinary.update(next.viewerRateBitsPerSecond, next.viewerCapacityBits, now)
+            overrides.entries.removeIf { (source, bucket) ->
+                val rate = next.sourceViewerMbps[source]
+                if (rate == null) {
+                    bucket.refill(now)
+                    ordinary.absorbDebt(bucket)
+                    true
+                } else {
+                    bucket.update(rate * BITS_PER_MEGABIT, rate * BITS_PER_MEGABIT * next.burstMillis / MILLIS_PER_SECOND, now)
+                    false
+                }
+            }
+            // Adding/re-adding an exception on a live connection cannot mint a fresh burst.
+            (next.sourceViewerMbps.keys - previous.sourceViewerMbps.keys).forEach { source ->
+                overrides[source] = sourceBucket(next.sourceViewerMbps.getValue(source), next.burstMillis, now, initiallyFull = false)
+            }
+        }
+
+        private fun sourceBucket(rate: Double, burstMillis: Long, now: Long, initiallyFull: Boolean = true) =
+            TokenBucket(rate * BITS_PER_MEGABIT, rate * BITS_PER_MEGABIT * burstMillis / MILLIS_PER_SECOND, now, initiallyFull)
+    }
+
     private class TokenBucket(
         private var rateBitsPerSecond: Double,
         private var capacityBits: Double,
         now: Long,
+        initiallyFull: Boolean = true,
     ) {
-        private var tokensBits = capacityBits
+        private var tokensBits = if (initiallyFull) capacityBits else 0.0
         private var lastNanos = now
 
         fun refill(now: Long) {
@@ -559,6 +631,8 @@ class PaperVisualPacketRuntime internal constructor(
             tokensBits -= costBits.toDouble()
         }
 
+        fun absorbDebt(other: TokenBucket) { tokensBits += other.tokensBits.coerceAtMost(0.0) }
+
         fun update(newRate: Double, newCapacity: Double, now: Long) {
             refill(now)
             rateBitsPerSecond = newRate
@@ -569,6 +643,7 @@ class PaperVisualPacketRuntime internal constructor(
 
     companion object {
         const val CONFIG_FILE = "visual-packets.yml"
+        private const val SOURCE_VIEWER_CONFIG_KEY = "source-viewer-mbps"
         const val DEFAULT_SERVER_MBPS = 32.0
         const val DEFAULT_VIEWER_MBPS = 2.0
         const val DEFAULT_BURST_MILLIS = 250L
@@ -618,6 +693,7 @@ class PaperVisualPacketRuntime internal constructor(
             plugin.server.servicesManager.register(ArcVisualPacketBudget::class.java, runtime, plugin, ServicePriority.Normal)
             try {
                 runtime.startReporter()
+                if (ready) runtime.reportPolicy()
             } catch (failure: Throwable) {
                 runtime.close()
                 throw failure

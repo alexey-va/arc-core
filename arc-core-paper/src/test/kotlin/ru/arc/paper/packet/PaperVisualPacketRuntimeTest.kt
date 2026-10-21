@@ -43,6 +43,114 @@ class PaperVisualPacketRuntimeTest :
             runtime.snapshot().totals.serverRate shouldBe 1L
         }
 
+        "an exact source exception sustains twelve moving maps without raising the ordinary shared viewer limit" {
+            val clock = AtomicLong()
+            val source = "arccasino:console-doom"
+            val runtime = PaperVisualPacketRuntime(PaperVisualPacketRuntime.Settings(
+                serverMbps = 32.0, viewerMbps = 2.0, burstMillis = 250,
+                sourceViewerMbps = mapOf(source to 24.0),
+            ), clock::get)
+            val connection = Any()
+            runtime.acquire("arc:boards", connection, 62_500, 1, false, true) shouldBe VisualPacketAdmission.ALLOWED
+            runtime.acquire("farms:displays", connection, 1, 1, false, true) shouldBe VisualPacketAdmission.VIEWER_RATE
+
+            repeat(32) {
+                clock.addAndGet(125_000_000L)
+                // PacketEvents' 1.21.11 encoded 128x128 map update: 16,401 bytes.
+                repeat(12) { runtime.acquire(source, connection, 16_401, 1, false, true) shouldBe VisualPacketAdmission.ALLOWED }
+                runtime.acquire("arc:boards", connection, 15_625, 1, false, true) shouldBe VisualPacketAdmission.ALLOWED
+                runtime.acquire("farms:displays", connection, 15_625, 1, false, true) shouldBe VisualPacketAdmission.ALLOWED
+                runtime.acquire("arccasino:console-doom-extra", connection, 1, 1, false, true) shouldBe VisualPacketAdmission.VIEWER_RATE
+            }
+            runtime.snapshot().sources.getValue(source).admitted shouldBe 384L
+            runtime.snapshot().settings.viewerMbps shouldBe 2.0
+            runtime.snapshot().viewerBuckets shouldBe 1
+        }
+
+        "source exceptions remain per connection and share the server cap and channel pressure" {
+            val runtime = PaperVisualPacketRuntime(PaperVisualPacketRuntime.Settings(
+                sourceViewerMbps = mapOf("game:video" to 24.0)), { 0L })
+            val first = Any()
+            val second = Any()
+            runtime.acquire("game:video", first, 750_000, 1, false, false) shouldBe VisualPacketAdmission.CHANNEL_BACKPRESSURE
+            runtime.acquire("game:video", first, 750_000, 1, false, true) shouldBe VisualPacketAdmission.ALLOWED
+            runtime.acquire("game:video", first, 1, 1, false, true) shouldBe VisualPacketAdmission.VIEWER_RATE
+            runtime.acquire("game:video", second, 250_000, 1, false, true) shouldBe VisualPacketAdmission.ALLOWED
+            runtime.acquire("game:video", second, 1, 1, false, true) shouldBe VisualPacketAdmission.SERVER_RATE
+            runtime.snapshot().viewerBuckets shouldBe 2
+            runtime.snapshot().totals.channelBackpressure shouldBe 1L
+        }
+
+        "source cleanup waits for the channel and charges its exact cost to its own lane and the server" {
+            val clock = AtomicLong()
+            val runtime = PaperVisualPacketRuntime(PaperVisualPacketRuntime.Settings(
+                sourceViewerMbps = mapOf("game:video" to 24.0)), clock::get)
+            val connection = Any()
+            runtime.acquire("game:video", connection, 1_000_000, 1, true, false) shouldBe VisualPacketAdmission.CHANNEL_BACKPRESSURE
+            runtime.acquire("game:video", connection, 1_000_000, 1, true, true) shouldBe VisualPacketAdmission.ALLOWED
+            runtime.acquire("game:video", connection, 1, 1, false, true) shouldBe VisualPacketAdmission.SERVER_RATE
+            clock.addAndGet(100_000_000L)
+            runtime.acquire("game:video", connection, 50_000, 1, false, true) shouldBe VisualPacketAdmission.ALLOWED
+            runtime.acquire("game:video", connection, 1, 1, false, true) shouldBe VisualPacketAdmission.VIEWER_RATE
+            runtime.acquire("arc:ordinary", connection, 62_500, 1, false, true) shouldBe VisualPacketAdmission.ALLOWED
+            runtime.close()
+            runtime.acquire("game:video", connection, 1, 1, false, true) shouldBe VisualPacketAdmission.CLOSED
+            runtime.acquire("game:video", connection, 1, 1, true, true) shouldBe VisualPacketAdmission.ALLOWED
+        }
+
+        "reloading source exceptions retains balances and debt and cannot mint bursts by removing and adding a lane" {
+            val clock = AtomicLong()
+            val initial = PaperVisualPacketRuntime.Settings(serverMbps = 100.0, sourceViewerMbps = mapOf("game:video" to 24.0))
+            val runtime = PaperVisualPacketRuntime(initial, clock::get)
+            val connection = Any()
+            runtime.acquire("game:video", connection, 700_000, 1, false, true) shouldBe VisualPacketAdmission.ALLOWED
+            runtime.updateSettings(initial.copy(sourceViewerMbps = mapOf("game:video" to 32.0)))
+            runtime.acquire("game:video", connection, 60_000, 1, false, true) shouldBe VisualPacketAdmission.VIEWER_RATE
+            runtime.acquire("game:video", connection, 100_000, 1, true, true) shouldBe VisualPacketAdmission.ALLOWED
+
+            runtime.updateSettings(initial.copy(sourceViewerMbps = emptyMap()))
+            runtime.acquire("arc:ordinary", connection, 20_000, 1, false, true) shouldBe VisualPacketAdmission.VIEWER_RATE
+            runtime.acquire("game:video", connection, 12_500, 1, false, true) shouldBe VisualPacketAdmission.ALLOWED
+            runtime.acquire("arc:ordinary", connection, 1, 1, false, true) shouldBe VisualPacketAdmission.VIEWER_RATE
+            runtime.updateSettings(initial)
+            runtime.acquire("game:video", connection, 1, 1, false, true) shouldBe VisualPacketAdmission.VIEWER_RATE
+            clock.addAndGet(50_000_000L)
+            runtime.acquire("game:video", connection, 150_000, 1, false, true) shouldBe VisualPacketAdmission.ALLOWED
+            runtime.acquire("arc:ordinary", connection, 12_500, 1, false, true) shouldBe VisualPacketAdmission.ALLOWED
+        }
+
+        "source policy parsing is exact bounded immutable and rejects malformed reloads atomically" {
+            val directory = Files.createTempDirectory("source-viewer-policy")
+            val path = directory.resolve("visual-packets.yml")
+            try {
+                Files.writeString(path, "source-viewer-mbps:\n  'game:video.wall': 24.0\n")
+                val config = Config(directory, "visual-packets.yml")
+                val parsed = PaperVisualPacketRuntime.Settings.from(config)
+                parsed.sourceViewerMbps shouldBe mapOf("game:video.wall" to 24.0)
+                parsed.viewerMbps shouldBe 2.0
+                val mutableRates = mutableMapOf("game:video.wall" to 24.0)
+                val runtime = PaperVisualPacketRuntime(parsed.copy(sourceViewerMbps = mutableRates), { 0L })
+                mutableRates.clear()
+                runtime.snapshot().settings.sourceViewerMbps shouldBe parsed.sourceViewerMbps
+                shouldThrow<UnsupportedOperationException> {
+                    (runtime.snapshot().settings.sourceViewerMbps as MutableMap<String, Double>)["other:source"] = 100.0
+                }
+                listOf("[]", "fast", "{bad source: 24}", "{game:video: fast}", "{game:video: -1}", "{game:video: .nan}").forEach { invalid ->
+                    Files.writeString(path, "source-viewer-mbps: $invalid\n")
+                    config.reload()
+                    shouldThrow<IllegalArgumentException> { runtime.reload(config) }
+                    runtime.snapshot().settings.sourceViewerMbps shouldBe parsed.sourceViewerMbps
+                }
+                shouldThrow<IllegalArgumentException> {
+                    parsed.copy(sourceViewerMbps = (0..PaperVisualPacketRuntime.MAX_SOURCES).associate { "source:$it" to 24.0 })
+                }
+                Files.writeString(path, "source-viewer-mbps: {}\n")
+                config.reload()
+                runtime.reload(config)
+                runtime.snapshot().settings.sourceViewerMbps shouldBe emptyMap()
+            } finally { directory.toFile().deleteRecursively() }
+        }
+
         "admits one oversized transaction from full buckets and makes it repay the debt" {
             val clock = AtomicLong(0L)
             val runtime = PaperVisualPacketRuntime(settings(serverMbps = 1.0, viewerMbps = 1.0), clock::get)

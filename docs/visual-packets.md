@@ -39,6 +39,11 @@ reloads the canonical host file. The host passes its own `Config` to
 cross plugin classloaders. The full candidate is validated before application.
 Existing server and viewer token balances are refilled under the
 old rates, then retained under the new rates; reload never restores a full burst.
+Removed source exceptions return to the ordinary shared viewer bucket; any debt
+is transferred to that bucket and the obsolete source bucket is discarded.
+New exceptions on existing connections start empty and refill at their configured
+rate. Connection state remains weakly owned, with at most 256 configured source
+buckets plus the ordinary bucket per connection.
 Reload requires at least one recognized setting. Empty or unreadable configuration
 must not silently replace active limits with defaults; missing individual keys
 still use their documented defaults.
@@ -48,7 +53,8 @@ still use their documented defaults.
 | Key | Default | Allowed range | Meaning |
 | --- | ---: | ---: | --- |
 | `server-mbps` | `32` | `0.01`–`10000` | Shared server payload budget in decimal Mbit/s. |
-| `viewer-mbps` | `2` | `0.01`–`10000` | Shared payload budget per connection, across all plugins. |
+| `viewer-mbps` | `2` | `0.01`–`10000` | Shared payload budget per connection for sources without an exception. |
+| `source-viewer-mbps` | `{}` | Up to 256 exact stable source names, each `0.01`–`10000` | Separate per-connection payload bucket for each explicitly configured source; every write still charges `server-mbps`. |
 | `burst-ms` | `250` | `10`–`30000` | Token bucket capacity as rate multiplied by this duration. |
 | `log-interval-seconds` | `30` | `30`–`3600` | Interval for async metrics logging and bounded overload warnings. |
 | `verbose-logs` | `true` in the bundled host policy | boolean | Emit interval totals and one line for each active source; the library fallback for a missing key remains `false`. |
@@ -57,6 +63,30 @@ Overload warnings are emitted at most once per configured reporting interval,
 with one recovery message after pressure subsides. Source names are bounded to
 256 buckets, including `_other_`; use stable names such as
 `arccasino:slot-displays`, never player, world, or session identifiers.
+
+Exceptions use the complete source label produced by the existing gateway. They
+are exact matches, not prefixes or wildcards. Unknown sources share the ordinary
+viewer bucket. The Core library and host ship with no exceptions; an operator
+can opt in one known source in the canonical `plugins/ArcCore/visual-packets.yml`:
+
+```yaml
+server-mbps: 32.0
+viewer-mbps: 2.0
+source-viewer-mbps:
+  'example-plugin:video-wall': 24.0
+```
+
+This allows that source up to 24 Mbit/s for one connection while unrelated
+visuals still share 2 Mbit/s. It does not reserve bandwidth or bypass the shared
+32 Mbit/s server limit, channel writability, real encoded-byte accounting or
+cleanup ordering. Multiple viewers and configured sources compete for the same
+server bucket. Cleanup debits the selected viewer bucket and the server bucket.
+
+On activation and every successful reload, `ARC_VISUAL_PACKETS status=policy`
+logs the effective server/viewer limits, burst and exception count. A bounded
+`status=source_policy` line per configured exception records its exact source and
+viewer limit, even when verbose interval logs are disabled or no packets are sent.
+The existing `snapshot().settings` also contains the immutable effective map.
 
 ## Packet owner contract
 
