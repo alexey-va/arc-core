@@ -99,6 +99,18 @@ passenger link is admitted; it does not choose or alter the consumer's local pos
 Paper describes display passengers as appearing above the vehicle's head
 ([Paper display entity docs](https://docs.papermc.io/paper/dev/display-entities/)).
 
+`attachTo(carrier: LivingEntity, passengerOrigin: Vector)` extends the same queue to
+tracked native mobs. Supply the current world-axis passenger-origin offset from
+carrier feet; the copied value places initial spawn correctly before a budgeted
+mount link is admitted. Core captures each distinct carrier once per refresh,
+including tracking and native passenger IDs, without treating it as an online
+viewer. Visibility also checks `Player.canSee(entity)` and carrier validity.
+The caller owns the exact client-version seat/bone geometry, local transform and
+orientation; Core does not assume an entity's bounding-box height is its seat.
+Update the supplied offset if pose/scale changes. Real rider IDs retain their
+order before admitted display IDs. The overload creates no Bukkit passenger or
+world entity, and uses the existing detach/reconnect/cleanup protocol.
+
 For each viewer, Core sends spawn+initial metadata before the passenger link, and
 removes a link before sending a detached world teleport. Synthetic link changes
 use the same coalesced connection queue and visual packet budget; native full-replacement

@@ -8,6 +8,7 @@ import org.bukkit.Bukkit
 import org.bukkit.Location
 import org.bukkit.block.data.BlockData
 import org.bukkit.entity.Player
+import org.bukkit.entity.LivingEntity
 import org.bukkit.event.EventHandler
 import org.bukkit.event.HandlerList
 import org.bukkit.event.Listener
@@ -193,6 +194,7 @@ class PaperPacketDisplays internal constructor(
         }
         val currentAudience = arrayListOf<PacketDisplayViewer>()
         val audienceById = hashMapOf<UUID, PacketDisplayViewer>()
+        val nativeCarriers = hashMapOf<UUID, PacketDisplayCarrier>()
         val passengerSnapshots = hashMapOf<Int, List<Int>>()
         val liveVehiclesByWorld = hashMapOf<UUID, MutableSet<Int>>()
         val epochs = hashMapOf<UUID, Long>()
@@ -224,7 +226,18 @@ class PaperPacketDisplays internal constructor(
                     })
                 }
             }
-            display.frame(target)?.let { frames.add(display to it) }
+            val entityTargetId = display.attachmentEntityTargetId
+            if (entityTargetId != null && entityTargetId !in nativeCarriers) {
+                if (frameBatchSize != 0) { frameBatchSize = 0; yield(Unit) }
+                display.attachmentEntity?.let { carrier ->
+                    yieldAll(BukkitPacketDisplayAudience.captureEntitySteps(carrier) { snapshot ->
+                        nativeCarriers[snapshot.id] = snapshot
+                        passengerSnapshots[snapshot.entityId] = snapshot.passengerEntityIds
+                        liveVehiclesByWorld.getOrPut(snapshot.worldId, ::hashSetOf).add(snapshot.entityId)
+                    })
+                }
+            }
+            display.frame(target, entityTargetId?.let(nativeCarriers::get))?.let { frames.add(display to it) }
             if (++frameBatchSize == PURE_CAPTURE_BATCH_SIZE) { frameBatchSize = 0; yield(Unit) }
         }
         if (frameBatchSize != 0) yield(Unit)
@@ -241,13 +254,18 @@ class PaperPacketDisplays internal constructor(
             var visibilityBatchSize = 0
             for ((display, frame) in frames) {
                 val targetId = display.attachmentTargetId
+                val entityTargetId = display.attachmentEntityTargetId
                 val packetCarrier = display.attachmentNpc
                 val packetLease = packetCarrier?.lease(viewer.id)
-                var nativeCheck = targetId != null
+                var nativeCheck = targetId != null || entityTargetId != null
                 // Carrier visibility and uncached scene predicates retain individual native steps.
                 if (nativeCheck && visibilityBatchSize != 0) { visibilityBatchSize = 0; yield(Unit) }
                 val carrier = targetId?.let(audienceById::get)
-                val carrierVisible = if (packetCarrier != null) packetLease != null else targetId == null || targetId == viewer.id ||
+                val nativeCarrier = entityTargetId?.let(nativeCarriers::get)
+                val carrierVisible = if (entityTargetId != null) nativeCarrier != null &&
+                    BukkitPacketDisplayAudience.isCurrent(nativeCarrier) &&
+                    (entityTargetId == viewer.id || (viewer.id in nativeCarrier.trackedBy && viewer.player.canSee(nativeCarrier.entity)))
+                else if (packetCarrier != null) packetLease != null else targetId == null || targetId == viewer.id ||
                     (carrier != null && audience.isCurrent(carrier) && viewer.id in carrier.trackedBy && viewer.player.canSee(carrier.player))
                 if (carrierVisible && frame.chunkKey in viewer.sentChunks && display.visibleTo(viewer, frame)) {
                     val group = display.audienceGroup
@@ -423,7 +441,22 @@ internal data class PacketDisplayViewer(
     val height: Double,
 )
 
+/** Detached native carrier state, captured once per entity in a refresh; never sent to Netty. */
+internal data class PacketDisplayCarrier(
+    val entity: LivingEntity,
+    val id: UUID,
+    val worldId: UUID,
+    val entityId: Int,
+    val trackedBy: Set<UUID>,
+    val x: Double,
+    val y: Double,
+    val z: Double,
+    val passengerEntityIds: List<Int>,
+)
+
 internal object BukkitPacketDisplayAudience : PacketDisplayAudienceSource {
+    internal fun isCurrent(carrier: PacketDisplayCarrier): Boolean = carrier.entity.isValid &&
+        carrier.entity.world.uid == carrier.worldId && carrier.entity.entityId == carrier.entityId
     override fun isCurrent(viewer: PacketDisplayViewer): Boolean = viewer.player.isValid &&
         viewer.player.world.uid == viewer.worldId && viewer.player.entityId == viewer.entityId
     override fun checkThread() { check(Bukkit.isPrimaryThread()) { "Packet display state must be accessed on the server thread" } }
@@ -457,6 +490,23 @@ internal object BukkitPacketDisplayAudience : PacketDisplayAudienceSource {
         if (player.isValid && player.world.uid == worldId && player.entityId == entityId) {
             accept(PacketDisplayViewer(player, player.uniqueId, worldId, entityId, tracked,
                 location.x, location.y, location.z, emptySet(), passengers, height = height))
+        }
+        yield(Unit)
+    }.iterator()
+
+    /** Capture native mobs without treating them as viewers or touching a connection/chunk loader. */
+    internal fun captureEntitySteps(entity: LivingEntity, accept: (PacketDisplayCarrier) -> Unit): Iterator<Unit> = sequence {
+        if (!entity.isValid) { yield(Unit); return@sequence }
+        val location = entity.location
+        val worldId = entity.world.uid
+        val entityId = entity.entityId
+        val tracked = hashSetOf<UUID>()
+        for (observer in entity.getTrackedBy()) { tracked.add(observer.uniqueId); yield(Unit) }
+        val passengers = arrayListOf<Int>()
+        for (passenger in entity.passengers) { passengers.add(passenger.entityId); yield(Unit) }
+        if (entity.isValid && entity.world.uid == worldId && entity.entityId == entityId) {
+            accept(PacketDisplayCarrier(entity, entity.uniqueId, worldId, entityId, tracked,
+                location.x, location.y, location.z, passengers))
         }
         yield(Unit)
     }.iterator()

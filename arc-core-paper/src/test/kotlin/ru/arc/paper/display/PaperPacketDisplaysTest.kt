@@ -4,15 +4,20 @@ import com.destroystokyo.paper.event.player.PlayerPostRespawnEvent
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FreeSpec
 import io.kotest.matchers.shouldBe
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.verify
 import io.papermc.paper.event.packet.PlayerChunkUnloadEvent
 import net.kyori.adventure.text.Component
 import org.bukkit.Location
 import org.bukkit.block.data.BlockData
 import org.bukkit.entity.Player
+import org.bukkit.entity.Horse
 import org.bukkit.event.player.PlayerRespawnEvent
 import org.bukkit.inventory.ItemStack
 import org.bukkit.plugin.ServicePriority
 import org.bukkit.util.Transformation
+import org.bukkit.util.Vector
 import org.joml.Quaternionf
 import org.joml.Vector3f
 import org.mockbukkit.mockbukkit.ServerMock
@@ -389,6 +394,70 @@ class PaperPacketDisplaysTest : FreeSpec({
         }
     }
 
+    "native mob attachments retain real riders and follow tracking movement and invalidation" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val plugin = paper.loadPlugin<TestPaperPlugin>()
+            val world = paper.addSimpleWorld("horse-carrier")
+            val observer = paper.addPlayer("Observer")
+            val rider = paper.addPlayer("Rider")
+            var horseLocation = Location(world, 1.0, 64.0, 1.0)
+            var observers = setOf<Player>(observer)
+            var valid = true
+            val horseId = UUID.randomUUID()
+            val horse = mockk<Horse> {
+                every { uniqueId } returns horseId
+                every { entityId } returns 900
+                every { isValid } answers { valid }
+                every { location } answers { horseLocation.clone() }
+                every { getWorld() } answers { requireNotNull(horseLocation.world) }
+                every { getTrackedBy() } answers { observers }
+                every { passengers } returns listOf(rider)
+            }
+            val audience = MutableAudience().apply { values = listOf(viewer(observer, world.uid)) }
+            val transport = RecordingTransport()
+            testPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), audience).use { displays ->
+                val parts = List(3) { displays.spawnText(horseLocation, Component.text("Tack-$it")) }
+                val offset = Vector(0.0, 1.44375, 0.0)
+                parts.forEach { it.attachTo(horse, offset) }
+                offset.y = 100.0 // Attachment owns a copy, not a caller's mutable input.
+                displays.refreshFully()
+                val first = transport.forPlayer(observer).last()
+                first.passengers shouldBe mapOf(900 to parts.map { it.entityId })
+                first.nativePassengers shouldBe mapOf(900 to listOf(rider.entityId))
+                first.frames.map { it.y } shouldBe List(3) { 65.44375 }
+                verify(exactly = 1) { horse.getTrackedBy() }
+
+                horseLocation = Location(world, 4.0, 65.0, 1.0, 90f, 0f)
+                parts.forEach { it.teleport(Location(world, -20.0, 20.0, -20.0)) }
+                displays.refreshFully()
+                val moving = transport.forPlayer(observer).last()
+                moving.frames.map { it.entityId } shouldBe first.frames.map { it.entityId }
+                moving.frames.map { it.x } shouldBe List(3) { 4.0 }
+                moving.frames.map { it.y } shouldBe List(3) { 66.44375 }
+                moving.frames.map { it.attachmentVehicleId } shouldBe List(3) { 900 }
+
+                observers = emptySet()
+                displays.refreshFully()
+                transport.forPlayer(observer).last().frames shouldBe emptyList()
+                observers = setOf(observer)
+                displays.refreshFully()
+                transport.forPlayer(observer).last().frames.map { it.entityId } shouldBe parts.map { it.entityId }
+
+                valid = false
+                displays.refreshFully()
+                transport.forPlayer(observer).last().frames shouldBe emptyList()
+                transport.forPlayer(observer).last().passengers shouldBe emptyMap()
+                valid = true
+                parts.forEach { it.detach() }
+                audience.values = listOf(viewer(observer, world.uid, x = -20.0, chunks = setOf((-2L shl 32) or 0xfffffffeL)))
+                displays.refreshFully()
+                transport.forPlayer(observer).last().passengers shouldBe emptyMap()
+                transport.forPlayer(observer).last().frames.map { it.x } shouldBe List(3) { -20.0 }
+                shouldThrow<IllegalArgumentException> { parts.first().attachTo(horse, Vector(Double.NaN, 0.0, 0.0)) }
+            }
+        }
+    }
+
     "chunk resets survive a quick unload reload between snapshots and replacement connections clean up" {
         MockBukkitTestRuntime.open().use { paper ->
             val plugin = paper.loadPlugin<TestPaperPlugin>()
@@ -492,6 +561,7 @@ private class RecordingConnection : PacketDisplayConnection {
         val resetChunks: Set<Long>,
         val resetAll: Boolean,
         val passengers: Map<Int, List<Int>>,
+        val nativePassengers: Map<Int, List<Int>>,
     )
     override val identity: Any = Any()
     private val frames = mutableListOf<Frame>()
@@ -504,6 +574,6 @@ private class RecordingConnection : PacketDisplayConnection {
         nativePassengerSnapshots: Map<Int, List<Int>>,
         liveVehicleIds: Set<Int>?,
     ) {
-        frames += Frame(desired, resetChunks, resetAll, desiredPassengers)
+        frames += Frame(desired, resetChunks, resetAll, desiredPassengers, nativePassengerSnapshots)
     }
 }
