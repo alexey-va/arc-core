@@ -239,18 +239,18 @@ class DialogDecorationTest : FreeSpec({
         java.nio.file.Files.writeString(path, com.google.gson.JsonArray().apply { add(record) }.toString())
     }
 
-    "field icons preserve canonical currencies and a measured 12px label start" {
+    "ten field icons share the native icon font and a measured 12px label start" {
         DialogDecoration.FieldIcon.entries.forEach { icon ->
             val label = DialogDecoration.fieldLabel(icon, Component.text("Поле", NamedTextColor.AQUA))
             val line = measure(label).single()
             line.ink.first().point shouldBe icon.point
-            line.ink.first().style.font() shouldBe Key.key(icon.fontName)
+            line.ink.first().style.font() shouldBe Key.key("arc:dialog_field_icons")
             line.ink.first().style.color() shouldBe NamedTextColor.WHITE
             line.ink.first().style.shadowColor() shouldBe null
             line.ink.single { it.point == 'П'.code }.x shouldBe 12
             line.ink.single { it.point == 'П'.code }.style.color() shouldBe NamedTextColor.AQUA
         }
-        DialogDecoration.FieldIcon.BALANCE.point shouldBe 0x1F4B0
-        DialogDecoration.FieldIcon.TOKENS.point shouldBe 0xE516
+        DialogDecoration.FieldIcon.BALANCE.point shouldBe 0x10A008
+        DialogDecoration.FieldIcon.TOKENS.point shouldBe 0x10A009
     }
 })

@@ -19126,7 +19126,9 @@
         "U+10A004": 9.0,
         "U+10A005": 10.0,
         "U+10A006": 9.0,
-        "U+10A007": 10.0
+        "U+10A007": 10.0,
+        "U+10A008": 9.0,
+        "U+10A009": 9.0
       },
       "bold": {
         "U+FA200": -1,
@@ -19156,13 +19158,15 @@
         "U+10A004": 10.0,
         "U+10A005": 11.0,
         "U+10A006": 10.0,
-        "U+10A007": 11.0
+        "U+10A007": 11.0,
+        "U+10A008": 10.0,
+        "U+10A009": 10.0
       },
       "providers": [
         "space",
         "bitmap"
       ],
-      "glyph_count": 28,
+      "glyph_count": 30,
       "skipped_providers": []
     }
   },
@@ -19635,8 +19639,8 @@
     "arc:dialog_field_icons": {
       "source": "ruscrafting-ops/docs/assets/dialogue-ui/preview/font-metrics.json",
       "resource_sha256": {
-        "assets/arc/font/dialog_field_icons.json": "ff1708dedabd2d5ec1bb2251e1971a28855802fb72eca496b3ca31bcc15db062",
-        "assets/arc/textures/font/dialog_panels/field-icons-v01.png": "30f137f0c780015861985dd3ae1fed8062d48be79f3fbcdac61a6c9ee207c8c7"
+        "assets/arc/font/dialog_field_icons.json": "da0b6f05e8bbfaaeee9bee4d71916c4292711e3624c40f351ee677b7bf5c06d4",
+        "assets/arc/textures/font/dialog_panels/field-icons-v02.png": "71757b1d31a6871f155a460cc7af80be1a638c3a2df3de4e5b2c1050d2795c8f"
       }
     }
   }

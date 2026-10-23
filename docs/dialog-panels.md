@@ -71,8 +71,10 @@ reuse registered artwork without feature-local codepoint constants:
   with a readable accent; color alone never defines the state.
 - `DialogDecoration.fieldLabel(icon, label)` preserves the native label after
   one white icon in a 12px slot. Typed icons cover player, rank, homes, lands,
-  world, coordinates, chat, online, balance and tokens. Currency icons reuse
-  the canonical default-font coin and token glyphs.
+  world, coordinates, chat, online, balance and tokens. All ten use the same
+  native 9px field-icon font; ordinary coin/token assets remain separate.
+  A caller may show amount-only values when the field label already names and
+  illustrates the currency, retaining informative values in its plain fallback.
 
 The caller retains its plain fallback when custom fonts are disabled. Ordinary
 buttons stay native. Source checks and offline provider renders do not establish

@@ -34,7 +34,7 @@ class DialogDecoration(font: Key, positiveSpace: Int, negativeSpace: Int) {
         HOMES(0x10A002, "arc:dialog_field_icons"), LANDS(0x10A003, "arc:dialog_field_icons"),
         WORLD(0x10A004, "arc:dialog_field_icons"), COORDINATES(0x10A005, "arc:dialog_field_icons"),
         CHAT(0x10A006, "arc:dialog_field_icons"), ONLINE(0x10A007, "arc:dialog_field_icons"),
-        BALANCE(0x1F4B0, "minecraft:default"), TOKENS(0xE516, "minecraft:default"),
+        BALANCE(0x10A008, "arc:dialog_field_icons"), TOKENS(0x10A009, "arc:dialog_field_icons"),
     }
 
     companion object {
