@@ -59,6 +59,8 @@ internal interface PacketDisplayTransport : AutoCloseable {
 
 internal interface PacketDisplayConnection {
     val identity: Any
+    /** After prior admission completes, no submitted displays, links or deferred cleanup remain. */
+    val isDrained: Boolean get() = false
 
     fun submit(
         desired: List<PacketDisplayFrame>,
@@ -379,6 +381,7 @@ internal class PacketDisplayAttachment internal constructor(
     private var submittedView: PacketDisplayView? = null
 
     override val identity: Any get() = attachmentIdentity
+    override val isDrained: Boolean get() = clean
 
     internal fun isUsableFor(channel: Any): Boolean = valid && !closing.get() && channelRef.get() === channel
 
@@ -409,6 +412,7 @@ internal class PacketDisplayAttachment internal constructor(
         if (closing.get()) return CompletableFuture.failedFuture(CancellationException("Packet display connection is closing"))
         return enqueue {
             prepareSubmission(desired, resetChunks, resetAll, desiredPassengers, nativePassengerSnapshots, liveVehicleIds, view)
+            completeCloseIfDrained()
         }
     }
 

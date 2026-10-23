@@ -26,6 +26,92 @@ import java.util.logging.LogRecord
 import java.util.logging.Level
 
 class PaperPacketDisplayBudgetTest : FreeSpec({
+    "the last handle retires viewers within budget and an idle owner stops audience and event-loop work" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val plugin = paper.loadPlugin<TestPaperPlugin>()
+            val players = List(5) { paper.addPlayer("Viewer-$it") }
+            val world = paper.addSimpleWorld("idle-displays")
+            val scheduler = TestTaskScheduler()
+            val work = BudgetedTaskQueue(LifecycleTaskScope(scheduler), 2, Long.MAX_VALUE)
+            val cleanup = QueueCleanup(); val transport = BudgetTransport()
+            var captures = 0
+            val audience = object : TestPacketDisplayAudience() {
+                override fun checkThread() = Unit
+                override fun capture(): List<PacketDisplayViewer> {
+                    captures++
+                    return players.flatMap { fixedAudience(it, world.uid).capture() }
+                }
+            }
+            val displays = PaperPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), audience, work, false, cleanup)
+            val location = Location(world, 0.0, 64.0, 0.0)
+            val handle = displays.spawnText(location, Component.text("first"))
+            val initial = displays.refresh(); scheduler.tick(30); initial.join()
+            captures shouldBe 1
+            transport.frames.size shouldBe players.size
+
+            handle.remove()
+            transport.admission = CompletableFuture()
+            val retiring = displays.refresh()
+            scheduler.tick()
+            transport.frames.takeLast(2).map { it.size } shouldBe listOf(0, 0)
+            transport.frames.size shouldBe players.size + 2
+            captures shouldBe 1
+            retiring.isDone shouldBe false
+            val next = displays.spawnText(location, Component.text("next"))
+            (displays.refresh() === retiring) shouldBe true
+            scheduler.tick(10)
+            transport.frames.size shouldBe players.size * 2
+            retiring.isDone shouldBe false
+
+            transport.admission.complete(null)
+            retiring.join()
+            val resumed = displays.refresh(); scheduler.tick(30); resumed.join()
+            captures shouldBe 2
+            transport.frames.takeLast(players.size).forEach { it.single().entityId shouldBe next.entityId }
+            next.remove()
+            val empty = displays.refresh(); scheduler.tick(10); empty.join()
+            transport.drained = true // Removal has now drained, not merely entered the event loop.
+            val idle = displays.refresh(); scheduler.tick(10); idle.join()
+            transport.closeCalls shouldBe 0
+            repeat(5) { displays.refresh().isDone shouldBe true }
+            captures shouldBe 2
+            transport.frames.size shouldBe players.size * 4
+            val closing = displays.closeAsync(); cleanup.drain(closing); work.close()
+        }
+    }
+
+    "an empty owner still captures participants that can create the next scene" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val plugin = paper.loadPlugin<TestPaperPlugin>()
+            val player = paper.addPlayer("Viewer")
+            val world = paper.addSimpleWorld("idle-participant")
+            val scheduler = TestTaskScheduler()
+            val work = BudgetedTaskQueue(LifecycleTaskScope(scheduler), maximumNanos = Long.MAX_VALUE)
+            val cleanup = QueueCleanup(); val transport = BudgetTransport()
+            val displays = PaperPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()),
+                fixedAudience(player, world.uid), work, false, cleanup)
+            val location = Location(world, 0.0, 64.0, 0.0)
+            val initial = displays.spawnText(location, Component.text("first"))
+            val shown = displays.refresh(); scheduler.tick(10); shown.join()
+            initial.remove()
+            var captures = 0
+            displays.participate(object : PacketDisplayCaptureParticipant {
+                override fun captureSteps(viewers: List<PacketDisplayViewer>): Iterator<Unit> = sequence {
+                    captures++
+                    viewers.single().id shouldBe player.uniqueId
+                    displays.spawnText(location, Component.text("next"))
+                    yield(Unit)
+                }.iterator()
+                override fun closeSteps() = emptyList<Unit>().iterator()
+            })
+            val next = displays.refresh(); scheduler.tick(10); next.join()
+            captures shouldBe 1
+            transport.closeCalls shouldBe 0
+            transport.frames.last().single().metadata.content shouldBe PacketDisplayContent.Text(Component.text("next"))
+            val closing = displays.closeAsync(); cleanup.drain(closing); work.close()
+        }
+    }
+
     "disconnect cancellation is quiet but admission failures stay observable and the next sweep retries" {
         for (failure in listOf(CancellationException("channel closed"),
             CompletionException(CompletionException(CancellationException("channel closed"))),
@@ -347,22 +433,25 @@ private class QueueCleanup : ArcNativeCleanupService {
 }
 private class BudgetTransport : PacketDisplayTransport, PacketDisplayConnection {
     var closed = false
+    var closeCalls = 0
+    var drained = false
     var admission = CompletableFuture.completedFuture<Void>(null)
     var terminal = CompletableFuture.completedFuture<Void>(null)
     val frames = mutableListOf<List<PacketDisplayFrame>>()
     private var next = 0
     override val identity = Any()
+    override val isDrained: Boolean get() = drained
     override fun blockStateId(block: BlockData): Int = error("Not used")
     override fun itemSnapshot(item: ItemStack): PacketItemStack = error("Not used")
     override fun nextEntityId() = ++next
     override fun connection(player: Player): PacketDisplayConnection = this
     override fun forget(player: Player) = Unit
     override fun close() { closed = true }
-    override fun closeAsync() = terminal.copy()
+    override fun closeAsync(): CompletableFuture<Void> { closeCalls++; return terminal.copy() }
     override fun submit(desired: List<PacketDisplayFrame>, resetChunks: Set<Long>, resetAll: Boolean,
         desiredPassengers: Map<Int,List<Int>>, nativePassengerSnapshots: Map<Int,List<Int>>, liveVehicleIds: Set<Int>?) { frames.add(desired) }
     override fun submitAsync(desired: List<PacketDisplayFrame>, resetChunks: Set<Long>, resetAll: Boolean,
         desiredPassengers: Map<Int,List<Int>>, nativePassengerSnapshots: Map<Int,List<Int>>, liveVehicleIds: Set<Int>?): CompletableFuture<Void> {
-        frames.add(desired); return admission.copy()
+        drained = false; frames.add(desired); return admission.copy()
     }
 }

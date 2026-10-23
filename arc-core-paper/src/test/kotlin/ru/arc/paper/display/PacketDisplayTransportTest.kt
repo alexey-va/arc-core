@@ -26,6 +26,33 @@ class PacketDisplayTransportTest : FreeSpec({
     beforeSpec { PacketEvents.setAPI(TestPacketEventsApi()) }
     afterSpec { PacketEvents.setAPI(previousApi) }
 
+    "an empty scene is drained only after removal flush and remains retryable after a write failure" {
+        val backend = RecordingPacketBackend()
+        val channel = Any()
+        val connection = PacketDisplayAttachment(channel, Logger.getAnonymousLogger(), backend)
+        val display = frame()
+        connection.submitAsync(emptyList()); backend.runAll()
+        connection.isDrained shouldBe true
+        connection.submitAsync(listOf(display)); backend.runAll(); backend.clear()
+        connection.isDrained shouldBe false
+        backend.writable = false
+        val removal = connection.submitAsync(emptyList())
+        backend.tasks.removeFirst().invoke() // Admission does not acknowledge deferred removal.
+        removal.join()
+        backend.tasks.removeFirst().invoke()
+        connection.isDrained shouldBe false
+        backend.writable = true
+        backend.failOnWrite = 1
+        backend.runAll()
+        connection.isDrained shouldBe false
+        backend.failOnWrite = null
+        connection.submitAsync(emptyList()); backend.runAll()
+        connection.isDrained shouldBe true
+        backend.writes.filterIsInstance<WrapperPlayServerDestroyEntities>().single().entityIds.toList() shouldBe listOf(display.entityId)
+        backend.flushes shouldBe 1
+        java.lang.ref.Reference.reachabilityFence(channel)
+    }
+
     "AFK pauses front-facing motion content and new spawns but preserves privacy removal and latest resume" {
         val backend = RecordingPacketBackend()
         val channel = Any()

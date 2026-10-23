@@ -177,6 +177,20 @@ class PaperPacketDisplays internal constructor(
     }
 
     private fun captureSteps(admissions: MutableList<CompletableFuture<Void>>): Iterator<Unit> = sequence {
+        // Retire an empty scene without recapturing Bukkit viewers. Keep failed/deferred
+        // cleanup eligible, then let the existing empty-owner fast path stop future sweeps.
+        if (handles.isEmpty() && captureParticipants.isEmpty()) {
+            for ((id, state) in viewers) {
+                if (state.connection.isDrained) {
+                    viewers.remove(id, state)
+                    resetChunks.remove(id); resetViewers.remove(id)
+                } else {
+                    state.connection.submitAsync(emptyList()).also { admissions.add(it); track(it) }
+                }
+                yield(Unit)
+            }
+            return@sequence
+        }
         val currentAudience = arrayListOf<PacketDisplayViewer>()
         val audienceById = hashMapOf<UUID, PacketDisplayViewer>()
         val passengerSnapshots = hashMapOf<Int, List<Int>>()
