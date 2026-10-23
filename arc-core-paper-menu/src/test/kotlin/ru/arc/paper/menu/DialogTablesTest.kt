@@ -2,12 +2,14 @@ package ru.arc.paper.menu
 
 import com.google.gson.JsonParser
 import io.kotest.assertions.throwables.shouldThrow
+import io.kotest.assertions.withClue
 import io.kotest.core.spec.style.FreeSpec
 import io.kotest.matchers.shouldBe
 import net.kyori.adventure.key.Key
 import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.TextComponent
 import net.kyori.adventure.text.format.NamedTextColor
+import net.kyori.adventure.text.format.ShadowColor
 import net.kyori.adventure.text.format.Style
 import net.kyori.adventure.text.format.TextDecoration
 import net.kyori.adventure.text.minimessage.MiniMessage
@@ -28,6 +30,9 @@ class DialogTablesTest : FreeSpec({
                 else lines[lines.lastIndex] += when {
                     point in 0xF0F01..0xF0F0A -> 1 shl (point - 0xF0F01)
                     point == 0xF0F11 -> -1
+                    point in 0xFA300..0xFAF1B && (point and 15) <= 11 -> 17
+                    point in 0xFA200..0xFA209 -> -(1 shl (point - 0xFA200))
+                    point in 0xFA220..0xFA229 -> 1 shl (point - 0xFA220)
                     point in 0xE540..0xE59E && (point and 15) <= 14 -> {
                         bold shouldBe false
                         style.color() shouldBe NamedTextColor.WHITE
@@ -72,6 +77,20 @@ class DialogTablesTest : FreeSpec({
             node.children().forEach { visit(it, style) }
         }
         visit(component, Style.empty())
+    }
+    fun assertClientPrefixes(component: Component, budget: Int) {
+        var cursor = 0
+        textRuns(component).forEach { (text, style) ->
+            text.codePoints().forEach { point ->
+                if (point == 10) cursor = 0
+                else {
+                    cursor += lineWidths(Component.text(String(Character.toChars(point))).style(style)).single()
+                    withClue("Client wraps at U+${point.toString(16)} before any later negative spacer") {
+                        (cursor <= budget) shouldBe true
+                    }
+                }
+            }
+        }
     }
     fun topFrameGeometry(component: Component, frame: DialogTables.Frame): Pair<Int, Int> {
         val firstLine = buildList {
@@ -293,6 +312,75 @@ class DialogTablesTest : FreeSpec({
             result.columnWidths.first shouldBe 251
             lineWidths(result.component).forEach { it shouldBe 392 }
         }
+    }
+
+    "filled panels support one to eight independently wrapped columns with all backgrounds first" {
+        for (count in 1..8) {
+            val width = if (count <= 3) 508 else 1024
+            val rows = List(3) { row -> List(count) { column ->
+                Component.text(if (column == 0) "Длинное описание строки $row с сохранёнными словами и переносом" else "Ячейка $row/$column")
+            } }
+            val body = DialogTables.filledBody(rows, List(count) { Component.text("Колонка $it") }, width, List(count) { 1 })
+            val widths = lineWidths(body.text)
+            widths.forEach { it shouldBe width - 10 }
+            assertClientPrefixes(body.text, width - 8)
+            val runs = textRuns(body.text)
+            val background = runs.first()
+            background.second.font() shouldBe Key.key("arc:dialog_ui_preview")
+            background.second.color() shouldBe NamedTextColor.WHITE
+            background.second.shadowColor() shouldBe ShadowColor.none()
+            val points = background.first.codePoints().toArray().filter { it in 0xFA300..0xFAF1B }
+            points.map { (it - 0xFA300) / 16 }.toSet() shouldBe (0 until widths.size).toSet()
+            points.count { (it and 15) in listOf(3, 7, 11) } shouldBe widths.size * (count - 1)
+            runs.drop(1).forEach { (text, style) ->
+                text.codePoints().noneMatch { it in 0xFA300..0xFAF1B } shouldBe true
+                if (text.any(Char::isLetter)) {
+                    style.font() shouldBe Key.key("minecraft:default")
+                    style.shadowColor() shouldBe null
+                }
+            }
+            val plain = PlainTextComponentSerializer.plainText().serialize(body.text)
+            rows.flatten().forEach { cell ->
+                val words = PlainTextComponentSerializer.plainText().serialize(cell).split(' ')
+                words.forEach { plain.contains(it) shouldBe true }
+            }
+        }
+    }
+
+    "filled panel reaches the final row bank with compact background and preserved explicit text style" {
+        val text = Component.text("А\nБ\nВ", NamedTextColor.AQUA).shadowColor(ShadowColor.shadowColor(0x80443322.toInt()))
+        val body = DialogTables.filledBody(List(64) { listOf(text) }, null, 1024, listOf(Int.MAX_VALUE))
+        lineWidths(body.text) shouldBe List(194) { 1014 }
+        assertClientPrefixes(body.text, 1016)
+        val runs = textRuns(body.text)
+        countCodePoint(body.text, 0xFA300 + 193 * 16 + 8) shouldBe 1
+        runs.first().first.codePoints().anyMatch { it == 0xFA300 + 193 * 16 + 10 } shouldBe true
+        runs.drop(1).filter { it.first.any(Char::isLetter) }.forEach { (_, style) ->
+            style.color() shouldBe NamedTextColor.AQUA
+            style.shadowColor() shouldBe text.shadowColor()
+        }
+        // One compact text run, not one separately styled JSON component per strip/tile.
+        body.text.children().first().children().size shouldBe 0
+        val weighted = DialogTables.filledBody(listOf(List(8) { Component.text("А") }), null, 1024, List(8) { Int.MAX_VALUE })
+        lineWidths(weighted.text).forEach { it shouldBe 1014 }
+    }
+
+    "filled panel limits and unknown metrics preserve all cells and invalid shapes fail early" {
+        val cases = listOf(
+            List(65) { listOf(Component.text("строка $it")) } to 320,
+            listOf(listOf(Component.text((1..193).joinToString("\n") { "строка $it" }))) to 320,
+            listOf(listOf(Component.text("неизвестный").font(Key.key("unknown:font")))) to 320,
+            listOf(listOf(Component.text("узкий"))) to 24,
+        )
+        cases.forEach { (rows, width) ->
+            val body = DialogTables.filledBody(rows, null, width, listOf(1))
+            val plain = PlainTextComponentSerializer.plainText().serialize(body.text)
+            plain.codePoints().noneMatch { it in 0xFA300..0xFAF1B } shouldBe true
+            rows.flatten().forEach { plain.contains(PlainTextComponentSerializer.plainText().serialize(it)) shouldBe true }
+        }
+        shouldThrow<IllegalArgumentException> { DialogTables.filledBody(listOf(listOf(Component.text("a"))), null, 320, listOf(1, 1)) }
+        shouldThrow<IllegalArgumentException> { DialogTables.filledBody(emptyList(), null, 320, listOf(0)) }
+        shouldThrow<IllegalArgumentException> { DialogTables.filledBody(emptyList(), null, 320, List(9) { 1 }) }
     }
 
     "unsupported fonts and client translations retain readable data without broken frame glyphs" {

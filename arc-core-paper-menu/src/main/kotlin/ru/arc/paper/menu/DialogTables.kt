@@ -4,11 +4,13 @@ import net.kyori.adventure.key.Key
 import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.TextComponent
 import net.kyori.adventure.text.format.NamedTextColor
+import net.kyori.adventure.text.format.ShadowColor
 import net.kyori.adventure.text.format.Style
 import net.kyori.adventure.text.format.TextColor
 import net.kyori.adventure.text.format.TextDecoration
 import ru.arc.text.TextAlignment
 import ru.arc.text.TextLayoutResult
+import ru.arc.text.PixelSpacing
 import kotlin.math.abs
 
 /**
@@ -53,6 +55,10 @@ object DialogTables {
     private const val TILE = 9
     private const val MIN_OUTER_INSET = 11
     private const val TEXT_START = 10
+    private val filledFont = Key.key("arc:dialog_ui_preview")
+    private val filledPositive = PixelSpacing(filledFont, 0xFA220)
+    private val filledNegative = PixelSpacing(filledFont, 0xFA200)
+    private val filledTextColor = TextColor.color(0xE8DFD2)
 
     fun body(
         rows: List<Pair<Component, Component>>,
@@ -97,15 +103,7 @@ object DialogTables {
         val tiles = (width - 8 - MIN_OUTER_INSET * 2 - 1) / TILE
         val repeats = tiles - count - 1
         if (repeats < count * 2 || allRows.isEmpty() || allRows.size > 64) return fallback()
-        val totalWeight = columnWeights.sumOf { it.toLong() }
-        val available = repeats - count * 2
-        var previous = 0
-        var weight = 0L
-        val lengths = columnWeights.map { part ->
-            weight += part
-            val cumulative = (available * weight / totalWeight).toInt()
-            (2 + cumulative - previous).also { previous = cumulative }
-        }
+        val lengths = weightedLengths(repeats, columnWeights, 2)
         val padding = TEXT_START - frame.leftAdvance
         val widths = lengths.mapIndexed { index, length ->
             TILE * (length + 1) - if (index == 0) TEXT_START else frame.innerAdvance + padding
@@ -140,6 +138,77 @@ object DialogTables {
         }
         output += border(11, 12, 13, 14)
         return PaperDialogBody(lines(output), width)
+    }
+
+    /**
+     * Opt-in opaque v03 panel from arc:dialog_ui_preview, with 1..8 independent
+     * weighted columns. [width] includes 8px native padding and 2px wrap headroom.
+     * Every background strip is emitted before all native text and shadows;
+     * row-bank ascents place strips vertically without interleaving opaque pixels.
+     * At most 64 logical rows (including [headers]) and 192 wrapped lines are
+     * framed. Unknown metrics or content beyond those bounds stays readable and
+     * unframed, with every cell preserved. Existing tooltip frames are unaffected.
+     */
+    fun filledBody(
+        rows: List<List<Component>>,
+        headers: List<Component>?,
+        width: Int,
+        columnWeights: List<Int>,
+    ): PaperDialogBody {
+        require(width in 9..1024) { "Dialog panel width must be in 9..1024 GUI pixels" }
+        require(columnWeights.size in 1..8 && columnWeights.all { it > 0 }) { "Dialog panels require 1..8 positive column weights" }
+        val count = columnWeights.size
+        require(rows.all { it.size == count } && (headers == null || headers.size == count)) { "Dialog panel cells must match column weights" }
+        val heading = headers?.map { it.colorIfAbsent(headerColor).decorate(TextDecoration.BOLD) }
+        val allRows = listOfNotNull(heading) + rows.map { row -> row.map { it.colorIfAbsent(filledTextColor) } }
+        fun fallback() = PaperDialogBody(lines(allRows.map { row ->
+            join(row.flatMapIndexed { index, cell -> if (index == 0) listOf(cell) else listOf(Component.text(" · ", filledTextColor), cell) })
+        }).font(font), width)
+        val panelWidth = width - 10
+        val contentWidth = panelWidth - 32 - (count - 1) * 16
+        if (panelWidth < 48 || contentWidth < count || allRows.isEmpty() || allRows.size > 64) return fallback()
+        val widths = weightedLengths(contentWidth, columnWeights, 1)
+        val measured = allRows.map { row -> row.mapIndexed { index, cell -> cellLines(cell, widths[index]) ?: return fallback() } }
+        val height = measured.sumOf { row -> row.maxOf { it.size } }
+        if (height > 192) return fallback()
+        val dividers = widths.dropLast(1).runningFold(16) { x, cellWidth -> x + cellWidth + 16 }
+            .drop(1).map { it - 16 }
+
+        val background = Component.text()
+        var cursor = 0
+        fun move(amount: Int) {
+            background.append(if (amount >= 0) filledPositive.padding(amount) else filledNegative.padding(-amount))
+            cursor += amount
+        }
+        fun tile(x: Int, point: Int) {
+            move(x - cursor)
+            background.append(Component.text(String(Character.toChars(point))).font(filledFont).decorations(undecorated))
+            cursor = x + 17
+        }
+        for (row in 0 until height + 2) {
+            val base = 0xFA300 + row * 16 + when (row) { 0 -> 0; height + 1 -> 8; else -> 4 }
+            tile(0, base)
+            val right = panelWidth - 16
+            for (x in 16 until right step 16) tile(minOf(x, right - 16), base + 1)
+            tile(right, base + 2)
+            dividers.forEach { tile(it, base + 3) }
+        }
+        move(panelWidth - cursor)
+        val output = mutableListOf(background.build().font(filledFont)
+            .color(NamedTextColor.WHITE).decorations(undecorated).shadowColor(ShadowColor.none()).compact())
+        measured.forEach { cells ->
+            repeat(cells.maxOf { it.size }) { line ->
+                output += join(buildList {
+                    add(gap(16))
+                    cells.forEachIndexed { column, cell ->
+                        add(cell.getOrElse(line) { gap(widths[column]) })
+                        add(gap(16))
+                    }
+                })
+            }
+        }
+        output += gap(panelWidth)
+        return PaperDialogBody(lines(output).font(font), width)
     }
 
     /**
@@ -266,6 +335,18 @@ object DialogTables {
         }
         output += border(11, 12, 13, 14)
         return Result.Framed(lines(output), leftWidth to rightWidth)
+    }
+
+    private fun weightedLengths(total: Int, weights: List<Int>, minimum: Int): List<Int> {
+        val totalWeight = weights.sumOf { it.toLong() }
+        val available = total - weights.size * minimum
+        var previous = 0
+        var weight = 0L
+        return weights.map { part ->
+            weight += part
+            val cumulative = (available * weight / totalWeight).toInt()
+            (minimum + cumulative - previous).also { previous = cumulative }
+        }
     }
 
     private fun cellLines(text: Component, width: Int): List<Component>? {
