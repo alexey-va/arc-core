@@ -104,12 +104,32 @@ Custom latest-state transports can use `PaperVisualPackets.retry` for the shared
 Native passenger/pose/vehicle-visibility corrections remain ordered with their
 gameplay packets and are outside the replaceable cosmetic frame budget.
 
-`PaperViewerParticles` handles the opposite case: a one-shot viewer-only dust
-effect. The caller selects the audience and cadence; the owner captures only
-immutable coordinates, color, size and offsets, attempts one `PaperVisualPackets`
-write, and drops pressure or closed-channel outcomes without retrying. `close()`
-and `invalidatePending()` prevent an already-enqueued event-loop task from
-sending after its owner or session/target has ended.
+`PaperViewerParticles` handles the opposite case: a one-shot viewer-only cosmetic
+effect. The caller selects the audience and cadence. On Paper the owner captures
+coordinates, type and payload: no data, `DustOptions`, `DustTransition`, ARGB
+`Color`, a `BlockData` state ID, or a copied PacketEvents item converted from a
+cloned Bukkit `ItemStack`. Netty constructs and encodes the packet without Bukkit
+reads, attempts one `PaperVisualPackets` write, and drops pressure or closed-channel
+outcomes without retrying. This is best-effort cosmetic delivery, not a reliable
+queue for gameplay warnings or acknowledgements. `close()` and
+`invalidatePending()` prevent an already-enqueued event-loop task from sending
+after its owner or session/target has ended. No native fallback bypasses admission.
+
+Use explicit `emit(viewer, location, particle, count, offsetX, offsetY, offsetZ,
+extra, data, force)` for full native parameters; overloads omit `force`, then
+`data`, or all offsets/speed/data. They do not use Kotlin default-argument bridges.
+`count=0` retains directional semantics. The short `emit` uses speed `1.0` and
+`force=false`; the retained `dust` signature keeps its original speed `0.0` default.
+`force` controls the packet's long-distance flag, not viewer selection or fan-out.
+Unsupported or mismatched payloads fail before dispatch.
+
+Defaults and flags follow the pinned Paper 1.21.11 API and
+[CraftPlayer](https://github.com/PaperMC/Paper/blob/ver/1.21.11/paper-server/src/main/java/org/bukkit/craftbukkit/entity/CraftPlayer.java);
+[CraftWorld](https://github.com/PaperMC/Paper/blob/ver/1.21.11/paper-server/src/main/java/org/bukkit/craftbukkit/CraftWorld.java)
+overrides its no-force endpoint with `false` even though the World interface's
+default method forwards `true`. Migrating world effects must preserve the original
+receiver/range policy separately. Payload mappings match PacketEvents 2.12.1 and
+[CraftParticle](https://github.com/PaperMC/Paper/blob/ver/1.21.11/paper-server/src/main/java/org/bukkit/craftbukkit/CraftParticle.java).
 
 `snapshot()` exposes bounded cumulative counters and current settings.
 `metricPoints()` returns aggregate gauges and three series per source (bytes,

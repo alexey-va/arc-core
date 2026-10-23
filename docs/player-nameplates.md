@@ -84,7 +84,7 @@ camera center. The server does not know the client's exact FOV or aspect ratio,
 so consumers should keep this value configurable and validate it visually for
 their surface.
 
-`PaperNameplateOptions.scale` and `verticalOffset` control the complete native
+`PaperNameplateOptions.scale` and `verticalOffset` control the complete
 display transformation. Keep their defaults for an additive row at the normal
 passenger anchor; set explicit values only after checking the composed plate
 against the server-owned vanilla/TAB name tag.
@@ -99,6 +99,27 @@ target is offline.
 `refreshNow`, event reconciliation, and `close` require Paper's primary thread.
 Normal callers update the registry and let its bounded repeating reconciliation
 apply the newest immutable snapshot.
+
+## Optional packet rendering
+
+The default remains `NativePaperNameplateDisplayFactory`. A consumer that already
+owns `PaperPacketDisplays` may explicitly inject
+`PacketPaperNameplateDisplayFactory(displays, options)` into
+`PaperPlayerNameplates.open`. Both constructor arguments are required, including
+when called across plugin classloaders.
+
+The packet factory preserves the native text style, transformation, passenger
+anchor and private per-viewer audience. It creates no Bukkit entity and uses the
+existing display owner's shared visual budget, latest-frame coalescing and
+attachment cleanup. The normal nameplate visibility policy still decides which
+viewers may see each row. Invalid players and changed world/entity generations
+invalidate the handle so reconciliation can recreate it.
+
+The display owner is borrowed. Close `PaperPlayerNameplates` first to remove its
+handles; closing a nameplate never closes the shared owner. When the consuming
+plugin retires that owner, it must track or await `displays.closeAsync()` through
+its asynchronous lifecycle cleanup so client destruction is observed. Do not
+block Paper's primary thread waiting for this future.
 
 ## Testing
 
