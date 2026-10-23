@@ -14,6 +14,9 @@ import net.kyori.adventure.text.format.Style
 import net.kyori.adventure.text.format.TextDecoration
 import net.kyori.adventure.text.minimessage.MiniMessage
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer
+import java.io.DataOutputStream
+import java.io.OutputStream
+import java.io.UTFDataFormatException
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -349,18 +352,41 @@ class DialogTablesTest : FreeSpec({
 
     "filled panel reaches the final row bank with compact background and preserved explicit text style" {
         val text = Component.text("А\nБ\nВ", NamedTextColor.AQUA).shadowColor(ShadowColor.shadowColor(0x80443322.toInt()))
+        val wireFailures = mutableListOf<String>()
+        for (columns in listOf(1, 8)) {
+            val maximum = DialogTables.filledBody(List(64) { List(columns) { text } }, null, 1024, List(columns) { Int.MAX_VALUE })
+            val background = maximum.text.children().first()
+            withClue("The background uses a few bounded strings, not one component per tile") {
+                (background.children().size < 512) shouldBe true
+            }
+            fun checkWireString(node: Component) {
+                if (node is TextComponent) {
+                    val value = node.content()
+                    val bytes = value.sumOf { when (it.code) { in 1..127 -> 1; in 0..2047 -> 2; else -> 3 } }
+                    if (value.isNotEmpty() && node.style().isEmpty()) (bytes <= 49152) shouldBe true
+                    try {
+                        DataOutputStream(OutputStream.nullOutputStream()).use { it.writeUTF(value) }
+                    } catch (_: UTFDataFormatException) {
+                        wireFailures += "$columns columns: ${value.codePointCount(0, value.length)} codepoints / $bytes modified UTF-8 bytes"
+                    }
+                }
+                node.children().forEach(::checkWireString)
+            }
+            checkWireString(maximum.text)
+        }
+        withClue("Every actual text node must fit the NBT StringTag DataOutput.writeUTF boundary") { wireFailures shouldBe emptyList() }
         val body = DialogTables.filledBody(List(64) { listOf(text) }, null, 1024, listOf(Int.MAX_VALUE))
         lineWidths(body.text) shouldBe List(194) { 1014 }
         assertClientPrefixes(body.text, 1016)
         val runs = textRuns(body.text)
         countCodePoint(body.text, 0xFA300 + 193 * 16 + 8) shouldBe 1
-        runs.first().first.codePoints().anyMatch { it == 0xFA300 + 193 * 16 + 10 } shouldBe true
+        runs.filter { it.second.font() == Key.key("arc:dialog_ui_preview") }
+            .any { it.first.codePoints().anyMatch { point -> point == 0xFA300 + 193 * 16 + 10 } } shouldBe true
         runs.drop(1).filter { it.first.any(Char::isLetter) }.forEach { (_, style) ->
             style.color() shouldBe NamedTextColor.AQUA
             style.shadowColor() shouldBe text.shadowColor()
         }
-        // One compact text run, not one separately styled JSON component per strip/tile.
-        body.text.children().first().children().size shouldBe 0
+        body.text.children().first().children().size shouldBe 4
         val weighted = DialogTables.filledBody(listOf(List(8) { Component.text("А") }), null, 1024, List(8) { Int.MAX_VALUE })
         lineWidths(weighted.text).forEach { it shouldBe 1014 }
     }

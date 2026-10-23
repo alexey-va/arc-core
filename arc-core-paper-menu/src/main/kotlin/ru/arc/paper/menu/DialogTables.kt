@@ -194,8 +194,19 @@ object DialogTables {
             dividers.forEach { tile(it, base + 3) }
         }
         move(panelWidth - cursor)
-        val output = mutableListOf(background.build().font(filledFont)
-            .color(NamedTextColor.WHITE).decorations(undecorated).shadowColor(ShadowColor.none()).compact())
+        val painted = background.build().font(filledFont)
+            .color(NamedTextColor.WHITE).decorations(undecorated).shadowColor(ShadowColor.none()).compact() as TextComponent
+        // NBT StringTag uses writeUTF: each SMP glyph costs 6 bytes, with a 65535-byte limit per string.
+        // Keep chunks below that boundary and never compact them back into one string.
+        val content = painted.content()
+        val chunks = mutableListOf<Component>()
+        var start = 0
+        while (start < content.length) {
+            val end = content.offsetByCodePoints(start, minOf(8192, content.codePointCount(start, content.length)))
+            chunks += Component.text(content.substring(start, end))
+            start = end
+        }
+        val output = mutableListOf<Component>(if (chunks.size <= 1) painted else painted.content("").children(chunks))
         measured.forEach { cells ->
             repeat(cells.maxOf { it.size }) { line ->
                 output += join(buildList {
