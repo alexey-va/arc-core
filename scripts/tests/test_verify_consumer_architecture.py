@@ -225,9 +225,11 @@ class ProviderHost {
         exit_code, output = self.verify()
         self.assertEqual(1, exit_code)
         self.assertIn("PacketDisplayScene", output)
-        self.write("src/main/kotlin/example/Scene.kt", "class Scene(val scene: PacketDisplayScene<PartKey>)\n")
-        exit_code, output = self.verify()
-        self.assertEqual(0, exit_code, output)
+        for owner in ("PacketDisplayScene<PartKey>", "PaperSpatialControls<Context, Action>"):
+            with self.subTest(owner=owner):
+                self.write("src/main/kotlin/example/Scene.kt", f"class Scene(val scene: {owner})\n")
+                exit_code, output = self.verify()
+                self.assertEqual(0, exit_code, output)
 
     def test_packet_npcs_require_the_shared_runtime_owner(self) -> None:
         manifest = self.root / "arc-core-consumer.toml"

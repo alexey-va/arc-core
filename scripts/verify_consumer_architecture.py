@@ -165,7 +165,7 @@ CAPABILITY_EVIDENCE = {
         ("test", re.compile(r"\bRecordingPaperAudienceEffects\b")),
     ),
     "paper-action-panels": (("main", re.compile(r"\bPaperActionPanels\b")),),
-    "paper-spatial-scenes": (("main", re.compile(r"\bPacketDisplayScene\b")),),
+    "paper-spatial-scenes": (("main", re.compile(r"\b(?:PacketDisplayScene|PaperSpatialControls)\b")),),
     "paper-packet-npcs": (("main", re.compile(r"\bPaperPacketNpcs\b")),),
     "paper-menu": (
         (
