@@ -39,40 +39,26 @@ class ComponentTextLayout(
 
     private data class Glyph(val point: Int, val style: Style, val width: Int)
 
+    private data class Collected(val glyphs: List<Glyph>, val failure: TextLayoutResult.Reason?)
+
+    /** Widest explicit line before wrapping, or null for the same unsupported content as [layout]. */
+    fun naturalWidth(text: Component): Int? {
+        val collected = collect(text, Int.MAX_VALUE)
+        if (collected.failure != null) return null
+        var line = 0L
+        var widest = 0L
+        collected.glyphs.forEach { glyph ->
+            if (glyph.point == '\n'.code) { widest = maxOf(widest, line); line = 0 }
+            else line += glyph.width
+        }
+        return maxOf(widest, line).takeIf { it <= Int.MAX_VALUE }?.toInt()
+    }
+
     fun layout(text: Component, width: Int, alignment: TextAlignment): TextLayoutResult {
         require(width in 1..1023) { "Content width must be in 1..1023 GUI pixels" }
-        val glyphs = ArrayList<Glyph>()
-        var nodes = 0
-        var failure: TextLayoutResult.Reason? = null
-        fun collect(component: Component, inherited: Style, depth: Int) {
-            if (failure != null) return
-            if (++nodes > 4096 || depth > 64) { failure = TextLayoutResult.Reason.LIMIT; return }
-            if (component !is TextComponent) { failure = TextLayoutResult.Reason.COMPONENT; return }
-            val style = component.style().merge(inherited, Style.Merge.Strategy.IF_ABSENT_ON_TARGET)
-            val font = style.font() ?: Key.key("minecraft:default")
-            val bold = style.decoration(TextDecoration.BOLD) == TextDecoration.State.TRUE
-            val points = component.content().codePoints().iterator()
-            while (points.hasNext()) {
-                val point = points.nextInt()
-                if (glyphs.size >= 8192) { failure = TextLayoutResult.Reason.LIMIT; return }
-                if (point == '\n'.code) { glyphs += Glyph(point, style, 0); continue }
-                if (Character.getDirectionality(point) in setOf(
-                        Character.DIRECTIONALITY_RIGHT_TO_LEFT,
-                        Character.DIRECTIONALITY_RIGHT_TO_LEFT_ARABIC,
-                        Character.DIRECTIONALITY_RIGHT_TO_LEFT_EMBEDDING,
-                        Character.DIRECTIONALITY_RIGHT_TO_LEFT_OVERRIDE,
-                        Character.DIRECTIONALITY_RIGHT_TO_LEFT_ISOLATE)) {
-                    failure = TextLayoutResult.Reason.DIRECTION; return
-                }
-                val advance = widths.width(font, point, bold)
-                if (advance == null || advance < 0) { failure = TextLayoutResult.Reason.GLYPH; return }
-                if (advance > width) { failure = TextLayoutResult.Reason.GLYPH_TOO_WIDE; return }
-                glyphs += Glyph(point, style, advance)
-            }
-            component.children().forEach { collect(it, style, depth + 1) }
-        }
-        collect(text, Style.empty(), 0)
-        failure?.let { return TextLayoutResult.Unsupported(it) }
+        val collected = collect(text, width)
+        collected.failure?.let { return TextLayoutResult.Unsupported(it) }
+        val glyphs = collected.glyphs
 
         val lines = ArrayList<List<Glyph>>()
         var line = ArrayList<Glyph>()
@@ -124,12 +110,46 @@ class ComponentTextLayout(
                 run.setLength(0)
             }
             content.forEach { glyph ->
-                if (runStyle != glyph.style) { flush(); runStyle = glyph.style }
-                run.appendCodePoint(glyph.point)
+                if (runStyle != glyph.style) { flush(); runStyle = glyph.style }; run.appendCodePoint(glyph.point)
             }
             flush()
             output.append(spacing.padding(remainder - left))
         }
         return TextLayoutResult.Aligned(output.build(), lines.size, width)
+    }
+
+    private fun collect(text: Component, width: Int): Collected {
+        val glyphs = ArrayList<Glyph>()
+        var nodes = 0
+        var failure: TextLayoutResult.Reason? = null
+        fun collect(component: Component, inherited: Style, depth: Int) {
+            if (failure != null) return
+            if (++nodes > 4096 || depth > 64) { failure = TextLayoutResult.Reason.LIMIT; return }
+            if (component !is TextComponent) { failure = TextLayoutResult.Reason.COMPONENT; return }
+            val style = component.style().merge(inherited, Style.Merge.Strategy.IF_ABSENT_ON_TARGET)
+            val font = style.font() ?: Key.key("minecraft:default")
+            val bold = style.decoration(TextDecoration.BOLD) == TextDecoration.State.TRUE
+            val points = component.content().codePoints().iterator()
+            while (points.hasNext()) {
+                val point = points.nextInt()
+                if (glyphs.size >= 8192) { failure = TextLayoutResult.Reason.LIMIT; return }
+                if (point == '\n'.code) { glyphs += Glyph(point, style, 0); continue }
+                if (Character.getDirectionality(point) in setOf(
+                        Character.DIRECTIONALITY_RIGHT_TO_LEFT,
+                        Character.DIRECTIONALITY_RIGHT_TO_LEFT_ARABIC,
+                        Character.DIRECTIONALITY_RIGHT_TO_LEFT_EMBEDDING,
+                        Character.DIRECTIONALITY_RIGHT_TO_LEFT_OVERRIDE,
+                        Character.DIRECTIONALITY_RIGHT_TO_LEFT_ISOLATE)) {
+                    failure = TextLayoutResult.Reason.DIRECTION; return
+                }
+                val advance = widths.width(font, point, bold)
+                if (advance == null || advance < 0) { failure = TextLayoutResult.Reason.GLYPH; return }
+                if (advance > width) { failure = TextLayoutResult.Reason.GLYPH_TOO_WIDE; return }
+                glyphs += Glyph(point, style, advance)
+            }
+            component.children().forEach { collect(it, style, depth + 1) }
+        }
+        collect(text, Style.empty(), 0)
+        return Collected(glyphs, failure)
     }
 }

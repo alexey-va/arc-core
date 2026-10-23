@@ -14,6 +14,21 @@ import net.kyori.adventure.text.format.TextDecoration
 class ComponentTextLayoutTest : FreeSpec({
     val spacerFont = Key.key("arc:layout-spacer")
 
+    "natural width shares style and glyph validation and measures the widest explicit line" {
+        val layout = ComponentTextLayout(GlyphWidths { font, point, bold ->
+            if (font != Key.key("minecraft:default")) null
+            else when (point) { 'a'.code -> if (bold) 3 else 2; 0x1F600 -> 7; else -> null }
+        }, spacerFont)
+        layout.naturalWidth(Component.text("aa\na😀")) shouldBe 9
+        layout.naturalWidth(Component.text("aa").decorate(TextDecoration.BOLD)) shouldBe 6
+        layout.naturalWidth(Component.text("a").font(Key.key("unknown:font"))) shouldBe null
+        layout.naturalWidth(Component.translatable("gui.back")) shouldBe null
+        layout.naturalWidth(Component.text("a".repeat(8193))) shouldBe null
+        layout.naturalWidth(Component.empty()) shouldBe 0
+        ComponentTextLayout(GlyphWidths { _, _, _ -> Int.MAX_VALUE }, spacerFont)
+            .naturalWidth(Component.text("aa")) shouldBe null
+    }
+
     "pads left center and right edges to the exact pixel width" {
         val layout = layoutOf(mapOf('a'.code to 2, 'b'.code to 2))
         val left = layout.layout(Component.text("ab"), 10, TextAlignment.LEFT).requireAligned()

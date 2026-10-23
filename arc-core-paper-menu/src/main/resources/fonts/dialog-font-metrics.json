@@ -19096,6 +19096,74 @@
       ],
       "glyph_count": 2414,
       "skipped_providers": []
+    },
+    "arc:dialog_field_icons": {
+      "normal": {
+        "U+FA200": -1,
+        "U+FA201": -2,
+        "U+FA202": -4,
+        "U+FA203": -8,
+        "U+FA204": -16,
+        "U+FA205": -32,
+        "U+FA206": -64,
+        "U+FA207": -128,
+        "U+FA208": -256,
+        "U+FA209": -512,
+        "U+FA220": 1,
+        "U+FA221": 2,
+        "U+FA222": 4,
+        "U+FA223": 8,
+        "U+FA224": 16,
+        "U+FA225": 32,
+        "U+FA226": 64,
+        "U+FA227": 128,
+        "U+FA228": 256,
+        "U+FA229": 512,
+        "U+10A000": 9.0,
+        "U+10A001": 9.0,
+        "U+10A002": 9.0,
+        "U+10A003": 9.0,
+        "U+10A004": 9.0,
+        "U+10A005": 10.0,
+        "U+10A006": 9.0,
+        "U+10A007": 10.0
+      },
+      "bold": {
+        "U+FA200": -1,
+        "U+FA201": -2,
+        "U+FA202": -4,
+        "U+FA203": -8,
+        "U+FA204": -16,
+        "U+FA205": -32,
+        "U+FA206": -64,
+        "U+FA207": -128,
+        "U+FA208": -256,
+        "U+FA209": -512,
+        "U+FA220": 1,
+        "U+FA221": 2,
+        "U+FA222": 4,
+        "U+FA223": 8,
+        "U+FA224": 16,
+        "U+FA225": 32,
+        "U+FA226": 64,
+        "U+FA227": 128,
+        "U+FA228": 256,
+        "U+FA229": 512,
+        "U+10A000": 10.0,
+        "U+10A001": 10.0,
+        "U+10A002": 10.0,
+        "U+10A003": 10.0,
+        "U+10A004": 10.0,
+        "U+10A005": 11.0,
+        "U+10A006": 10.0,
+        "U+10A007": 11.0
+      },
+      "providers": [
+        "space",
+        "bitmap"
+      ],
+      "glyph_count": 28,
+      "skipped_providers": []
     }
   },
   "resource_sha256": {
@@ -19558,7 +19626,18 @@
     "assets/arc/font/small_caps.json": "3862dac80fbe410198d9d515b07de4a8ba137b84856405c370fe482bf867132a",
     "assets/arc/textures/font/small_caps/nonlatin_european.png": "fbbe261cbddba906c115a2e6cd528039cecbc19056eaa2e1e2a70b7bb41ff3e0",
     "assets/arc/textures/font/small_caps/accented.png": "5d1ed44b9be5e433f3f0f458e153cd4654d0b99562bd263d8c3922ea4a1a87ae",
-    "assets/arc/textures/font/small_caps/ascii.png": "997080be6a9006bb22da1b697eac7fab5ef738192f0002bd1ab0afe4ed77341d"
+    "assets/arc/textures/font/small_caps/ascii.png": "997080be6a9006bb22da1b697eac7fab5ef738192f0002bd1ab0afe4ed77341d",
+    "assets/arc/font/dialog_field_icons.json": "ff1708dedabd2d5ec1bb2251e1971a28855802fb72eca496b3ca31bcc15db062",
+    "assets/arc/textures/font/dialog_panels/field-icons-v01.png": "30f137f0c780015861985dd3ae1fed8062d48be79f3fbcdac61a6c9ee207c8c7"
   },
-  "font_resources_sha256": "0a5e1f75ce21ca038558fa4e44493ed1a1c9ff81f7ff473fa9a16f6045b6262b"
+  "font_resources_sha256": "ad5e7d10db9e64db80742b0a0581c97f48e722774426a6eafbc3d4505a219ae0",
+  "font_extensions": {
+    "arc:dialog_field_icons": {
+      "source": "ruscrafting-ops/docs/assets/dialogue-ui/preview/font-metrics.json",
+      "resource_sha256": {
+        "assets/arc/font/dialog_field_icons.json": "ff1708dedabd2d5ec1bb2251e1971a28855802fb72eca496b3ca31bcc15db062",
+        "assets/arc/textures/font/dialog_panels/field-icons-v01.png": "30f137f0c780015861985dd3ae1fed8062d48be79f3fbcdac61a6c9ee207c8c7"
+      }
+    }
+  }
 }

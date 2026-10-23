@@ -31,6 +31,9 @@ object DialogTextLayout {
     }
     private val engine by lazy { ComponentTextLayout(widths, spacing) }
 
+    /** Widest explicit native text line; null preserves the caller's readable fallback. */
+    fun naturalWidth(text: Component): Int? = engine.naturalWidth(text)
+
     fun glyphWidth(character: Char): Int = requireNotNull(
         widths.width(Key.key("minecraft:default"), character.code, false)
     ) { "Unmeasured gallery glyph: $character" }

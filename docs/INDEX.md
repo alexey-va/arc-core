@@ -11,6 +11,7 @@ plans. **Do not duplicate** — link from `AGENTS.md`.
 | [player-nameplates.md](player-nameplates.md) | Layered player nameplate composition, Paper visibility and display lifecycle, consumer example, and test seam |
 | [paper-testing.md](paper-testing.md) | Canonical MockBukkit test-kit, test-layer selection, lifecycle, examples, and limitations |
 | [paper-menus.md](paper-menus.md) | Configurable menu schema, semantic contracts, safe items, reload generations, sessions, pagination, and feedback |
+| [dialog-panels.md](dialog-panels.md) | Modular native panel skins, measured compact fact layouts, field icons and existing library elements |
 | [integration-testing.md](integration-testing.md) | Canonical disposable Redis/MySQL Testcontainers services and consumer pattern |
 | [redis-networking.md](redis-networking.md) | Validated Redis topic, bounded request/reply, presence leases, ownership rules, and test contract |
 | [agentic-plugin-reference.md](agentic-plugin-reference.md) | Short composition path for lifecycle, health, recovery, MockBukkit, and storage tests |

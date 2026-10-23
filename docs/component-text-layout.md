@@ -38,6 +38,14 @@ paragraphs and supplementary Unicode characters. It wraps at spaces and splits
 oversized words; input/depth/line limits bound work. Callers handle failures as a
 whole, never by mixing measured and unmeasured fragments.
 
+`naturalWidth(component)` returns the widest explicit line before wrapping.
+It uses the same collector, effective styles, scalar glyph lookup and bounded
+input validation as `layout`; unsupported content or an Int-unrepresentable
+width returns null. This lets a caller fit a compact card before applying a
+maximum width, without a second measurement implementation. It measures
+advance, not arbitrary italic ink overhang. The Paper adapter exposes it as
+`DialogTextLayout.naturalWidth`.
+
 The 2.7.0 constructor `(GlyphWidths, Key)` remains binary-compatible and selects
 legacy U+E000..U+E009 in the supplied font. New consumers pass `PixelSpacing`
 explicitly. RusCrafting uses ItemsAdder's existing U+F0F01..U+F0F0A in

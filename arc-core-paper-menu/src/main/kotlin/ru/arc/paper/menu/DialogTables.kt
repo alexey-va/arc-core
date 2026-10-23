@@ -41,6 +41,27 @@ object DialogTables {
 
     data class Spec(val rowSeparators: Boolean = false)
 
+    /** Complete authored skins; these do not change the six tooltip-frame styles. */
+    enum class PanelSkin(internal val fontName: String, internal val base: Int) {
+        NAVY("arc:dialog_panel_navy", 0x100000),
+        PLUM("arc:dialog_panel_plum", 0x102000),
+        EVERGREEN("arc:dialog_panel_evergreen", 0x104000),
+        COCOA("arc:dialog_panel_cocoa", 0x106000),
+        ORNATE("arc:dialog_panel_ornate", 0x108000),
+    }
+
+    enum class FactsLayout { ROWS, METRICS, CAPSULES }
+
+    /** Width includes native padding. Fit content shrinks the whole composition, never the glyphs. */
+    data class PanelSpec(val skin: PanelSkin, val maxWidth: Int, val columns: Int, val fitContent: Boolean) {
+        init {
+            require(maxWidth in 9..1024) { "Dialog panel width must be in 9..1024 GUI pixels" }
+            require(columns in 1..8) { "Dialog panels require 1..8 columns" }
+        }
+    }
+
+    data class FactsGroup(val title: Component, val facts: List<Pair<Component, Component>>)
+
     sealed interface Result {
         val component: Component
         data class Framed(override val component: Component, val columnWidths: Pair<Int, Int>) : Result
@@ -56,8 +77,6 @@ object DialogTables {
     private const val MIN_OUTER_INSET = 11
     private const val TEXT_START = 10
     private val filledFont = Key.key("arc:dialog_ui_preview")
-    private val filledPositive = PixelSpacing(filledFont, 0xFA220)
-    private val filledNegative = PixelSpacing(filledFont, 0xFA200)
     private val filledTextColor = TextColor.color(0xE8DFD2)
 
     fun body(
@@ -174,39 +193,11 @@ object DialogTables {
         val dividers = widths.dropLast(1).runningFold(16) { x, cellWidth -> x + cellWidth + 16 }
             .drop(1).map { it - 16 }
 
-        val background = Component.text()
-        var cursor = 0
-        fun move(amount: Int) {
-            background.append(if (amount >= 0) filledPositive.padding(amount) else filledNegative.padding(-amount))
-            cursor += amount
-        }
-        fun tile(x: Int, point: Int) {
-            move(x - cursor)
-            background.append(Component.text(String(Character.toChars(point))).font(filledFont).decorations(undecorated))
-            cursor = x + 17
-        }
-        for (row in 0 until height + 2) {
-            val base = 0xFA300 + row * 16 + when (row) { 0 -> 0; height + 1 -> 8; else -> 4 }
-            tile(0, base)
-            val right = panelWidth - 16
-            for (x in 16 until right step 16) tile(minOf(x, right - 16), base + 1)
-            tile(right, base + 2)
-            dividers.forEach { tile(it, base + 3) }
-        }
-        move(panelWidth - cursor)
-        val painted = background.build().font(filledFont)
-            .color(NamedTextColor.WHITE).decorations(undecorated).shadowColor(ShadowColor.none()).compact() as TextComponent
-        // NBT StringTag uses writeUTF: each SMP glyph costs 6 bytes, with a 65535-byte limit per string.
-        // Keep chunks below that boundary and never compact them back into one string.
-        val content = painted.content()
-        val chunks = mutableListOf<Component>()
-        var start = 0
-        while (start < content.length) {
-            val end = content.offsetByCodePoints(start, minOf(8192, content.codePointCount(start, content.length)))
-            chunks += Component.text(content.substring(start, end))
-            start = end
-        }
-        val output = mutableListOf<Component>(if (chunks.size <= 1) painted else painted.content("").children(chunks))
+        val background = panelBackground(
+            listOf(PanelRect(0, 0, panelWidth, height + 2, dividers = dividers)),
+            panelWidth, filledFont, 0xFA300, 16, 4,
+        )
+        val output = mutableListOf(background)
         measured.forEach { cells ->
             repeat(cells.maxOf { it.size }) { line ->
                 output += join(buildList {
@@ -220,6 +211,227 @@ object DialogTables {
         }
         output += gap(panelWidth)
         return PaperDialogBody(lines(output).font(font), width)
+    }
+
+    /** Additive themed counterpart; the original four-argument v03 entry point remains unchanged. */
+    fun filledBody(
+        rows: List<List<Component>>, headers: List<Component>?, width: Int,
+        columnWeights: List<Int>, skin: PanelSkin,
+    ): PaperDialogBody {
+        val original = filledBody(rows, headers, width, columnWeights)
+        val background = original.text.children().firstOrNull()
+            ?.takeIf { it.font() == filledFont && it.shadowColor() == ShadowColor.none() } ?: return original
+        fun remap(child: Component): Component {
+            val nested = child.children(child.children().map(::remap))
+            if (nested !is TextComponent) return nested
+            val text = buildString {
+                nested.content().codePoints().forEach { point ->
+                    if (point in 0xFA300..0xFAF1B) {
+                        val relative = point - 0xFA300
+                        appendCodePoint(skin.base + relative / 16 * 32 + relative % 16 / 4 * 7 + relative % 4)
+                    } else appendCodePoint(point)
+                }
+            }
+            return nested.content(text)
+        }
+        return PaperDialogBody(original.text.children(listOf(remap(background).font(Key.key(skin.fontName))) +
+            original.text.children().drop(1)), width)
+    }
+
+    /**
+     * Compact measured facts, with at most 64 pairs and 1..8 columns. ROWS groups
+     * consecutive facts in compact columns; METRICS puts the label above its value;
+     * CAPSULES keeps each pair together. Labels and values have an 8px minimum gap,
+     * independent wrapping and 12px side insets. Grid rows use the native 9px rhythm.
+     * The complete composition must fit 194 native rows, including its borders.
+     * Unknown metrics and excessive height preserve every fact as unframed text.
+     */
+    fun factsBody(facts: List<Pair<Component, Component>>, layout: FactsLayout, spec: PanelSpec): PaperDialogBody {
+        fun fallback() = factsFallback(listOf(FactsGroup(Component.empty(), facts)), spec.maxWidth)
+        if (facts.isEmpty() || facts.size > 64) return fallback()
+        val colored = facts.map { (label, value) -> label.colorIfAbsent(filledTextColor) to value.colorIfAbsent(filledTextColor) }
+        val groups = if (layout == FactsLayout.ROWS) {
+            val count = minOf(spec.columns, colored.size)
+            var offset = 0
+            List(count) { column ->
+                val size = colored.size / count + if (column < colored.size % count) 1 else 0
+                colored.subList(offset, offset + size).also { offset += size }
+            }
+        } else colored.map { listOf(it) }
+        val columns = minOf(spec.columns, groups.size)
+        val desired = groups.map { rows ->
+            val labels = rows.map { DialogTextLayout.naturalWidth(it.first) ?: return fallback() }
+            val values = rows.map { DialogTextLayout.naturalWidth(it.second) ?: return fallback() }
+            24 + if (layout == FactsLayout.METRICS) maxOf(labels.max(), values.max()) else labels.max() + 8 + values.max()
+        }.max().coerceAtLeast(48)
+        val available = (spec.maxWidth - 10 - (columns - 1) * 8) / columns
+        if (available < 48) return fallback()
+        val cardWidth = if (spec.fitContent) minOf(desired, available) else available
+        val cards = groups.map { rows ->
+            if (layout == FactsLayout.METRICS) metricCard(rows.single(), cardWidth) ?: return fallback()
+            else pairCard(rows, cardWidth, layout == FactsLayout.CAPSULES) ?: return fallback()
+        }
+        return panelGrid(cards, cardWidth, columns, spec) ?: fallback()
+    }
+
+    /** Semantic groups use centred measured title tabs; group titles are never inferred or discarded. */
+    fun groupedFactsBody(groups: List<FactsGroup>, spec: PanelSpec): PaperDialogBody {
+        fun fallback() = factsFallback(groups, spec.maxWidth)
+        if (groups.isEmpty() || groups.size > 64 || groups.sumOf { it.facts.size.toLong() } > 64) return fallback()
+        val columns = minOf(spec.columns, groups.size)
+        val desired = groups.map { group ->
+            val title = DialogTextLayout.naturalWidth(group.title) ?: return fallback()
+            val label = group.facts.maxOfOrNull { DialogTextLayout.naturalWidth(it.first) ?: return fallback() } ?: 0
+            val value = group.facts.maxOfOrNull { DialogTextLayout.naturalWidth(it.second) ?: return fallback() } ?: 0
+            maxOf(64, title + 40, label + value + 32)
+        }.max()
+        val available = (spec.maxWidth - 10 - (columns - 1) * 8) / columns
+        if (available < 64) return fallback()
+        val cardWidth = if (spec.fitContent) minOf(desired, available) else available
+        val cards = groups.map { group ->
+            val title = group.title.colorIfAbsent(filledTextColor)
+            val tabWidth = (DialogTextLayout.naturalWidth(title)!! + 24).coerceIn(48, cardWidth - 16)
+            val titleLines = cellLines(title, tabWidth - 24, TextAlignment.CENTER) ?: return fallback()
+            val pairs = pairCard(group.facts.map { (label, value) ->
+                label.colorIfAbsent(filledTextColor) to value.colorIfAbsent(filledTextColor)
+            }, cardWidth, false) ?: return fallback()
+            val tabHeight = titleLines.size + 2
+            val tabX = (cardWidth - tabWidth) / 2
+            PanelCard(
+                height = pairs.height + tabHeight,
+                panels = listOf(
+                    PanelRect(0, 1, cardWidth, pairs.height + tabHeight - 1),
+                    PanelRect(tabX, 0, tabWidth, tabHeight),
+                ),
+                text = titleLines.mapIndexed { row, text -> PlacedText(tabX + 12, row + 1, tabWidth - 24, text) } +
+                    pairs.text.map { it.copy(y = it.y + tabHeight) },
+            )
+        }
+        return panelGrid(cards, cardWidth, columns, spec) ?: fallback()
+    }
+
+    private data class PanelRect(
+        val x: Int, val y: Int, val width: Int, val height: Int,
+        val capsule: Boolean = false, val dividers: List<Int> = emptyList(),
+    )
+    private data class PlacedText(val x: Int, val y: Int, val width: Int, val text: Component)
+    private data class PanelCard(val height: Int, val panels: List<PanelRect>, val text: List<PlacedText>)
+
+    private fun pairCard(facts: List<Pair<Component, Component>>, width: Int, capsule: Boolean): PanelCard? {
+        val label = facts.maxOfOrNull { DialogTextLayout.naturalWidth(it.first) ?: return null } ?: 0
+        val value = facts.maxOfOrNull { DialogTextLayout.naturalWidth(it.second) ?: return null } ?: 0
+        val space = width - 32
+        val widths = if (label + value <= space) listOf(maxOf(1, label), maxOf(1, value)) else {
+            // Long prose must not squeeze every short label into a few pixels.
+            val left = minOf(maxOf(1, label), space - minOf(maxOf(1, value), space / 2))
+            listOf(left, space - left)
+        }
+        val x = (width - widths.sum() - 8) / 2
+        val content = mutableListOf<PlacedText>()
+        var y = 1
+        facts.forEach { (labelText, valueText) ->
+            val labels = cellLines(labelText, widths[0]) ?: return null
+            val values = cellLines(valueText, widths[1]) ?: return null
+            labels.forEachIndexed { row, text -> content += PlacedText(x, y + row, widths[0], text) }
+            values.forEachIndexed { row, text -> content += PlacedText(x + widths[0] + 8, y + row, widths[1], text) }
+            y += maxOf(labels.size, values.size)
+        }
+        val height = maxOf(3, y + 1)
+        return PanelCard(height, listOf(PanelRect(0, 0, width, height, capsule)), content)
+    }
+
+    private fun metricCard(fact: Pair<Component, Component>, width: Int): PanelCard? {
+        val labels = cellLines(fact.first, width - 24, TextAlignment.CENTER) ?: return null
+        val values = cellLines(fact.second, width - 24, TextAlignment.CENTER) ?: return null
+        val height = labels.size + values.size + 3
+        return PanelCard(height, listOf(PanelRect(0, 0, width, height)),
+            labels.mapIndexed { row, text -> PlacedText(12, row + 1, width - 24, text) } +
+                values.mapIndexed { row, text -> PlacedText(12, row + labels.size + 2, width - 24, text) })
+    }
+
+    private fun panelGrid(cards: List<PanelCard>, cardWidth: Int, columns: Int, spec: PanelSpec): PaperDialogBody? {
+        val width = columns * cardWidth + (columns - 1) * 8
+        val panels = mutableListOf<PanelRect>()
+        val text = mutableListOf<PlacedText>()
+        var y = 0
+        cards.chunked(columns).forEachIndexed { row, group ->
+            if (row > 0) y++
+            val start = (width - (group.size * cardWidth + (group.size - 1) * 8)) / 2
+            val height = group.maxOf { it.height }
+            group.forEachIndexed { index, card ->
+                val x = start + index * (cardWidth + 8)
+                // Equal row heights keep paired outlines symmetric when a neighbouring value wraps.
+                panels += card.panels.mapIndexed { panelIndex, panel -> panel.copy(
+                    x = panel.x + x, y = panel.y + y,
+                    height = if (panelIndex == 0) panel.height + height - card.height else panel.height,
+                ) }
+                text += card.text.map { it.copy(x = it.x + x, y = it.y + y) }
+            }
+            y += height
+        }
+        if (y > 194) return null
+        val output = mutableListOf(panelBackground(panels, width, Key.key(spec.skin.fontName), spec.skin.base, 32, 7))
+        for (row in 1 until y) {
+            var cursor = 0
+            output += join(buildList {
+                text.filter { it.y == row }.sortedBy { it.x }.forEach { placed ->
+                    add(gap(placed.x - cursor)); add(placed.text); cursor = placed.x + placed.width
+                }
+                add(gap(width - cursor))
+            })
+        }
+        return PaperDialogBody(lines(output).font(font), width + 10)
+    }
+
+    private fun factsFallback(groups: List<FactsGroup>, width: Int) = PaperDialogBody(lines(groups.flatMap { group ->
+        listOf(group.title.colorIfAbsent(filledTextColor)).filterNot { it == Component.empty().color(filledTextColor) } +
+            group.facts.map { (label, value) -> join(listOf(label.colorIfAbsent(filledTextColor),
+                Component.text(" · ", filledTextColor), value.colorIfAbsent(filledTextColor))) }
+    }).font(font), width)
+
+    /** One native baseline owns all opaque pixels, including every card, before any foreground. */
+    private fun panelBackground(
+        panels: List<PanelRect>, width: Int, panelFont: Key, bank: Int, stride: Int, rowKinds: Int,
+    ): Component {
+        val positive = PixelSpacing(panelFont, 0xFA220)
+        val negative = PixelSpacing(panelFont, 0xFA200)
+        val background = Component.text()
+        var cursor = 0
+        fun move(amount: Int) {
+            background.append(if (amount >= 0) positive.padding(amount) else negative.padding(-amount))
+            cursor += amount
+        }
+        fun tile(x: Int, point: Int) {
+            move(x - cursor)
+            background.append(Component.text(String(Character.toChars(point))).font(panelFont).decorations(undecorated))
+            cursor = x + 17
+        }
+        panels.forEach { panel ->
+            for (row in 0 until panel.height) {
+                val base = bank + (panel.y + row) * stride +
+                    when (row) { 0 -> 0; panel.height - 1 -> rowKinds * 2; else -> rowKinds } +
+                    if (panel.capsule) 4 else 0
+                tile(panel.x, base)
+                val right = panel.x + panel.width - 16
+                for (x in panel.x + 16 until right step 16) tile(minOf(x, right - 16), base + 1)
+                tile(right, base + 2)
+                panel.dividers.forEach { tile(panel.x + it, base + 3) }
+            }
+        }
+        move(width - cursor)
+        val painted = background.build().font(panelFont)
+            .color(NamedTextColor.WHITE).decorations(undecorated).shadowColor(ShadowColor.none()).compact() as TextComponent
+        // NBT StringTag uses writeUTF: each SMP glyph costs 6 bytes, with a 65535-byte limit per string.
+        // Keep chunks below that boundary and never compact them back into one string.
+        val content = painted.content()
+        val chunks = mutableListOf<Component>()
+        var start = 0
+        while (start < content.length) {
+            val end = content.offsetByCodePoints(start, minOf(8192, content.codePointCount(start, content.length)))
+            chunks += Component.text(content.substring(start, end))
+            start = end
+        }
+        return if (chunks.size <= 1) painted else painted.content("").children(chunks)
     }
 
     /**
@@ -360,8 +572,8 @@ object DialogTables {
         }
     }
 
-    private fun cellLines(text: Component, width: Int): List<Component>? {
-        val result = DialogTextLayout.layout(text, TextAlignment.LEFT, width + 8) as? TextLayoutResult.Aligned
+    private fun cellLines(text: Component, width: Int, alignment: TextAlignment = TextAlignment.LEFT): List<Component>? {
+        val result = DialogTextLayout.layout(text, alignment, width + 8) as? TextLayoutResult.Aligned
             ?: return null
         val rows = mutableListOf(Component.text())
         fun split(node: Component, inherited: Style) {

@@ -1,6 +1,8 @@
 package ru.arc.paper.menu
 
 import com.google.gson.JsonParser
+import com.google.gson.JsonArray
+import com.google.gson.JsonObject
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.assertions.withClue
 import io.kotest.core.spec.style.FreeSpec
@@ -14,6 +16,7 @@ import net.kyori.adventure.text.format.Style
 import net.kyori.adventure.text.format.TextDecoration
 import net.kyori.adventure.text.minimessage.MiniMessage
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer
+import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer
 import java.io.DataOutputStream
 import java.io.OutputStream
 import java.io.UTFDataFormatException
@@ -34,6 +37,7 @@ class DialogTablesTest : FreeSpec({
                     point in 0xF0F01..0xF0F0A -> 1 shl (point - 0xF0F01)
                     point == 0xF0F11 -> -1
                     point in 0xFA300..0xFAF1B && (point and 15) <= 11 -> 17
+                    point in 0x100000..0x109834 && (point and 31) <= 20 -> 17
                     point in 0xFA200..0xFA209 -> -(1 shl (point - 0xFA200))
                     point in 0xFA220..0xFA229 -> 1 shl (point - 0xFA220)
                     point in 0xE540..0xE59E && (point and 15) <= 14 -> {
@@ -407,6 +411,164 @@ class DialogTablesTest : FreeSpec({
         shouldThrow<IllegalArgumentException> { DialogTables.filledBody(listOf(listOf(Component.text("a"))), null, 320, listOf(1, 1)) }
         shouldThrow<IllegalArgumentException> { DialogTables.filledBody(emptyList(), null, 320, listOf(0)) }
         shouldThrow<IllegalArgumentException> { DialogTables.filledBody(emptyList(), null, 320, List(9) { 1 }) }
+    }
+
+    "all skins retain the exact original foreground and weighted column geometry" {
+        val rows = listOf(listOf(Component.text("Подпись"), Component.text("Значение")))
+        val original = DialogTables.filledBody(rows, null, 320, listOf(1, 2))
+        DialogTables.PanelSkin.entries.forEach { skin ->
+            val themed = DialogTables.filledBody(rows, null, 320, listOf(1, 2), skin)
+            themed.text.children().drop(1) shouldBe original.text.children().drop(1)
+            lineWidths(themed.text) shouldBe lineWidths(original.text)
+            assertClientPrefixes(themed.text, 312)
+            textRuns(themed.text).first().second.font() shouldBe Key.key(skin.fontName)
+        }
+    }
+
+    "compact facts fit measured content across skins layouts and columns without right justified values" {
+        val facts = listOf("Баланс:" to "67.7M", "Жетоны:" to "3", "Дома:" to "1 / 3", "Приваты:" to "4 (124 чанков)")
+            .map { (label, value) -> Component.text(label) to Component.text(value) }
+        for (skin in DialogTables.PanelSkin.entries) for (layout in DialogTables.FactsLayout.entries) for (columns in 1..8) {
+            val body = DialogTables.factsBody(facts, layout, DialogTables.PanelSpec(skin, 1024, columns, true))
+            (body.width < 700) shouldBe true
+            lineWidths(body.text).forEach { it shouldBe body.width - 10 }
+            assertClientPrefixes(body.text, body.width - 8)
+            val runs = textRuns(body.text)
+            runs.first().second.font() shouldBe Key.key(skin.fontName)
+            runs.first().second.shadowColor() shouldBe ShadowColor.none()
+            runs.first().second.color() shouldBe NamedTextColor.WHITE
+            runs.drop(1).filter { it.first.any(Char::isLetter) }.forEach { (_, style) ->
+                style.font() shouldBe Key.key("minecraft:default")
+                style.shadowColor() shouldBe null
+            }
+            facts.forEach { (label, value) ->
+                val plain = PlainTextComponentSerializer.plainText().serialize(body.text)
+                plain.contains(label.content()) shouldBe true
+                plain.contains(value.content()) shouldBe true
+            }
+        }
+        val body = DialogTables.factsBody(facts, DialogTables.FactsLayout.ROWS,
+            DialogTables.PanelSpec(DialogTables.PanelSkin.NAVY, 468, 1, true))
+        (body.width < 170) shouldBe true
+        val fixed = DialogTables.factsBody(facts, DialogTables.FactsLayout.ROWS,
+            DialogTables.PanelSpec(DialogTables.PanelSkin.NAVY, 468, 1, false))
+        fixed.width shouldBe 468
+        // Both forms share the same measured label/value block despite different outer width.
+        fun gapBeforeValue(body: PaperDialogBody): Int {
+            val runs = textRuns(body.text)
+            val label = runs.indexOfFirst { it.first == "Приваты:" }
+            val value = runs.indexOfFirst { it.first == "4 (124 чанков)" }
+            return runs.subList(label + 1, value).sumOf { lineWidths(Component.text(it.first).style(it.second)).single() }
+        }
+        gapBeforeValue(body) shouldBe 8
+        gapBeforeValue(fixed) shouldBe 8
+        val five = facts + (Component.text("Мир:") to Component.text("Спавн"))
+        val fourColumns = DialogTables.factsBody(five, DialogTables.FactsLayout.ROWS,
+            DialogTables.PanelSpec(DialogTables.PanelSkin.NAVY, 1024, 4, true))
+        countCodePoint(fourColumns.text, DialogTables.PanelSkin.NAVY.base) shouldBe 4
+    }
+
+    "narrow wrapped groups retain titles values and foreground styling with every background first" {
+        val colored = Component.text("Очень длинное значение с сохранённым цветом", NamedTextColor.AQUA)
+        val groups = listOf(
+            DialogTables.FactsGroup(Component.text("Кошелёк и достижения"), listOf(Component.text("Длинная подпись") to colored)),
+            DialogTables.FactsGroup(Component.text("Территория"), listOf(Component.text("Приваты") to Component.text("4 (124 чанков)"))),
+        )
+        for (skin in DialogTables.PanelSkin.entries) {
+            val body = DialogTables.groupedFactsBody(groups, DialogTables.PanelSpec(skin, 250, 2, true))
+            lineWidths(body.text).forEach { it shouldBe body.width - 10 }
+            assertClientPrefixes(body.text, body.width - 8)
+            val runs = textRuns(body.text)
+            val firstForeground = runs.indexOfFirst { it.first.any(Char::isLetter) }
+            runs.drop(firstForeground).all { it.second.font() != Key.key(skin.fontName) } shouldBe true
+            val plain = PlainTextComponentSerializer.plainText().serialize(body.text)
+            fun visible(value: String) = value.codePoints().toArray().filter {
+                it !in 0xF0F01..0xF0F0A && it !in 0xFA200..0xFA229 && it !in 0x100000..0x109FFF &&
+                    !Character.isWhitespace(it)
+            }.sorted()
+            val expected = groups.joinToString("") { group ->
+                PlainTextComponentSerializer.plainText().serialize(group.title) + group.facts.joinToString("") {
+                    PlainTextComponentSerializer.plainText().serialize(it.first) + PlainTextComponentSerializer.plainText().serialize(it.second)
+                }
+            }
+            visible(plain) shouldBe visible(expected)
+            runs.filter { it.first.contains("значение") }.forEach { it.second.color() shouldBe NamedTextColor.AQUA }
+        }
+        val unknown = Component.text("Неизвестный").font(Key.key("unknown:font"))
+        val fallback = DialogTables.groupedFactsBody(listOf(DialogTables.FactsGroup(Component.text("Группа"),
+            listOf(Component.text("Подпись") to unknown))), DialogTables.PanelSpec(DialogTables.PanelSkin.NAVY, 250, 1, true))
+        PlainTextComponentSerializer.plainText().serialize(fallback.text) shouldBe "Группа\nПодпись · Неизвестный"
+        val overflow = List(65) { Component.text("Подпись $it") to Component.text("Значение $it") }
+        val unframed = DialogTables.factsBody(overflow, DialogTables.FactsLayout.METRICS,
+            DialogTables.PanelSpec(DialogTables.PanelSkin.PLUM, 320, 1, true))
+        PlainTextComponentSerializer.plainText().serialize(unframed.text).contains("Значение 64") shouldBe true
+        textRuns(unframed.text).none { it.second.font() == Key.key("arc:dialog_panel_plum") } shouldBe true
+    }
+
+    "modular maximum panel keeps native wrap headroom and every NBT string bounded" {
+        val rows = List(64) { Component.text("А\nБ\nВ") to Component.text("1\n2\n3") }
+        for (skin in DialogTables.PanelSkin.entries) {
+            val body = DialogTables.factsBody(rows, DialogTables.FactsLayout.ROWS, DialogTables.PanelSpec(skin, 1024, 1, false))
+            lineWidths(body.text) shouldBe List(194) { 1014 }
+            countCodePoint(body.text, skin.base + 193 * 32 + 14) shouldBe 1
+            assertClientPrefixes(body.text, 1016)
+            textRuns(body.text).forEach { (text, _) ->
+                DataOutputStream(OutputStream.nullOutputStream()).use { it.writeUTF(text) }
+            }
+            (body.text.children().first().children().size < 512) shouldBe true
+        }
+    }
+
+    "export first actual compact and narrow wrapped panel components" {
+        val gold = net.kyori.adventure.text.format.TextColor.color(0xF4D87A)
+        val facts = listOf(
+            Component.text("Баланс:") to Component.text("67.7M ", gold).append(Component.text("💰", NamedTextColor.WHITE)),
+            Component.text("Жетоны:") to Component.text("3 ", gold).append(Component.text("\uE516", NamedTextColor.WHITE)),
+            Component.text("Дома:") to Component.text("1 / 3"),
+            Component.text("Приваты:") to Component.text("4 (124 чанков)"),
+        )
+        val examples = listOf(
+            "rows" to DialogTables.factsBody(facts, DialogTables.FactsLayout.ROWS,
+                DialogTables.PanelSpec(DialogTables.PanelSkin.NAVY, 468, 1, true)),
+            "rows-long" to DialogTables.factsBody(facts + (Component.text("Описание территории:") to
+                Component.text("Длинное описание переносится внутри своей колонки и остаётся полностью читаемым")),
+                DialogTables.FactsLayout.ROWS, DialogTables.PanelSpec(DialogTables.PanelSkin.NAVY, 180, 1, true)),
+            "metrics" to DialogTables.factsBody(facts, DialogTables.FactsLayout.METRICS,
+                DialogTables.PanelSpec(DialogTables.PanelSkin.PLUM, 468, 2, true)),
+            "capsules" to DialogTables.factsBody(facts, DialogTables.FactsLayout.CAPSULES,
+                DialogTables.PanelSpec(DialogTables.PanelSkin.EVERGREEN, 468, 2, true)),
+            "groups" to DialogTables.groupedFactsBody(listOf(DialogTables.FactsGroup(Component.text("Кошелёк"), facts.take(2)),
+                DialogTables.FactsGroup(Component.text("Территория"), facts.drop(2))),
+                DialogTables.PanelSpec(DialogTables.PanelSkin.COCOA, 468, 2, true)),
+            "ornate-icons" to DialogTables.factsBody(facts.mapIndexed { index, (label, value) ->
+                DialogDecoration.fieldLabel(listOf(DialogDecoration.FieldIcon.BALANCE, DialogDecoration.FieldIcon.TOKENS,
+                    DialogDecoration.FieldIcon.HOMES, DialogDecoration.FieldIcon.LANDS)[index], label) to value
+            }, DialogTables.FactsLayout.ROWS, DialogTables.PanelSpec(DialogTables.PanelSkin.ORNATE, 468, 1, true)),
+            "heading" to DialogDecoration.library().headingBody(Component.text("Ресурсы и территория"), 468),
+            "list" to DialogDecoration.library().listBody(listOf(
+                DialogDecoration.ListEntry(DialogDecoration.Marker.BULLET, Component.text("Обычный пункт")),
+                DialogDecoration.ListEntry(DialogDecoration.Marker.COMPLETE, Component.text("Условие выполнено")),
+                DialogDecoration.ListEntry(DialogDecoration.Marker.PENDING, Component.text("Длинное условие переносится с сохранением отступа")),
+            ), 180),
+            "steps" to DialogDecoration.library().stepsBody(listOf(
+                DialogDecoration.Step(DialogDecoration.StepState.COMPLETE, Component.text("Выбрать участок")),
+                DialogDecoration.Step(DialogDecoration.StepState.CURRENT, Component.text("Проверить границы")),
+                DialogDecoration.Step(DialogDecoration.StepState.PENDING, Component.text("Подтвердить создание")),
+            ), 220),
+            "progress" to DialogDecoration.library().progressBody(Component.text("Изучение"), 3.0, 10.0,
+                Component.text("3 / 10"), 250, 10, DialogDecoration.ProgressColor.BLUE),
+            "state" to PaperDialogBody(DialogTextLayout.layout(DialogDecoration.stateBadge(Component.text("Готово"),
+                DialogDecoration.StateTone.SUCCESS), ru.arc.text.TextAlignment.LEFT, 160).let {
+                    (it as ru.arc.text.TextLayoutResult.Aligned).component
+                }, 160),
+        )
+        val report = Path.of("build/reports/dialog-panels/components.json")
+        Files.createDirectories(report.parent)
+        val serializer = GsonComponentSerializer.gson()
+        Files.writeString(report, JsonArray().apply { examples.forEach { (id, body) ->
+            add(JsonObject().apply { addProperty("id", id); addProperty("width", body.width)
+                add("component", JsonParser.parseString(serializer.serialize(body.text))) })
+        } }.toString())
     }
 
     "unsupported fonts and client translations retain readable data without broken frame glyphs" {
