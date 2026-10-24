@@ -125,9 +125,15 @@ class PaperActionPanelsTest : FreeSpec({
             f.activated.size shouldBe 8
             f.eye.yaw += 180f; f.eye.pitch = 0f
             var previous = f.anchor()
+            var retainedAim: String? = null
             repeat(16) { step ->
                 f.refresh()
                 val current = f.anchor()
+                if (retainedAim != null) {
+                    current shouldBe previous
+                    f.panels.target(f.player)?.action shouldBe retainedAim
+                }
+                retainedAim = f.panels.target(f.player)?.action
                 (ActionPanelGeometry.yawDelta(previous.yaw, current.yaw) <= 12.0001) shouldBe true
                 (ActionPanelGeometry.distance(previous.point, current.point) <= 0.503) shouldBe true
                 f.frames().map { it.entityId } shouldBe ids
@@ -136,10 +142,25 @@ class PaperActionPanelsTest : FreeSpec({
                 previous = current
             }
             val toPanel = org.bukkit.util.Vector(previous.point.x - f.eye.x, 0.0, previous.point.z - f.eye.z)
-            (f.eye.direction.normalize().dot(toPanel.normalize()) > 0.99999) shouldBe true
+            (f.eye.direction.normalize().dot(toPanel.normalize()) > 0.8) shouldBe true
+            retainedAim shouldBe "cancel"
             val out = java.nio.file.Path.of("build/reports/action-panel-motion/after.json")
             java.nio.file.Files.createDirectories(out.parent)
             java.nio.file.Files.writeString(out, trace.joinToString(prefix = "[", postfix = "]", separator = ",\n"))
+        } }
+    }
+
+    "aim-stable recenter reaches the captured direction when the ray misses all controls" {
+        MockBukkitTestRuntime.open().use { paper -> PanelFixture(paper).use { f ->
+            // Status-only progress has no button that could capture the gaze during the turn.
+            f.current = f.overlay("progress", emptyList())
+            f.refresh()
+            f.eye.yaw = 180f
+            repeat(16) { f.refresh() }
+            ActionPanelGeometry.yawDelta(f.anchor().yaw, 0f) shouldBe (0.0 plusOrMinus 1e-6)
+            val settled = f.anchor()
+            f.refresh()
+            f.anchor() shouldBe settled
         } }
     }
 

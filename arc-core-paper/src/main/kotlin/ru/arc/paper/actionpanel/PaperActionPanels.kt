@@ -222,6 +222,9 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
             val actualEye = player.eyeLocation
             val direction = actualEye.direction
             if (contextChanged || shapeChanged) panel.recenterYaw = null
+            // A returning panel can enter the ray without another body/head event. Stop as soon
+            // as a real enabled button is aimed, before moving its target out from under the ray.
+            if (panel.recenterYaw != null && aimedAtButton(player, frame, anchor)) panel.recenterYaw = null
             if (panel.recenterYaw == null && !contextChanged && !shapeChanged &&
                 !ActionPanelGeometry.gazeIntersects(actualEye.point(), ActionPanelPoint(direction.x, direction.y, direction.z),
                     anchor, rectangles, 13.0)) panel.recenterYaw = actualEye.yaw + 180f
@@ -261,6 +264,18 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
         }
         panel.frame = frame
         reconcile(player, panel, duration)
+    }
+
+    private fun aimedAtButton(player: Player, frame: ActionPanelFrame<C, A>, anchor: ActionPanelAnchor): Boolean {
+        if (!frame.inputEnabled || frame.audienceGroup?.allows(player) == false) return false
+        val eye = player.eyeLocation
+        if (!safe(player, frame, eye.point(), anchor)) return false
+        val nearest = frame.layout.buttons.filter { it.visible }.mapNotNull { button ->
+            val center = ActionPanelGeometry.localToWorld(anchor, button.rect.center)
+            SpatialHitPlane(at(player, anchor, center, 0.0), button.rect.width, button.rect.height, frame.options.frontFaceOnly)
+                .hit(eye.toVector(), eye.direction, frame.options.reach)?.let { button to it.second }
+        }.minByOrNull { it.second }
+        return nearest?.first?.enabled == true
     }
 
     private fun interpolation(player: Player, frame: ActionPanelFrame<C, A>, from: ActionPanelAnchor, to: ActionPanelAnchor): Int =

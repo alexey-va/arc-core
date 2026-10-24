@@ -55,7 +55,9 @@ yaw is adopted only after body translation. Its explicit third argument accepts
 with meaningful body movement without recapturing the yaw used to aim at a side
 button. Looking beyond the full panel plus a 13-degree margin latches a new
 camera-yaw target and turns toward it by at most 12 degrees per refresh until
-centred. An aimed consumed gesture or native activation cancels that motion;
+centred or the actual eye ray reaches an enabled button. Aimed buttons immediately
+stop recentering, including when the moving panel enters a stationary ray. An
+aimed consumed gesture or native activation also cancels that motion;
 content/context changes retain the existing reachable plane. Ordinary head aim
 inside the panel never moves it. Following captures eye offset once, so crouching
 and eye bob affect actual-eye hover/click rays without changing its anchor. Domain eligibility and distance/context exit
@@ -164,7 +166,7 @@ never removes the guide's underlying geometry.
 |---|---|
 | Builder odd row, six-plus-two page slots and long/farthest controls | `ActionPanelGeometryTest`: stable page/header geometry and whole-rectangle reach over five yaws |
 | Builder/Claim actual-plane hover, edge clicks, near disabled control and occlusion | `ActionPanelGeometryTest`: nearest visible plane, scaled edge/reach and disabled-nearest blocking; `PaperActionPanelsTest`: click-time actual-eye/full-layout and occlusion gates |
-| Personal tool aim, page/confirmation transitions and large head turns | `PaperActionPanelsTest`: stationary plane through page/shape/context changes, accepted confirmation rays across eight 0.04-block steps with unchanged display/native IDs, bounded 180-degree recenter to the latched target; legacy body-only head/crouch and guide tests remain |
+| Personal tool aim, page/confirmation transitions and large head turns | `PaperActionPanelsTest`: stationary plane through page/shape/context changes, accepted confirmation rays across eight 0.04-block steps with unchanged display/native IDs, bounded 180-degree recenter that stops on the first aimed button, or reaches the latched target when no button captures the ray; legacy body-only head/crouch and guide tests remain |
 | Personal overlay behind real or packet geometry | `PaperActionPanelsTest`: zero world-block queries, see-through native flag, real obstruction before the plane, native duplicate gate and outside-control miss; WORLD occlusion and full-layout actual-eye reach remain covered |
 | Builder/Claim obstacle shift/distance jitter and gradual recovery | `ActionPanelGeometryTest`: bounded search, clearance hysteresis and non-monotonic gap; `PaperActionPanelsTest`: repeated doorway strafing through the real world-space boundary, immediate escape from a new obstruction, and bounded recovery at rest |
 | Builder swept sagitta, thin barrier and intermediate rotation | `ActionPanelGeometryTest`: intermediate envelope and small-turn thinness; `DisplayGeometryTest`: pitched OBB false-positive negative control and translated obstacle sweep |
