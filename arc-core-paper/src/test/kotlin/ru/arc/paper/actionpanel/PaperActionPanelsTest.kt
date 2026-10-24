@@ -25,6 +25,8 @@ import org.bukkit.inventory.EquipmentSlot
 import org.bukkit.inventory.ItemStack
 import org.bukkit.util.BoundingBox
 import org.bukkit.util.Vector
+import org.joml.Quaternionf
+import org.joml.Vector3f
 import ru.arc.core.LifecycleTaskScope
 import ru.arc.core.TestTaskScheduler
 import ru.arc.paper.display.PacketDisplayAudienceSource
@@ -39,6 +41,45 @@ import java.util.UUID
 import java.util.function.Consumer
 
 class PaperActionPanelsTest : FreeSpec({
+    "text rotation keeps the rectangle center and input target while old constructors stay unrotated" {
+        ActionPanelTextStyle(0.9f, 40, 0.42f, 0.32f, 0.025).rotationDegrees shouldBe 0f
+        ActionPanelTextStyle(0.9f, 40, 0.42f, 0.32f, 0.025, 0, 0).rotationDegrees shouldBe 0f
+        ActionPanelTextStyle::class.java.getConstructor(Float::class.javaPrimitiveType, Int::class.javaPrimitiveType,
+            Float::class.javaPrimitiveType, Float::class.javaPrimitiveType, Double::class.javaPrimitiveType)
+        ActionPanelTextStyle::class.java.getConstructor(Float::class.javaPrimitiveType, Int::class.javaPrimitiveType,
+            Float::class.javaPrimitiveType, Float::class.javaPrimitiveType, Double::class.javaPrimitiveType,
+            Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
+        MockBukkitTestRuntime.open().use { paper -> PanelFixture(paper, ActionPanelInputProfile.ENTITY_BOTH).use { f ->
+            val original = checkNotNull(f.current)
+            val rect = ActionPanelRect(ActionPanelPoint(0.0, 0.0, 0.0), 0.42, 0.32)
+            var entityId: Int? = null
+            var nativeId: UUID? = null
+            for ((angle, direction) in listOf(0f to (1.0 to 0.0), 90f to (0.0 to 1.0),
+                180f to (-1.0 to 0.0), -90f to (0.0 to -1.0))) {
+                val button = ActionPanelButton("confirm", rect, Component.text(">"),
+                    ActionPanelTextStyle(0.9f, 40, 0.42f, 0.32f, 0.025, 0, 0, angle))
+                f.current = ActionPanelFrame("rotating", original.placement, ActionPanelLayout(listOf(button), emptyList()),
+                    true, original.options, null)
+                f.refresh()
+                val frame = f.frames().single()
+                if (entityId == null) entityId = frame.entityId else frame.entityId shouldBe entityId
+                val target = f.interactions.single { it.isValid }
+                if (nativeId == null) nativeId = target.uniqueId else target.uniqueId shouldBe nativeId
+                val transform = frame.metadata.transform
+                val q = transform.leftRotation.let { Quaternionf(it.x, it.y, it.z, it.w) }
+                val vector = q.transform(Vector3f(1f, 0f, 0f))
+                vector.x.toDouble() shouldBe (direction.first plusOrMinus 1e-6)
+                vector.y.toDouble() shouldBe (direction.second plusOrMinus 1e-6)
+                val pivot = (rect.height / 2 - button.style.baselineInset).toFloat()
+                val center = q.transform(Vector3f(0f, pivot, 0f)).add(transform.translation.let { Vector3f(it.x, it.y, it.z) })
+                center.x.toDouble() shouldBe (0.0 plusOrMinus 1e-6)
+                center.y.toDouble() shouldBe (pivot.toDouble() plusOrMinus 1e-6)
+                f.aim("confirm")
+                f.panels.target(f.player)?.action shouldBe "confirm"
+            }
+        } }
+    }
+
     "old public constructors preserve physical depth and body-movement motion" {
         val world = UUID.randomUUID()
         ActionPanelPlacement.FollowView(world).motion shouldBe ActionPanelViewMotion.BODY_MOVEMENT

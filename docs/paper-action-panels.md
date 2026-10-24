@@ -179,3 +179,5 @@ These are source and test contracts. Offline composition previews establish only
 their sampled geometry. Native-client smoothness, outline compositing, apparent
 font size, two-client privacy and reliable real gestures remain separate runtime
 acceptance observations; do not infer them from MockBukkit or a build.
+
+Text styles may rotate a glyph with `rotationDegrees` around its authored rectangle center. The five- and seven-argument constructors preserve zero rotation for existing consumers. Hit rectangles remain explicit; use matching dimensions for the rotated glyph.

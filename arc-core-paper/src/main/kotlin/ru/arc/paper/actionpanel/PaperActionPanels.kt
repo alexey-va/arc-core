@@ -379,7 +379,10 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
         style: ActionPanelTextStyle, visible: Boolean, hovered: Boolean): ScenePart.Text<VisualKey<A>> {
         val center = ActionPanelGeometry.localToWorld(panel.anchor, rect.center)
         val at = at(player, panel.anchor, center, -rect.height / 2.0 + style.baselineInset)
-        return ScenePart.Text(key, ScenePose(at, Transformation(Vector3f(), Quaternionf(), Vector3f(style.scale), Quaternionf())),
+        val rotation = Quaternionf().rotateZ(Math.toRadians(style.rotationDegrees.toDouble()).toFloat())
+        val pivot = Vector3f(0f, (rect.height / 2.0 - style.baselineInset).toFloat(), 0f)
+        val translation = Vector3f(pivot).sub(rotation.transform(Vector3f(pivot)))
+        return ScenePart.Text(key, ScenePose(at, Transformation(translation, rotation, Vector3f(style.scale), Quaternionf())),
             SceneDisplayStyle(billboard = Display.Billboard.FIXED, brightness = Display.Brightness(15, 15),
                 interpolationDelay = style.interpolationDelay, interpolationDuration = style.interpolationDuration,
                 viewRange = 0.15f, displayWidth = style.displayWidth, displayHeight = style.displayHeight,

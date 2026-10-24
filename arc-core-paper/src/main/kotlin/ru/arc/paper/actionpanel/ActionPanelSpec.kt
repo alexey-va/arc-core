@@ -29,7 +29,12 @@ class ActionPanelTextStyle(
     val baselineInset: Double,
     val interpolationDelay: Int,
     val interpolationDuration: Int,
+    /** Rotate text and its background around the authored rectangle center; hit bounds stay explicit. */
+    val rotationDegrees: Float,
 ) {
+    constructor(scale: Float, lineWidth: Int, displayWidth: Float, displayHeight: Float, baselineInset: Double,
+        interpolationDelay: Int, interpolationDuration: Int) :
+        this(scale, lineWidth, displayWidth, displayHeight, baselineInset, interpolationDelay, interpolationDuration, 0f)
     constructor(scale: Float, lineWidth: Int, displayWidth: Float, displayHeight: Float, baselineInset: Double) :
         this(scale, lineWidth, displayWidth, displayHeight, baselineInset, 0, 0)
     init {
@@ -39,6 +44,7 @@ class ActionPanelTextStyle(
         require(displayHeight.isFinite() && displayHeight in 0f..4f)
         require(baselineInset.isFinite() && baselineInset in 0.0..0.25)
         require(interpolationDelay in -1..59 && interpolationDuration in 0..59)
+        require(rotationDegrees.isFinite() && rotationDegrees in -360f..360f)
     }
 
     companion object {
