@@ -73,17 +73,20 @@ class DialogDecoration(font: Key, positiveSpace: Int, negativeSpace: Int) {
     private val undecorated = TextDecoration.values().associateWith { TextDecoration.State.FALSE }
     private val prose = TextColor.color(0xE8DFD2)
 
-    /** Bullets/checklists use explicit caller state, hanging indents and the native wrapping engine. */
+    /** Caller-owned states, hanging indents and exactly one empty line between complete items. */
     fun listBody(entries: List<ListEntry>, width: Int): PaperDialogBody {
         require(width in 9..1024)
         fun plain(entry: ListEntry) = Component.text(when (entry.marker) {
             Marker.BULLET -> "• "; Marker.PENDING -> "○ "; Marker.COMPLETE -> "✓ "
         }, prose).append(entry.text.colorIfAbsent(prose))
-        fun fallback() = PaperDialogBody(lines(entries.map(::plain)), width)
+        fun fallback() = PaperDialogBody(lines(entries.flatMapIndexed { index, entry ->
+            if (index == 0) listOf(plain(entry)) else listOf(Component.empty(), plain(entry))
+        }), width)
         if (entries.size > 64 || width < 32) return fallback()
         val rows = mutableListOf<Component>()
-        entries.forEach { entry ->
+        entries.forEachIndexed { entryIndex, entry ->
             val text = laidOutLines(entry.text.colorIfAbsent(prose), width - 24) ?: return fallback()
+            if (entryIndex > 0) rows += DialogTextLayout.spacing.padding(width - 8)
             text.forEachIndexed { index, line ->
                 val marker = when {
                     index > 0 -> DialogTextLayout.spacing.padding(16)
@@ -108,8 +111,8 @@ class DialogDecoration(font: Key, positiveSpace: Int, negativeSpace: Int) {
         }, prose).append(step.text.colorIfAbsent(prose)) }), width)
         if (steps.size > 32 || width < 40) return fallback()
         val output = mutableListOf<Component>()
-        fun rail() = Component.empty().append(DialogTextLayout.spacing.padding(2)).append(libraryGlyph(0xF910B))
-            .append(DialogTextLayout.spacing.padding(12))
+        // Node stems and rail ink both lie at cell x=4; their origins must match.
+        fun rail() = libraryGlyph(0xF910B).append(DialogTextLayout.spacing.padding(14))
         steps.forEachIndexed { index, step ->
             val text = laidOutLines(step.text.colorIfAbsent(prose), width - 28) ?: return fallback()
             text.forEachIndexed { row, line ->
@@ -124,7 +127,7 @@ class DialogDecoration(font: Key, positiveSpace: Int, negativeSpace: Int) {
         return if (output.size > 192) fallback() else PaperDialogBody(lines(output), width)
     }
 
-    /** Unknown progress shows supplied text only. Finite nonnegative current/positive total own the bar. */
+    /** Label/value share the tight bar's left/right edges. Unknown progress retains supplied text only. */
     fun progressBody(
         label: Component, current: Double?, total: Double?, value: Component,
         width: Int, segments: Int, color: ProgressColor,
@@ -136,16 +139,25 @@ class DialogDecoration(font: Key, positiveSpace: Int, negativeSpace: Int) {
             .append(value.colorIfAbsent(prose))
         fun fallback() = PaperDialogBody(caption, width)
         if (current == null || total == null || width < 32) return fallback()
-        val text = laidOutLines(caption, width - 8) ?: return fallback()
-        if (text.size >= 192) return fallback()
-        val count = minOf(segments, (width - 5) / 21)
+        val count = minOf(segments, (width - 8) / 18)
         if (count < 1) return fallback()
+        val barWidth = count * 18
+        val start = (width - 8 - barWidth) / 2
+        val valueText = value.colorIfAbsent(prose)
+        val valueWidth = DialogTextLayout.naturalWidth(valueText) ?: return fallback()
+        val labelWidth = barWidth - valueWidth - 8
+        if (labelWidth < 1 || laidOutLines(valueText, maxOf(1, valueWidth))?.size != 1) return fallback()
+        val labelLines = laidOutLines(label.colorIfAbsent(prose), labelWidth) ?: return fallback()
+        if (labelLines.size >= 192) return fallback()
+        val text = labelLines.mapIndexed { index, line -> Row().apply {
+            at(start, line, labelWidth)
+            if (index == 0) at(start + barWidth - valueWidth, valueText, valueWidth)
+        }.finish(width - 8) }
         val filled = ((current / total).coerceIn(0.0, 1.0) * count).toInt()
-        val barWidth = count * 21 - 3
         val bar = Row().apply {
             repeat(count) { index ->
                 val point = color.base + if (index < filled) 0 else 2
-                val x = (width - 8 - barWidth) / 2 + index * 21
+                val x = start + index * 18
                 at(x, libraryGlyph(point), 10)
                 at(x + 9, libraryGlyph(point + 1), 9)
             }

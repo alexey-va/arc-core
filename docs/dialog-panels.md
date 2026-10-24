@@ -55,13 +55,18 @@ missing prose color becomes warm light `#E8DFD2`.
 reuse registered artwork without feature-local codepoint constants:
 
 - `listBody(entries, width)` accepts `ListEntry(Marker, text)`, where marker is
-  `BULLET`, `PENDING` or `COMPLETE`. Continuations retain the hanging indent.
-  Limit: 64 entries and 192 wrapped rows before plain fallback.
+  `BULLET`, `PENDING` or `COMPLETE`. Continuations retain the hanging indent;
+  one empty line separates complete items, including wrapped items and fallback.
+  Limit: 64 entries and 192 rows including separators before plain fallback.
 - `stepsBody(steps, width)` accepts explicit `COMPLETE`, `CURRENT` and `PENDING`
-  states. Existing rail glyphs join up to 32 steps; progression is not inferred.
+  states. Existing rail glyphs share the node's x origin and continue through
+  wrapped intermediate steps. Connector rows remain contiguous; the list's empty
+  item separators do not apply. Limit: 32 steps; progression is not inferred.
 - `progressBody(label, current, total, value, width, segments, color)` requires
   finite nonnegative current and positive total, with 1–32 requested segments.
-  Null numbers retain textual value without a fabricated empty bar. Progress
+  The label aligns with the tight segmented bar's left edge and the value with
+  its right edge. Long labels wrap above the bar; segments use the library's
+  native 18px pitch. Null numbers retain textual value without a fabricated empty bar. Progress
   above target fills the bar and retains the exact supplied value.
 - `headingBody(title, width)` places a measured title between complete divider
   caps with 12px outer insets and 12px title gaps. A title that cannot fit stays

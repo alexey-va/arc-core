@@ -129,31 +129,50 @@ class DialogDecorationTest : FreeSpec({
         )
         val body = library.listBody(entries, 180)
         val measured = measure(body.text)
-        measured.map { it.width } shouldBe List(4) { 172 }
-        measured[1].ink.first().point shouldBe 0xF910C
-        measured[2].ink.first().x shouldBe 16
-        measured[2].ink.first().style.color() shouldBe NamedTextColor.AQUA
-        measured[3].ink.first().point shouldBe 0xF910D
+        measured.map { it.width } shouldBe List(6) { 172 }
+        measured[1].ink shouldBe emptyList()
+        measured[2].ink.first().point shouldBe 0xF910C
+        measured[3].ink.first().x shouldBe 16
+        measured[3].ink.first().style.color() shouldBe NamedTextColor.AQUA
+        measured[4].ink shouldBe emptyList()
+        measured[5].ink.first().point shouldBe 0xF910D
         measured.flatMap { it.ink }.filter { it.style.font() == Key.key("arc:dialog_ui") }.forEach {
             it.style.color() shouldBe NamedTextColor.WHITE
             it.style.shadowColor() shouldBe ShadowColor.none()
         }
+        val wrapped = measure(library.listBody(listOf(
+            DialogDecoration.ListEntry(DialogDecoration.Marker.PENDING, Component.text("Припасы на долгую дорогу")),
+            DialogDecoration.ListEntry(DialogDecoration.Marker.COMPLETE, Component.text("Всё готово")),
+        ), 90).text)
+        val gap = wrapped.indexOfFirst { it.ink.isEmpty() }
+        (gap > 1) shouldBe true
+        wrapped.count { it.ink.isEmpty() } shouldBe 1
+        wrapped.take(gap).drop(1).forEach { it.ink.first().x shouldBe 16 }
+        wrapped[gap + 1].ink.first().point shouldBe 0xF910C
         val unknown = Component.text("Данные").font(Key.key("unknown:font"))
         PlainTextComponentSerializer.plainText().serialize(library.listBody(
             listOf(DialogDecoration.ListEntry(DialogDecoration.Marker.COMPLETE, unknown)), 180).text) shouldBe "✓ Данные"
+        PlainTextComponentSerializer.plainText().serialize(library.listBody(listOf(
+            DialogDecoration.ListEntry(DialogDecoration.Marker.COMPLETE, unknown),
+            DialogDecoration.ListEntry(DialogDecoration.Marker.PENDING, Component.text("Осталось\nПодробности")),
+        ), 180).text) shouldBe "✓ Данные\n\n○ Осталось\nПодробности"
     }
 
     "connected steps preserve explicit states and connector alignment through wrapped labels" {
         val body = DialogDecoration.library().stepsBody(listOf(
             DialogDecoration.Step(DialogDecoration.StepState.COMPLETE, Component.text("Готово\nПодробности")),
             DialogDecoration.Step(DialogDecoration.StepState.CURRENT, Component.text("Сейчас")),
+            DialogDecoration.Step(DialogDecoration.StepState.PENDING, Component.text("Потом\nПодробности")),
             DialogDecoration.Step(DialogDecoration.StepState.PENDING, Component.text("Далее")),
         ), 180)
         val measured = measure(body.text)
         measured.forEach { it.width shouldBe 172 }
         measured.flatMap { it.ink }.filter { it.point in 0xF9108..0xF910A }.map { it.point } shouldBe
-            listOf(0xF9108, 0xF9109, 0xF910A)
-        measured.flatMap { it.ink }.filter { it.point == 0xF910B }.forEach { it.x shouldBe 2 }
+            listOf(0xF9108, 0xF9109, 0xF910A, 0xF910A)
+        // Native node stems and the full-height rail both have ink at cell x=4.
+        measured.forEach { it.ink.first().x shouldBe 0 }
+        measured.map { it.ink.first().point } shouldBe
+            listOf(0xF9108, 0xF910B, 0xF910B, 0xF9109, 0xF910B, 0xF910A, 0xF910B, 0xF910B, 0xF910A)
         measured.last().ink.none { it.point == 0xF910B } shouldBe true
     }
 
@@ -165,9 +184,25 @@ class DialogDecorationTest : FreeSpec({
         measured.forEach { it.width shouldBe 312 }
         measured.last().ink.count { it.point == 0xF9138 } shouldBe 3
         measured.last().ink.count { it.point == 0xF913A } shouldBe 7
+        val segmentStarts = measured.last().ink.filter { it.point % 2 == 0 }
+        segmentStarts.map { it.x } shouldBe List(10) { 66 + it * 18 }
+        measured.first().ink.first().x shouldBe segmentStarts.first().x
+        val captionValue = Component.text("3 / 10")
+        measured.first().ink.single { it.point == '3'.code }.x + DialogTextLayout.naturalWidth(captionValue)!! shouldBe 246
+        measured.first().ink.none { it.point == '·'.code } shouldBe true
         val complete = library.progressBody(Component.text("Цель"), 15.0, 10.0, Component.text("15 / 10"),
             320, 10, DialogDecoration.ProgressColor.BLUE)
         measure(complete.text).last().ink.count { it.point == 0xF913C } shouldBe 10
+        DialogDecoration.ProgressColor.entries.forEach { color ->
+            val narrow = measure(library.progressBody(Component.text("Сбор материалов на дорогу"), 3.0, 10.0,
+                captionValue, 150, 12, color).text)
+            (narrow.size > 2) shouldBe true
+            narrow.forEach { it.width shouldBe 142 }
+            val starts = narrow.last().ink.filter { it.point == color.base || it.point == color.base + 2 }
+            starts.map { it.x } shouldBe List(7) { 8 + it * 18 }
+            narrow.dropLast(1).forEach { it.ink.first().x shouldBe 8 }
+            narrow.first().ink.single { it.point == '3'.code }.x + DialogTextLayout.naturalWidth(captionValue)!! shouldBe 134
+        }
         val unknown = library.progressBody(Component.text("Цель"), null, null, Component.text("Нет данных"),
             320, 10, DialogDecoration.ProgressColor.MINT)
         PlainTextComponentSerializer.plainText().serialize(unknown.text) shouldBe "Цель · Нет данных"
@@ -175,6 +210,48 @@ class DialogDecorationTest : FreeSpec({
             library.progressBody(Component.text("Цель"), Double.NaN, 10.0, Component.text("Нет данных"),
                 320, 10, DialogDecoration.ProgressColor.MINT)
         }
+    }
+
+    "export affected element compositions for native font rendering" {
+        val library = DialogDecoration.library()
+        val warm = net.kyori.adventure.text.format.TextColor.color(0xE8DFD2)
+        fun item(title: String, detail: String, color: Int) = Component.text(title,
+            net.kyori.adventure.text.format.TextColor.color(color)).append(Component.newline())
+            .append(Component.text(detail, warm))
+        val list = listOf(
+            DialogDecoration.ListEntry(DialogDecoration.Marker.COMPLETE, item("Место выбрано", "Найден участок для строительства.", 0xA5E3B4)),
+            DialogDecoration.ListEntry(DialogDecoration.Marker.PENDING, item("Припасы", "Запас еды, блоков и инструментов на дальнюю дорогу.", 0x86DCF1)),
+            DialogDecoration.ListEntry(DialogDecoration.Marker.COMPLETE, item("Дорога готова", "Можно отправляться в путь.", 0xA5E3B4)),
+        )
+        val steps = listOf(
+            DialogDecoration.Step(DialogDecoration.StepState.COMPLETE, item("Участок выбран", "Найдено место для дома.", 0xA5E3B4)),
+            DialogDecoration.Step(DialogDecoration.StepState.CURRENT, item("Проверка границ", "Убедитесь, что рядом нет чужого привата.", 0x86DCF1)),
+            DialogDecoration.Step(DialogDecoration.StepState.PENDING, item("Подготовка", "Запасите материалы на строительство.", 0xE8DFD2)),
+            DialogDecoration.Step(DialogDecoration.StepState.PENDING, item("Подтверждение", "Создайте свой приват.", 0xE8DFD2)),
+        )
+        val bodies = linkedMapOf(
+            "list-normal" to library.listBody(list, 300), "list-wrapped" to library.listBody(list, 170),
+            "steps-normal" to library.stepsBody(steps, 300), "steps-wrapped" to library.stepsBody(steps, 170),
+        )
+        val labels = listOf("Подготовка", "Изучение", "Строительство", "Сбор материалов")
+        val colors = listOf(0xA5E3B4, 0x86DCF1, 0xC3A3D5, 0xF4D87A)
+        DialogDecoration.ProgressColor.entries.forEachIndexed { index, color ->
+            bodies["progress-${color.name.lowercase()}"] = library.progressBody(Component.text(labels[index],
+                net.kyori.adventure.text.format.TextColor.color(colors[index])), 3.0, 10.0,
+                Component.text("3 / 10", warm), 280, 10, color)
+        }
+        bodies["progress-wrapped"] = library.progressBody(Component.text("Сбор материалов на дальнюю дорогу", NamedTextColor.AQUA),
+            3.0, 10.0, Component.text("3 / 10", warm), 150, 12, DialogDecoration.ProgressColor.BLUE)
+        bodies["progress-unknown"] = library.progressBody(Component.text("Проверка", warm), null, null,
+            Component.text("Нет данных", warm), 280, 10, DialogDecoration.ProgressColor.MINT)
+        val json = com.google.gson.JsonArray()
+        bodies.forEach { (id, body) -> json.add(com.google.gson.JsonObject().apply {
+            addProperty("id", id); addProperty("width", body.width)
+            add("component", JsonParser.parseString(net.kyori.adventure.text.serializer.gson.GsonComponentSerializer.gson().serialize(body.text)))
+        }) }
+        val path = java.nio.file.Path.of("build/reports/dialog-elements/components.json")
+        java.nio.file.Files.createDirectories(path.parent)
+        java.nio.file.Files.writeString(path, json.toString())
     }
 
     "heading caps retain exact outer ink insets and matching gaps to measured native title" {
