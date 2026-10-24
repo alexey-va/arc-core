@@ -53,7 +53,12 @@ five-second renderer retry delay.
 Each control declares actual rendered `SpatialHitPlane` separately from its
 optional bottom-origin `SpatialNativeTarget`. Native dimensions remain unscaled
 when text uses scale 2. Input checks current context, world, audience, actual eye,
-plane, reach and first blocking ray. Optional copied `clearanceFootprints` (maximum
+plane, reach and first blocking ray. The concrete
+`SpatialControlController.requiresLineOfSight(player, context)` hook defaults to
+true; a matching viewer-private action-panel `VIEW_OVERLAY` explicitly returns
+false to skip the block ray while retaining the same scene owner, planes, reach,
+context and deduplication. It does not bypass clearance footprints supplied by
+other scene types. Optional copied `clearanceFootprints` (maximum
 32) also recheck the full visual volume at input time, rejecting a new edge
 obstacle between placement refreshes. The nearest disabled visible control blocks
 fall-through. `SpatialReach.Fixed` serves personal panels; `.NativeInteraction`

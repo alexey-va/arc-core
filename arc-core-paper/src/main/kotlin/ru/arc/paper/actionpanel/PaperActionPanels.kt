@@ -49,10 +49,11 @@ data class ActionPanelTarget<C : Any, A : Any>(val context: C, val action: A)
  *
  * The display-taking constructor borrows that owner and never closes it. The source-taking overload
  * owns its display runtime. Both release all panel handles, native targets, suppression and listeners.
- * Head turns/crouching only update actual-eye aiming; following panels retain their placement until
+ * In the default profiles, head turns/crouching only update actual-eye aiming; panels retain placement until
  * meaningful body movement, a target/layout change or obstructed geometry requires reconciliation.
  * Near obstacles, a safe world anchor remains within the bounded follow envelope; clearance allows
  * gradual recovery on subsequent refreshes, including when the viewer has stopped moving.
+ * AIM_STABLE view overlays instead latch aiming yaw, follow body translation and recenter after looking away.
  */
 class PaperActionPanels<C : Any, A : Any> internal constructor(
     private val plugin: Plugin,
@@ -84,6 +85,7 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
         val controlKeys = linkedMapOf<A, String>()
         var nextControlKey = 0
         var hovered: A? = null
+        var recenterYaw: Float? = null
     }
     private data class Placement(val anchor: ActionPanelAnchor, val distance: Double?, val shift: ActionPanelShift?, val recovering: Boolean = false)
     private inner class PlacementRetry(val frame: ActionPanelFrame<C, A>, val body: ActionPanelPoint, val until: Long)
@@ -102,8 +104,13 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
             if (!validPlacement(player, panel)) return null
             return controlFrame(player, panel, current)
         }
-        override fun activate(player: Player, scene: SpatialSceneKey, context: C, action: A) = controller.activate(player, context, action)
+        override fun activate(player: Player, scene: SpatialSceneKey, context: C, action: A) {
+            panels[player.uniqueId]?.recenterYaw = null
+            controller.activate(player, context, action)
+        }
         override fun blocksRay(player: Player, context: C, block: org.bukkit.block.Block) = controller.blocksRay(player, context, block)
+        override fun requiresLineOfSight(player: Player, context: C): Boolean =
+            panels[player.uniqueId]?.frame?.takeIf { it.context == context }?.options?.depth != ActionPanelDepth.VIEW_OVERLAY
         override fun inputObserved(player: Player, scene: SpatialSceneKey, context: C, action: A?, accepted: Boolean, reason: SpatialInputReason) =
             controller.inputObserved(player, context, action, accepted, ActionPanelInputReason.valueOf(reason.name))
         override fun inputFailed(player: Player, scene: SpatialSceneKey, context: C, failure: Exception) =
@@ -176,7 +183,9 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
         displays.checkThread()
         if (closed) return false
         val panel = panels[player.uniqueId] ?: return false
-        return try { validPlacement(player, panel) && controls.intercept(key(player.uniqueId), player) }
+        return try { (validPlacement(player, panel) && controls.intercept(key(player.uniqueId), player)).also {
+            if (it) panel.recenterYaw = null
+        } }
         catch (failure: Exception) { failed(player.uniqueId, failure); false }
     }
 
@@ -199,16 +208,47 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
         val moved = ActionPanelGeometry.distance(panel.positionedFrom, player.location.point()) > (settings?.movementTolerance ?: 0.0)
         val eye = stableEye(player, panel.eyeOffset)
         val rectangles = frame.layout.rectangles()
-        val invalid = settings != null && !worldSpace.safe(player, eye, panel.anchor, rectangles, frame.options.reach,
-            0.0, true) { controller.blocksRay(player, frame.context, it) }
+        val invalid = settings != null && !safe(player, frame, eye, panel.anchor)
         var duration = 0
-        if (shapeChanged || placementChanged || (settings != null && moved) || invalid || panel.recovering) {
+        val aimStable = (frame.placement as? ActionPanelPlacement.FollowView)?.motion == ActionPanelViewMotion.AIM_STABLE
+        if (aimStable && !placementChanged && previous.options.depth == frame.options.depth) {
+            // Content/context changes retain this plane. Body translation must not recapture the
+            // yaw used to aim at an off-centre button (otherwise confirmation circles the cursor).
+            val body = player.location.point()
+            val delta = if (moved) ActionPanelPoint(body.x - panel.positionedFrom.x,
+                body.y - panel.positionedFrom.y, body.z - panel.positionedFrom.z) else ActionPanelPoint(0.0, 0.0, 0.0)
+            var anchor = ActionPanelAnchor(ActionPanelPoint(panel.anchor.point.x + delta.x,
+                panel.anchor.point.y + delta.y, panel.anchor.point.z + delta.z), panel.anchor.yaw)
+            val actualEye = player.eyeLocation
+            val direction = actualEye.direction
+            if (contextChanged || shapeChanged) panel.recenterYaw = null
+            if (panel.recenterYaw == null && !contextChanged && !shapeChanged &&
+                !ActionPanelGeometry.gazeIntersects(actualEye.point(), ActionPanelPoint(direction.x, direction.y, direction.z),
+                    anchor, rectangles, 13.0)) panel.recenterYaw = actualEye.yaw + 180f
+            panel.recenterYaw?.let { desiredYaw ->
+                val turn = ((((desiredYaw - anchor.yaw).toDouble() % 360.0 + 540.0) % 360.0) - 180.0).coerceIn(-12.0, 12.0)
+                val angle = Math.toRadians(turn)
+                val x = anchor.point.x - eye.x
+                val z = anchor.point.z - eye.z
+                anchor = ActionPanelAnchor(ActionPanelPoint(eye.x + cos(angle) * x - sin(angle) * z,
+                    anchor.point.y, eye.z + sin(angle) * x + cos(angle) * z), ((anchor.yaw + turn + 360.0) % 360.0).toFloat())
+                if (ActionPanelGeometry.yawDelta(anchor.yaw, desiredYaw) < 1e-4) panel.recenterYaw = null
+            }
+            val placed = if (safe(player, frame, eye, anchor)) Placement(anchor, panel.distance, panel.shift)
+                else place(player, frame, panel.eyeOffset, panel)
+            duration = interpolation(player, frame, panel.anchor, placed.anchor)
+            panel.anchor = placed.anchor
+            if (moved) panel.positionedFrom = body
+            panel.distance = placed.distance
+            panel.shift = placed.shift
+            panel.recovering = placed.recovering
+        } else if (shapeChanged || placementChanged || (settings != null && moved) || invalid || panel.recovering) {
             val placed = place(player, frame, panel.eyeOffset, panel.takeUnless { shapeChanged || placementChanged })
             val canInterpolate = settings != null && !shapeChanged && !invalid &&
                 ActionPanelGeometry.distance(panel.anchor.point, placed.anchor.point) <= 1.0 &&
                 ActionPanelGeometry.yawDelta(panel.anchor.yaw, placed.anchor.yaw) <= 30.0 &&
-                worldSpace.clearSweep(player, ActionPanelGeometry.sweptBounds(panel.anchor, placed.anchor,
-                    rectangles, ActionPanelGeometry.SURFACE_CLEARANCE))
+                (frame.options.depth == ActionPanelDepth.VIEW_OVERLAY || worldSpace.clearSweep(player,
+                    ActionPanelGeometry.sweptBounds(panel.anchor, placed.anchor, rectangles, ActionPanelGeometry.SURFACE_CLEARANCE)))
             duration = if (canInterpolate) 2 else 0
             panel.anchor = placed.anchor
             panel.positionedFrom = player.location.point()
@@ -221,6 +261,19 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
         }
         panel.frame = frame
         reconcile(player, panel, duration)
+    }
+
+    private fun interpolation(player: Player, frame: ActionPanelFrame<C, A>, from: ActionPanelAnchor, to: ActionPanelAnchor): Int =
+        if (from != to && ActionPanelGeometry.distance(from.point, to.point) <= 1.0 &&
+            ActionPanelGeometry.yawDelta(from.yaw, to.yaw) <= 30.0 &&
+            (frame.options.depth == ActionPanelDepth.VIEW_OVERLAY || worldSpace.clearSweep(player,
+                ActionPanelGeometry.sweptBounds(from, to, frame.layout.rectangles(), ActionPanelGeometry.SURFACE_CLEARANCE)))) 2 else 0
+
+    private fun safe(player: Player, frame: ActionPanelFrame<C, A>, eye: ActionPanelPoint, anchor: ActionPanelAnchor,
+        clearance: Double = 0.0): Boolean = if (frame.options.depth == ActionPanelDepth.VIEW_OVERLAY)
+        ActionPanelGeometry.allReachable(eye, anchor, frame.layout.rectangles(), frame.options.reach)
+    else worldSpace.safe(player, eye, anchor, frame.layout.rectangles(), frame.options.reach, clearance, true) {
+        controller.blocksRay(player, frame.context, it)
     }
 
     private fun place(
@@ -243,9 +296,7 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
         fun anchor(distance: Double, shift: ActionPanelShift): ActionPanelAnchor = ActionPanelGeometry.followingAnchor(
             eye, yaw, rects, distance, settings.sideOffset + shift.side, settings.heightOffset + shift.up)
         fun safe(distance: Double, shift: ActionPanelShift, clearance: Double): Boolean =
-            worldSpace.safe(player, eye, anchor(distance, shift), rects, frame.options.reach, clearance, true) {
-                controller.blocksRay(player, frame.context, it)
-            }
+            safe(player, frame, eye, anchor(distance, shift), clearance)
         val maximumDistance = minOf(settings.distance, frame.options.reach)
         val minimumDistance = minOf(0.35, maximumDistance)
         val center = ActionPanelShift(0.0, 0.0)
@@ -263,9 +314,7 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
             val side = delta.x * cos(angle) + delta.z * sin(angle)
             if (distance in (minimumDistance - 1e-6)..(maximumDistance + 1e-6) &&
                 abs(side) <= settings.obstacleMaxShift + 1e-6 && delta.y in -1e-6..(settings.obstacleMaxShift + 1e-6) &&
-                worldSpace.safe(player, eye, previous.anchor, rects, frame.options.reach, 0.0, true) {
-                    controller.blocksRay(player, frame.context, it)
-                }) {
+                safe(player, frame, eye, previous.anchor)) {
                 val rebasedDistance = distance.coerceIn(minimumDistance, maximumDistance)
                 val rebasedShift = ActionPanelShift(side.coerceIn(-settings.obstacleMaxShift, settings.obstacleMaxShift),
                     delta.y.coerceIn(0.0, settings.obstacleMaxShift))
@@ -320,7 +369,8 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
                 interpolationDelay = style.interpolationDelay, interpolationDuration = style.interpolationDuration,
                 viewRange = 0.15f, displayWidth = style.displayWidth, displayHeight = style.displayHeight,
                 glowing = hovered, glowColor = if (hovered) HOVER_GLOW else null), text,
-            SceneTextStyle(lineWidth = style.lineWidth, background = if (hovered) HOVER_BACKGROUND else BACKGROUND, shadowed = true), visible)
+            SceneTextStyle(lineWidth = style.lineWidth, background = if (hovered) HOVER_BACKGROUND else BACKGROUND,
+                shadowed = true, seeThrough = panel.frame.options.depth == ActionPanelDepth.VIEW_OVERLAY), visible)
     }
 
     private fun controlFrame(player: Player, panel: Panel, frame: ActionPanelFrame<C, A>): SpatialControlFrame<C, A> {
@@ -336,9 +386,9 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
             specs, SpatialInputProfile.valueOf(frame.options.input.name), SpatialReach.Fixed(frame.options.reach), frame.inputEnabled)
     }
 
-    private fun validPlacement(player: Player, panel: Panel): Boolean = followSettings(panel.frame.placement) == null ||
-        worldSpace.safe(player, player.eyeLocation.point(), panel.anchor, panel.frame.layout.rectangles(), panel.frame.options.reach,
-            0.0, true) { controller.blocksRay(player, panel.frame.context, it) }
+    private fun validPlacement(player: Player, panel: Panel): Boolean =
+        (followSettings(panel.frame.placement) == null && panel.frame.options.depth == ActionPanelDepth.WORLD) ||
+            safe(player, panel.frame, player.eyeLocation.point(), panel.anchor)
 
     private fun updateHover(player: Player, panel: Panel) {
         val hovered = controls.aimed(key(player.uniqueId), player)
@@ -364,6 +414,7 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
         previous.context == current.context && samePlacement(previous.placement, current.placement) &&
             geometryKey(previous) == geometryKey(current) && previous.options.input == current.options.input &&
             previous.options.reach == current.options.reach && previous.options.frontFaceOnly == current.options.frontFaceOnly &&
+            previous.options.depth == current.options.depth &&
             previous.audienceGroup === current.audienceGroup
 
     private fun geometryKey(frame: ActionPanelFrame<C, A>): List<Any> =
@@ -375,7 +426,8 @@ class PaperActionPanels<C : Any, A : Any> internal constructor(
         first is ActionPanelPlacement.Fixed && second is ActionPanelPlacement.Fixed -> first.location() == second.location()
         first is ActionPanelPlacement.FollowTarget && second is ActionPanelPlacement.FollowTarget ->
             first.target == second.target && sameSettings(first.settings, second.settings)
-        first is ActionPanelPlacement.FollowView && second is ActionPanelPlacement.FollowView -> sameSettings(first.settings, second.settings)
+        first is ActionPanelPlacement.FollowView && second is ActionPanelPlacement.FollowView ->
+            first.motion == second.motion && sameSettings(first.settings, second.settings)
         else -> false
     }
     private fun sameSettings(first: ActionPanelFollowSettings, second: ActionPanelFollowSettings): Boolean =

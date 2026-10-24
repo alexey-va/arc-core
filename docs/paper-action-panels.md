@@ -48,10 +48,17 @@ the rendered footprint. Layouts are bounded to 32 controls and 8 labels.
 
 `Fixed` copies an authored Bukkit Location and preserves arbitrary local XYZ
 offsets. `FollowTarget` faces the target's horizontal centre, retaining the
-previous direction within 0.25 blocks of the centre. `FollowView` adopts camera
-yaw only after body translation. Following captures eye offset once, so head
-turns, crouching and eye bob do not reposition controls. Actual eye rays still
-update hover and click each time. Domain eligibility and distance/context exit
+previous direction within 0.25 blocks of the centre. The existing one- and two-argument
+`FollowView` constructors retain `ActionPanelViewMotion.BODY_MOVEMENT`: camera
+yaw is adopted only after body translation. Its explicit third argument accepts
+`AIM_STABLE` for a personal tool menu. That mode translates the complete plane
+with meaningful body movement without recapturing the yaw used to aim at a side
+button. Looking beyond the full panel plus a 13-degree margin latches a new
+camera-yaw target and turns toward it by at most 12 degrees per refresh until
+centred. An aimed consumed gesture or native activation cancels that motion;
+content/context changes retain the existing reachable plane. Ordinary head aim
+inside the panel never moves it. Following captures eye offset once, so crouching
+and eye bob affect actual-eye hover/click rays without changing its anchor. Domain eligibility and distance/context exit
 remain in `frame`; the renderer cannot decide whether a player still owns a
 selection, occupies the required seat, holds a tool, or may manage a land.
 
@@ -66,12 +73,28 @@ overlap is remapped through the same visible yaw plane as hover. A disabled
 nearest visible control blocks click-through to a farther enabled control.
 An entity ID alone grants no authority: resolve the current controller frame,
 check owner/world/context/layout/reach/audience/visibility/enablement and the
-actual-eye ray/occlusion, then invoke the domain controller. Replacing semantic
+actual-eye ray and the selected depth policy, then invoke the domain controller. Replacing semantic
 context rotates native hitbox IDs and removes their old dispatch mapping while
 retaining text handles; stale native input cannot activate a replacement session.
 
 ## Placement and motion
 
+`ActionPanelOptions` keeps its existing zero-, three- and four-argument constructors
+with `ActionPanelDepth.WORLD`. The explicit fifth argument accepts
+`VIEW_OVERLAY` only for viewer-private tool controls. It renders both text and
+background with native see-through depth and skips real-block placement, collision,
+line-of-sight and selected-ray queries. It still checks every visible corner
+against reach, the actual eye-to-button plane, owner, audience, current context,
+input state and the normal deduplication gate. A miss outside a button remains
+ordinary gameplay; an owning tool must intercept a hit before its world mutation.
+Packet ghost blocks need no second collision index for this overlay.
+
+```kotlin
+val placement = ActionPanelPlacement.FollowView(worldId, settings, ActionPanelViewMotion.AIM_STABLE)
+val options = ActionPanelOptions(ActionPanelInputProfile.ENTITY_BOTH, 4.0, false, false, ActionPanelDepth.VIEW_OVERLAY)
+```
+
+The following physical placement policy remains unchanged for `WORLD`.
 Following panels validate every visible rectangle corner, including the header,
 against reach and line of sight. Space uses actual block collision shapes and
 an oriented volume. Bounds and ray paths require loaded **and already sent**
@@ -95,7 +118,7 @@ Once the normal destination has clearance, rebase the retained world point into
 the current follow coordinates and recover sideways/upward and depth by at most
 0.06 blocks each per refresh, including while the player stands still. This
 avoids replaying accumulated player motion as a jump. Ordinary open-space
-following keeps its configured movement tolerance, including Builder's exact
+following keeps its configured movement tolerance, including explicitly configured
 zero tolerance. Obstacle retention requires the usual centred destination to be
 reachable across its whole layout; reach-limited layouts keep their ordinary
 follow path. Existing shift/distance clearance probes retain narrow
@@ -118,7 +141,7 @@ another guide. `isLookingAt` remains available even if suppression is disabled.
 
 | Existing source | Shared mechanism | Preserved feature-owned behavior and settings |
 |---|---|---|
-| ArcBuilder `BuilderSelectionActionPanel` | Full runtime with FollowTarget, ENTITY_BOTH, two-column profile | Domain actions/selection and eligibility; exact zero movement tolerance, configurable distance/offsets/spacing/button dimensions/scales; status-only progress and reserved six-plus-two pagination. |
+| ArcBuilder `BuilderSelectionActionPanel` and book owner controls | FollowView/AIM_STABLE, VIEW_OVERLAY, ENTITY_BOTH | Domain actions, selection/book/quote authority and eligibility; configured geometry, 0.03 body-motion threshold, stable page/confirmation plane; selection six-plus-two pagination and book cross controls. |
 | ArcCivs placement controller | Full runtime with FollowTarget and typed action states | Placement/region authority, confirm/move/rotate/details/cancel and anchor cue. |
 | ArcCasino `CasinoActionPanels` (blackjack, poker, durak) | Full runtime with Fixed and ENTITY_RIGHT | Seat/mount/table identity, session token, payment/card gates, visible actions, arbitrary XYZ button rectangles, optional status, source audit and scene audience. Block filtering remains controller-owned. |
 | ARC `ClaimLandMenu` | Full runtime with FollowView and EXTERNAL_RAY | Native claim-block gesture/dedupe and land permission rules; 0.03 movement dead zone, front-face-only targeting and guide ownership. |
@@ -141,7 +164,8 @@ never removes the guide's underlying geometry.
 |---|---|
 | Builder odd row, six-plus-two page slots and long/farthest controls | `ActionPanelGeometryTest`: stable page/header geometry and whole-rectangle reach over five yaws |
 | Builder/Claim actual-plane hover, edge clicks, near disabled control and occlusion | `ActionPanelGeometryTest`: nearest visible plane, scaled edge/reach and disabled-nearest blocking; `PaperActionPanelsTest`: click-time actual-eye/full-layout and occlusion gates |
-| Builder head/crouch stationarity, micro-motion and guide restoration | `PaperActionPanelsTest`: retained IDs/pose, two-tick movement, old/new context suppression order; consumer adapter tests retain exact zero-dead-zone behavior |
+| Personal tool aim, page/confirmation transitions and large head turns | `PaperActionPanelsTest`: stationary plane through page/shape/context changes, accepted confirmation rays across eight 0.04-block steps with unchanged display/native IDs, bounded 180-degree recenter to the latched target; legacy body-only head/crouch and guide tests remain |
+| Personal overlay behind real or packet geometry | `PaperActionPanelsTest`: zero world-block queries, see-through native flag, real obstruction before the plane, native duplicate gate and outside-control miss; WORLD occlusion and full-layout actual-eye reach remain covered |
 | Builder/Claim obstacle shift/distance jitter and gradual recovery | `ActionPanelGeometryTest`: bounded search, clearance hysteresis and non-monotonic gap; `PaperActionPanelsTest`: repeated doorway strafing through the real world-space boundary, immediate escape from a new obstruction, and bounded recovery at rest |
 | Builder swept sagitta, thin barrier and intermediate rotation | `ActionPanelGeometryTest`: intermediate envelope and small-turn thinness; `DisplayGeometryTest`: pitched OBB false-positive negative control and translated obstacle sweep |
 | Builder/Casino stale native IDs and duplicate click routes | `PaperActionPanelsTest`: old context IDs invalidated, text identity retained, 250 ms gate across contexts, cancellation/offhand/owner behavior |

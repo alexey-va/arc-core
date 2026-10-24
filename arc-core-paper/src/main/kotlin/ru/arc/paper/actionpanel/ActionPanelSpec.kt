@@ -122,13 +122,29 @@ sealed class ActionPanelPlacement {
         constructor(worldId: UUID, target: ActionPanelPoint) : this(worldId, target, ActionPanelFollowSettings())
     }
 
-    /** Uses camera yaw only after meaningful body movement; head turns and crouching never chase it. */
+    /** Camera-facing placement; existing overloads preserve body-movement-only following. */
     class FollowView(
         override val worldId: UUID,
         val settings: ActionPanelFollowSettings,
+        val motion: ActionPanelViewMotion,
     ) : ActionPanelPlacement() {
+        constructor(worldId: UUID, settings: ActionPanelFollowSettings) : this(worldId, settings, ActionPanelViewMotion.BODY_MOVEMENT)
         constructor(worldId: UUID) : this(worldId, ActionPanelFollowSettings())
     }
+}
+
+enum class ActionPanelViewMotion {
+    /** Recapture camera yaw only after meaningful body movement. */
+    BODY_MOVEMENT,
+    /** Translate with the body, retain yaw while aiming, and recenter gradually outside the aim cone. */
+    AIM_STABLE,
+}
+
+enum class ActionPanelDepth {
+    /** Physical world card: collision, visibility and input rays respect blocks. */
+    WORLD,
+    /** Private tool overlay: text and input ignore world occlusion; owner, plane and reach checks remain. */
+    VIEW_OVERLAY,
 }
 
 enum class ActionPanelInputProfile {
@@ -145,7 +161,10 @@ class ActionPanelOptions(
     val reach: Double,
     val suppressGuide: Boolean,
     val frontFaceOnly: Boolean,
+    val depth: ActionPanelDepth,
 ) {
+    constructor(input: ActionPanelInputProfile, reach: Double, suppressGuide: Boolean, frontFaceOnly: Boolean) :
+        this(input, reach, suppressGuide, frontFaceOnly, ActionPanelDepth.WORLD)
     constructor(input: ActionPanelInputProfile, reach: Double, suppressGuide: Boolean) : this(input, reach, suppressGuide, false)
     constructor() : this(ActionPanelInputProfile.ENTITY_BOTH, 4.0, true, false)
     init { require(reach.isFinite() && reach in 0.5..8.0) }

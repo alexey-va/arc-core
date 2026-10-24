@@ -143,7 +143,8 @@ class PaperSpatialControls<C : Any, A : Any> internal constructor(
             if (nearest == null || hit.second < nearest!!.distance) nearest = Hit(control, hit.first, hit.second)
         } }
         // Choose the nearest visible plane before evaluating enabled state: disabled controls block fall-through.
-        return nearest?.takeIf { space.rayClear(player, eye.toVector(), it.point, 0.0) { block -> controller.blocksRay(player, frame.context, block) } }
+        return nearest?.takeIf { !controller.requiresLineOfSight(player, frame.context) ||
+            space.rayClear(player, eye.toVector(), it.point, 0.0) { block -> controller.blocksRay(player, frame.context, block) } }
     }
 
     private fun sameFrame(a: SpatialControlFrame<C, A>, b: SpatialControlFrame<C, A>): Boolean =

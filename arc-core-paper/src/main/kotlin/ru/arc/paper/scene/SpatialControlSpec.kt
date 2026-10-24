@@ -103,6 +103,8 @@ abstract class SpatialControlController<C : Any, A : Any> {
     abstract fun current(player: Player, scene: SpatialSceneKey): SpatialControlFrame<C, A>?
     abstract fun activate(player: Player, scene: SpatialSceneKey, context: C, action: A)
     open fun blocksRay(player: Player, context: C, block: Block): Boolean = true
+    /** Explicit personal overlays may skip world occlusion; plane, reach and authority checks still apply. */
+    open fun requiresLineOfSight(player: Player, context: C): Boolean = true
     open fun inputObserved(player: Player, scene: SpatialSceneKey, context: C, action: A?, accepted: Boolean, reason: SpatialInputReason) = Unit
     /** Shared input is already revoked. Clear feature visuals/state; the owner reports the failure once. */
     open fun inputFailed(player: Player, scene: SpatialSceneKey, context: C, failure: Exception) = Unit

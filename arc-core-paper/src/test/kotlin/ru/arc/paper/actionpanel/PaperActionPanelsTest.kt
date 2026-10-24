@@ -10,6 +10,7 @@ import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import io.papermc.paper.event.player.PrePlayerAttackEntityEvent
 import net.kyori.adventure.text.Component
 import org.bukkit.Chunk
@@ -38,6 +39,125 @@ import java.util.UUID
 import java.util.function.Consumer
 
 class PaperActionPanelsTest : FreeSpec({
+    "old public constructors preserve physical depth and body-movement motion" {
+        val world = UUID.randomUUID()
+        ActionPanelPlacement.FollowView(world).motion shouldBe ActionPanelViewMotion.BODY_MOVEMENT
+        ActionPanelPlacement.FollowView(world, ActionPanelFollowSettings()).motion shouldBe ActionPanelViewMotion.BODY_MOVEMENT
+        ActionPanelPlacement.FollowView::class.java.getConstructor(UUID::class.java, ActionPanelFollowSettings::class.java)
+        ActionPanelPlacement.FollowView::class.java.getConstructor(UUID::class.java)
+        ActionPanelOptions().depth shouldBe ActionPanelDepth.WORLD
+        ActionPanelOptions(ActionPanelInputProfile.ENTITY_BOTH, 4.0, false).depth shouldBe ActionPanelDepth.WORLD
+        ActionPanelOptions(ActionPanelInputProfile.ENTITY_BOTH, 4.0, false, true).depth shouldBe ActionPanelDepth.WORLD
+        ActionPanelOptions::class.java.getConstructor(ActionPanelInputProfile::class.java, Double::class.javaPrimitiveType,
+            Boolean::class.javaPrimitiveType, Boolean::class.javaPrimitiveType)
+    }
+
+    "view overlay ignores a real wall before its plane but preserves actual hit bounds and native deduplication" {
+        MockBukkitTestRuntime.open().use { paper -> PanelFixture(paper, ActionPanelInputProfile.ENTITY_BOTH).use { f ->
+            every { f.worldSpace.safe(any(), any(), any(), any(), any(), any(), any(), any()) } returns false
+            every { f.world.rayTraceBlocks(any(), any(), any(), any(), any(), any()) } answers {
+                org.bukkit.util.RayTraceResult(f.eye.toVector().add(f.eye.direction.multiply(0.45)))
+            }
+            f.current = f.overlay("overlay", listOf("confirm", "cancel"))
+            f.refresh()
+            val before = f.poses()
+            val ids = f.interactions.filter { it.isValid }.map { it.uniqueId }
+            f.aim("confirm")
+            f.panels.intercept(f.player) shouldBe true
+            f.panels.onClick(PlayerInteractEntityEvent(f.player, f.interactions.first(), EquipmentSlot.HAND))
+            f.activated shouldBe listOf("overlay" to "confirm")
+            f.refresh()
+            f.poses() shouldBe before
+            f.interactions.filter { it.isValid }.map { it.uniqueId } shouldBe ids
+            f.frames().all { ((it.metadata.content as PacketDisplayContent.Text).flags.toInt() and 2) != 0 } shouldBe true
+            f.eye.pitch = -80f
+            f.panels.intercept(f.player) shouldBe false
+            verify(exactly = 0) { f.worldSpace.safe(any(), any(), any(), any(), any(), any(), any(), any()) }
+            verify(exactly = 0) { f.worldSpace.clearSweep(any(), any()) }
+            verify(exactly = 0) { f.world.rayTraceBlocks(any(), any(), any(), any(), any(), any()) }
+            // WORLD retains both its native depth flag and its real-block line-of-sight gate.
+            every { f.worldSpace.safe(any(), any(), any(), any(), any(), any(), any(), any()) } returns true
+            f.eye.pitch = 0f
+            f.current = f.frame("world")
+            f.refresh()
+            f.frames().all { ((it.metadata.content as PacketDisplayContent.Text).flags.toInt() and 2) == 0 } shouldBe true
+            f.panels.intercept(f.player) shouldBe false
+        } }
+    }
+
+    "aim-stable pages and confirmation retain their plane and moving aim without rotating native targets" {
+        MockBukkitTestRuntime.open().use { paper -> PanelFixture(paper, ActionPanelInputProfile.ENTITY_BOTH).use { f ->
+            val trace = mutableListOf<String>()
+            f.current = f.overlay("page-1", (1..6).map { "action-$it" }, navigation = true)
+            f.refresh()
+            trace += f.snapshot("page-1")
+            f.aim("next")
+            val anchor = f.anchor()
+            val retained = f.frames().filter { (it.metadata.content as PacketDisplayContent.Text).text == Component.text("Title") }.single().entityId
+            f.current = f.overlay("page-2", (7..10).map { "action-$it" }, navigation = true)
+            f.refresh()
+            f.anchor() shouldBe anchor
+            trace += f.snapshot("page-2")
+            f.frames().first { (it.metadata.content as PacketDisplayContent.Text).text == Component.text("Title") }.entityId shouldBe retained
+            f.current = f.overlay("paste-plan", listOf("confirm", "cancel", "rotate-left", "rotate-right"))
+            f.refresh()
+            f.anchor() shouldBe anchor
+            f.aim("confirm")
+            val ids = f.frames().map { it.entityId }
+            val nativeIds = f.interactions.filter { it.isValid }.map { it.uniqueId }
+            val yaw = f.eye.yaw
+            val pitch = f.eye.pitch
+            trace += f.snapshot("paste-confirm-start")
+            repeat(8) { step ->
+                f.body.x += 0.04; f.eye.x += 0.04
+                f.now += 300_000_000L
+                f.refresh()
+                f.eye.yaw shouldBe yaw
+                f.eye.pitch shouldBe pitch
+                f.anchor().yaw shouldBe anchor.yaw
+                f.anchor().point.x shouldBe (anchor.point.x + (step + 1) * 0.04 plusOrMinus 1e-6)
+                f.panels.target(f.player)?.action shouldBe "confirm"
+                f.panels.intercept(f.player) shouldBe true
+                f.frames().map { it.entityId } shouldBe ids
+                f.interactions.filter { it.isValid }.map { it.uniqueId } shouldBe nativeIds
+                trace += f.snapshot("paste-confirm-microstep-$step")
+            }
+            f.activated.size shouldBe 8
+            f.eye.yaw += 180f; f.eye.pitch = 0f
+            var previous = f.anchor()
+            repeat(16) { step ->
+                f.refresh()
+                val current = f.anchor()
+                (ActionPanelGeometry.yawDelta(previous.yaw, current.yaw) <= 12.0001) shouldBe true
+                (ActionPanelGeometry.distance(previous.point, current.point) <= 0.503) shouldBe true
+                f.frames().map { it.entityId } shouldBe ids
+                f.interactions.filter { it.isValid }.map { it.uniqueId } shouldBe nativeIds
+                trace += f.snapshot("head-recenter-$step")
+                previous = current
+            }
+            val toPanel = org.bukkit.util.Vector(previous.point.x - f.eye.x, 0.0, previous.point.z - f.eye.z)
+            (f.eye.direction.normalize().dot(toPanel.normalize()) > 0.99999) shouldBe true
+            val out = java.nio.file.Path.of("build/reports/action-panel-motion/after.json")
+            java.nio.file.Files.createDirectories(out.parent)
+            java.nio.file.Files.writeString(out, trace.joinToString(prefix = "[", postfix = "]", separator = ",\n"))
+        } }
+    }
+
+    "overlay full bounds and actual crouching eyes remain reach limited" {
+        MockBukkitTestRuntime.open().use { paper -> PanelFixture(paper).use { f ->
+            f.current = f.overlay("reach", listOf("confirm", "cancel"))
+            f.refresh()
+            val initial = f.anchor()
+            f.eye.y -= 0.3
+            f.refresh()
+            f.anchor() shouldBe initial
+            f.aim("confirm")
+            f.panels.target(f.player)?.action shouldBe "confirm"
+            f.eye.x = 10.0
+            f.panels.target(f.player) shouldBe null
+        } }
+    }
+
     "reach-limited open-space placement preserves zero-tolerance following during repeated strafing" {
         MockBukkitTestRuntime.open().use { paper -> PanelFixture(paper).use { f ->
             f.useCollisionWorld(emptyList())
@@ -513,6 +633,30 @@ private class PanelFixture(paper: MockBukkitTestRuntime, val profile: ActionPane
         val button = ActionPanelButton("confirm", rect, Component.text("Confirm"), ActionPanelTextStyle.button(0.8f, 1.5f, 0.3f))
         return ActionPanelFrame(context, ActionPanelPlacement.FollowTarget(world.uid, ActionPanelPoint(0.0, 64.0, 10.0)),
             ActionPanelLayout(listOf(button), emptyList()), true, ActionPanelOptions(input, 4.0, true), null)
+    }
+    fun overlay(context: String, actions: List<String>, navigation: Boolean = false): ActionPanelFrame<String, String> {
+        val all = actions + if (navigation) listOf("previous", "next") else emptyList()
+        val layout = ActionPanelLayouts.twoColumn(all.map { ActionPanelAction(it, Component.text(it)) }, Component.text("Title"),
+            if (navigation) Component.text(context) else Component.empty(), if (navigation) 2 else 0, ActionPanelGridSettings())
+        return ActionPanelFrame(context, ActionPanelPlacement.FollowView(world.uid, ActionPanelFollowSettings(), ActionPanelViewMotion.AIM_STABLE),
+            layout, true, ActionPanelOptions(profile, 4.0, false, false, ActionPanelDepth.VIEW_OVERLAY), null)
+    }
+    fun anchor(): ActionPanelAnchor {
+        val field = panels.javaClass.getDeclaredField("panels").apply { isAccessible = true }
+        val panel = (field.get(panels) as Map<*, *>)[player.uniqueId]!!
+        return panel.javaClass.getDeclaredField("anchor").apply { isAccessible = true }.get(panel) as ActionPanelAnchor
+    }
+    fun aim(action: String) {
+        val button = checkNotNull(current).layout.buttons.first { it.action == action }
+        val at = ActionPanelGeometry.localToWorld(anchor(), button.rect.center)
+        eye.direction = Vector(at.x - eye.x, at.y - eye.y, at.z - eye.z)
+    }
+    fun poses() = frames().associate { it.entityId to Triple(it.x, it.y, it.z) }
+    fun snapshot(state: String): String {
+        val at = anchor()
+        val frames = frames().joinToString { "{\"id\":${it.entityId},\"x\":${it.x},\"y\":${it.y},\"z\":${it.z},\"yaw\":${it.yaw},\"duration\":${it.metadata.teleportDuration}}" }
+        val native = interactions.filter { it.isValid }.joinToString { "\"${it.uniqueId}\"" }
+        return "{\"state\":\"$state\",\"eyeX\":${eye.x},\"eyeZ\":${eye.z},\"headYaw\":${eye.yaw},\"anchor\":{\"x\":${at.point.x},\"y\":${at.point.y},\"z\":${at.point.z},\"yaw\":${at.yaw}},\"target\":\"${panels.target(player)?.action}\",\"frames\":[$frames],\"nativeIds\":[$native]}"
     }
     /** Real placement/reach/sent-chunk checks; only native block shapes and block ray tracing are recorded. */
     fun useCollisionWorld(obstacles: List<BoundingBox>) {
