@@ -297,6 +297,48 @@ class SpatialScenesTest : FreeSpec({
         } }
     }
 
+    "native ownership requires the exact active carrier and scene and revokes stale invalid cleared and closed identities" {
+        MockBukkitTestRuntime.open().use { paper -> SceneFixture(paper).use { f ->
+            f.current = f.controlFrame()
+            f.controls.apply(f.key, checkNotNull(f.current)); f.capture()
+            val first = f.interactions.single()
+            val otherScene = SpatialSceneKey("other-project")
+            f.controls.ownsNative(f.key, first) shouldBe true
+            f.controls.ownsNative(otherScene, first) shouldBe false
+            val sameId = mockk<Interaction> {
+                every { uniqueId } returns first.uniqueId
+                every { isValid } returns true
+            }
+            f.controls.ownsNative(f.key, sameId) shouldBe false
+            val unrelated = mockk<Interaction> {
+                every { uniqueId } returns UUID.randomUUID()
+                every { isValid } returns true
+            }
+            f.controls.ownsNative(f.key, unrelated) shouldBe false
+            f.actions shouldBe emptyList()
+
+            f.current = f.controlFrame("replacement")
+            f.controls.apply(f.key, checkNotNull(f.current))
+            f.controls.ownsNative(f.key, first) shouldBe false
+            f.capture()
+            val replacement = f.interactions.last()
+            f.controls.ownsNative(f.key, replacement) shouldBe true
+            replacement.remove()
+            f.controls.ownsNative(f.key, replacement) shouldBe false
+            f.capture()
+            val recovered = f.interactions.last()
+            f.controls.ownsNative(f.key, recovered) shouldBe true
+            f.controls.clear(f.key)
+            f.controls.ownsNative(f.key, recovered) shouldBe false
+
+            f.controls.apply(f.key, checkNotNull(f.current)); f.capture()
+            val lastCarrier = f.interactions.last()
+            f.controls.ownsNative(f.key, lastCarrier) shouldBe true
+            f.controls.close()
+            f.controls.ownsNative(f.key, lastCarrier) shouldBe false
+        } }
+    }
+
     "world scene death removes native admission before permission revocation and never destroys public scene" {
         MockBukkitTestRuntime.open().use { paper -> SceneFixture(paper).use { f ->
             var allowed = true

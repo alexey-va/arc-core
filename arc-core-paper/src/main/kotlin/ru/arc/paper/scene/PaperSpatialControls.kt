@@ -1,6 +1,7 @@
 package ru.arc.paper.scene
 
 import io.papermc.paper.event.player.PrePlayerAttackEntityEvent
+import org.bukkit.entity.Entity
 import org.bukkit.entity.Interaction
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
@@ -76,6 +77,18 @@ class PaperSpatialControls<C : Any, A : Any> internal constructor(
     }
 
     fun contains(key: SpatialSceneKey): Boolean { displays.checkThread(); return scenes.containsKey(key) }
+
+    /**
+     * Primary-thread identity lookup for the current native carrier, not an authorization check.
+     * Pair with [target] when granting a feature-specific protection exception. Replaced, invalid,
+     * cleared or closed carriers never retain ownership; matching position or UUID alone is insufficient.
+     */
+    fun ownsNative(key: SpatialSceneKey, entity: Entity): Boolean {
+        displays.checkThread()
+        if (closed || displays.closed || !entity.isValid) return false
+        val input = inputs[entity.uniqueId] ?: return false
+        return input.scene == key && scenes[key]?.native?.get(input.key)?.entity === entity
+    }
 
     fun target(key: SpatialSceneKey, player: Player): SpatialControlTarget<C, A>? {
         return guardedInput(player, key, null) { targetUnsafe(key, player) }
