@@ -142,6 +142,34 @@ dialogs. Do not put raw commands into dialog YAML. Re-resolve and authorize the
 domain target inside every handler because the state may have changed after the
 screen was rendered.
 
+### Native dialog navigation
+
+Use `PaperDialogNavigation.previous(button, caption)` and `next(button, caption)`
+with a bare, localized caption to add the standard blue `‹` / `›` page labels.
+The one-argument overloads use Minecraft's translated Previous Page / Next Page
+captions. They retain the original ID, width, tooltip, callback and lifecycle
+flag; page transitions keep `closeDialogBeforeAction = false`.
+`PaperDialogNavigation.bottom(screen, previous, next)` moves those explicitly
+supplied controls after the content, previous before next, leaving all other
+actions and the exit footer unchanged. Pass null for an unavailable direction;
+only a catalog with real wraparound should keep both directions on its ends.
+Pass all arguments explicitly across plugin classloaders.
+
+Paper 1.21.11's `MultiActionType` exposes one flat `actions` list, one `columns`
+value and a separate `exitAction`. It cannot assign a different column count to
+a paging row. On a short page, the final paging controls may share the last
+content row. Do not add blank or disabled controls to simulate another row.
+Do not append a second history Back to the grid; the native exit footer owns it.
+
+Without a configured `exitButton`, Core supplies a white, 200-unit footer:
+`‹ Back` when an actual previous visit exists, otherwise `Close`. The caption
+and tooltip use Minecraft's built-in translations; an explicit Close preference
+also gets `Close`. Sync rendering and budgeted preparation share this policy,
+including asynchronous returns to an ancestor. Configured footer labels,
+tooltips, widths and opt-in bitmap decoration remain consumer-owned; Core never
+infers an action from their translated text or enables a resource-pack font.
+Keep those explicit captions consistent with the actual history/Close behavior.
+
 ## Layout schema
 
 Every screen has `schema-version: 1` and one to six rows. Slot indexes are

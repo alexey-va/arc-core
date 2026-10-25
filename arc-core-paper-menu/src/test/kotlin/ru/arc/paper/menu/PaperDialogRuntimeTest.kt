@@ -13,6 +13,7 @@ import io.papermc.paper.dialog.DialogResponseView
 import io.papermc.paper.event.player.PlayerCustomClickEvent
 import net.kyori.adventure.key.Key
 import net.kyori.adventure.text.Component
+import net.kyori.adventure.text.format.NamedTextColor
 import org.bukkit.event.player.PlayerCommandPreprocessEvent
 import ru.arc.paper.testing.MockBukkitTestRuntime
 
@@ -83,7 +84,13 @@ class PaperDialogRuntimeTest : FreeSpec({
                 }
                 runtime.beginFlow(player)
                 runtime.open(player, PaperDialogScreen(Component.text("Panel"), id = "panel", buttons = listOf(button("shop") { shop() })))
+                screen.exitButton?.label shouldBe Component.translatable("mco.selectServer.close", NamedTextColor.WHITE)
+                screen.exitButton?.tooltip shouldBe screen.exitButton?.label
+                screen.exitButton?.width shouldBe 200
                 click(PaperDialogActionId.of("shop"))
+                screen.exitButton?.label shouldBe Component.text("‹ ", NamedTextColor.WHITE)
+                    .append(Component.translatable("gui.back", NamedTextColor.WHITE))
+                screen.exitButton?.tooltip shouldBe Component.translatable("gui.back", NamedTextColor.WHITE)
                 repeat(3) {
                     click(PaperDialogActionId.of("confirm"))
                     click(PaperDialogActionId.of("buy"))
@@ -110,12 +117,19 @@ class PaperDialogRuntimeTest : FreeSpec({
             }.use { runtime ->
                 for (customFooter in listOf(false, true)) {
                     runtime.beginFlow(player)
+                    val customLabel = Component.text("Back", NamedTextColor.WHITE).font(Key.key("test:custom_footer"))
+                    val customTooltip = Component.text("Configured return")
                     runtime.open(player, PaperDialogScreen(Component.text("Information"), buttons = emptyList(),
-                        exitButton = if (customFooter) PaperDialogButton(PaperDialogActionId.of("back"), Component.text("Back")) {
+                        exitButton = if (customFooter) PaperDialogButton(PaperDialogActionId.of("back"), customLabel, customTooltip, 178) {
                             error("Semantic footer must be replaced by actual history")
                         } else null))
                     displayed.buttons shouldBe emptyList()
                     val footer = requireNotNull(displayed.exitButton)
+                    if (customFooter) {
+                        footer.label shouldBe customLabel
+                        footer.tooltip shouldBe customTooltip
+                        footer.width shouldBe 178
+                    }
                     registration.actions.size shouldBe 1
                     val connection = mockk<PlayerGameConnection> { every { this@mockk.player } returns player }
                     runtime.onCustomClick(mockk {
@@ -192,8 +206,10 @@ class PaperDialogRuntimeTest : FreeSpec({
                 runtime.beginFlow(player)
                 root()
                 click("settings")
-                runtime.open(player, displayed, null, {}, true)
-                click("back")
+                runtime.open(player, displayed.copy(exitButton = null), null, {}, true)
+                displayed.exitButton?.label shouldBe Component.translatable("mco.selectServer.close", NamedTextColor.WHITE)
+                displayed.exitButton?.tooltip shouldBe displayed.exitButton?.label
+                click(requireNotNull(displayed.exitButton).id.value)
                 verify(exactly = 3) { player.closeDialog() }
             }
         }

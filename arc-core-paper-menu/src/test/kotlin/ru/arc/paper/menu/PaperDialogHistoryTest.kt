@@ -5,6 +5,24 @@ import io.kotest.matchers.shouldBe
 import net.kyori.adventure.text.Component
 
 class PaperDialogHistoryTest : FreeSpec({
+    "footer prediction follows actual child, refresh and ancestor visits without changing history" {
+        val history = PaperDialogHistory(java.util.HashMap())
+        fun show(key: String) = history.show("owner", key, Runnable {}, Runnable {}, Runnable {})
+        history.hasPreviousAfterShow("owner", "root") shouldBe false
+        show("root")
+        history.dispatch {
+            history.hasPreviousAfterShow("owner", "root") shouldBe false
+            history.hasPreviousAfterShow("owner", "child") shouldBe true
+            show("child")
+        }
+        history.hasPreviousAfterShow("owner", "child") shouldBe true
+        history.hasPreviousAfterShow("owner", "async-replacement") shouldBe true
+        history.hasPreviousAfterShow("owner", "root") shouldBe false
+        show("root")
+        history.hasPreviousAfterShow("owner", "async-replacement") shouldBe false
+        history.back() shouldBe false
+    }
+
     "submitted text is retained and bounded when restoring the form snapshot" {
         val input = PaperDialogInputId.of("message")
         val form = PaperDialogScreen(Component.text("Editor"),

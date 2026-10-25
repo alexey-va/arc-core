@@ -13,6 +13,7 @@ import io.papermc.paper.registry.data.dialog.type.DialogType
 import net.kyori.adventure.key.Key
 import net.kyori.adventure.nbt.api.BinaryTagHolder
 import net.kyori.adventure.text.Component
+import net.kyori.adventure.text.format.NamedTextColor
 import org.bukkit.Bukkit
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
@@ -163,7 +164,7 @@ class PaperDialogRuntime internal constructor(
                     yield(Unit)
                 } while (handlers.containsKey(footerId))
             }
-            val footer = historyFooter(player, screen.exitButton, requireNotNull(footerId), closeOnEscape)
+            val footer = historyFooter(player, screen, requireNotNull(footerId), closeOnEscape)
             handlers[footer.id] = actionHandler(player, footer)
             actions[footer.id.value] = actions.size
             revisionPart("|b:${footer.id.value}")
@@ -289,21 +290,12 @@ class PaperDialogRuntime internal constructor(
     }
 
     private fun render(player: Player, original: PaperDialogScreen) {
-        val exit = original.exitButton
-        val back = PaperDialogButton(
-            id = exit?.id ?: (0..original.buttons.size).asSequence()
+        val footerId = original.exitButton?.id ?: (0..original.buttons.size).asSequence()
                 .map { PaperDialogActionId.of("arc_history_exit_$it") }
-                .first { candidate -> original.buttons.none { it.id == candidate } },
-            label = if (exit == null || exit.closeDialogBeforeAction) Component.translatable("gui.back") else exit.label,
-            tooltip = exit?.tooltip ?: Component.empty(),
-            width = exit?.width ?: 200,
-            onClick = {
-                back(player)
-            },
+                .first { candidate -> original.buttons.none { it.id == candidate } }
+        val screen = original.copy(
+            exitButton = historyFooter(player, original, footerId, currentVisits[player.uniqueId]?.closeOnEscape == true),
         )
-        val screen = original.copy(exitButton = if (currentVisits[player.uniqueId]?.closeOnEscape == true) {
-            back.copy(closeDialogBeforeAction = true, label = exit?.label ?: back.label, onClick = {})
-        } else back)
 
         val actions = (screen.buttons + listOfNotNull(screen.exitButton)).associate { it.id to actionHandler(player, it) }
         val registration = sessions.replace(player.uniqueId, actions)
@@ -437,13 +429,18 @@ class PaperDialogRuntime internal constructor(
             { input -> currentResponse.get()?.getFloat(input.value) }))
     }
 
-    private fun historyFooter(player: Player, exit: PaperDialogButton?, id: PaperDialogActionId, closeOnEscape: Boolean): PaperDialogButton =
-        PaperDialogButton(id,
-            label = if (closeOnEscape) exit?.label ?: Component.translatable("gui.back")
-                else if (exit == null || exit.closeDialogBeforeAction) Component.translatable("gui.back") else exit.label,
-            tooltip = exit?.tooltip ?: Component.empty(), width = exit?.width ?: 200,
+    private fun historyFooter(player: Player, screen: PaperDialogScreen, id: PaperDialogActionId, closeOnEscape: Boolean): PaperDialogButton {
+        val exit = screen.exitButton
+        val key = if (screen.id == "dialog") screen.title.toString() else screen.id
+        val returns = !closeOnEscape && history(player, create = false)?.hasPreviousAfterShow(owner, key) == true
+        val caption = Component.translatable(if (returns) "gui.back" else "mco.selectServer.close", NamedTextColor.WHITE)
+        val label = if (returns) Component.text("‹ ", NamedTextColor.WHITE).append(caption) else caption
+        return PaperDialogButton(id,
+            label = exit?.label ?: label,
+            tooltip = exit?.tooltip ?: caption, width = exit?.width ?: 200,
             closeDialogBeforeAction = closeOnEscape,
             onClick = { if (!closeOnEscape) back(player) })
+    }
 
     private fun observe(player: Player, phase: String, observation: DialogObservation, button: String? = null) {
         val payload = linkedMapOf<String, Any>(

@@ -17,14 +17,24 @@ internal class PaperDialogHistory(private val state: MutableMap<String, Any>, pr
     private val restoring get() = state["restoring"] == true
     private val clearing get() = state["clearing"] == true
 
+    /** Read-only projection for a prepared footer, including an async return to an ancestor. */
+    fun hasPreviousAfterShow(owner: String, key: String): Boolean {
+        if (limit < 2) return false
+        val ancestor = visits.indexOfLast { it["owner"] == owner && it["key"] == key }
+        return if (ancestor >= 0) ancestor > 0 else visits.size > if (navigates(owner, key)) 0 else 1
+    }
+
+    private fun navigates(owner: String, key: String): Boolean =
+        callbackDepth > 0 && !restoring && current != null &&
+            (current?.get("owner") != owner || current?.get("key") != key)
+
     fun show(owner: String, key: String, deactivate: Runnable, dismiss: Runnable, resume: Runnable): Boolean {
         if (clearing) return false
         if (callbackDepth == 0 && !restoring && this.owner != owner &&
             !(current == null && state["acceptRoot"] != false &&
                 (state["rootOwner"] == null || state["rootOwner"] == owner))) return false
         val previous = current
-        val navigate = callbackDepth > 0 && !restoring &&
-            previous != null && (previous["owner"] != owner || previous["key"] != key)
+        val navigate = navigates(owner, key)
         previous?.run("deactivate")
         // Returning to an existing screen is a refresh of that visit, not a
         // new child. The consumer has already built its new domain generation,
