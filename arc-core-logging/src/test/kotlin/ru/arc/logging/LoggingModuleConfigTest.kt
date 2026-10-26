@@ -9,6 +9,7 @@ class LoggingModuleConfigTest : FreeSpec({
         "should expose defaults matching bundled logging.yml" {
             val cfg = TestLoggingModuleConfig()
             cfg.enabled shouldBe false
+            cfg.diagnosticsFileEnabled shouldBe true
             cfg.host shouldBe "localhost"
             cfg.port shouldBe 3100
             cfg.level shouldBe LogLevel.INFO

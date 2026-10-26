@@ -2,9 +2,11 @@ package ru.arc.logging
 
 /** `{}` formatting and MiniMessage tag stripping for console / ops buffers. */
 object LogFormat {
+    private val miniMessageTag = Regex("</?[^>]+>")
+
     fun escapeMiniMessage(s: String): String = s.replace("\\", "\\\\").replace("<", "\\<")
 
-    fun plainForBuffer(text: String): String = text.replace(Regex("</?[^>]+>"), "")
+    fun plainForBuffer(text: String): String = text.replace(miniMessageTag, "")
 
     fun format(
         template: String,

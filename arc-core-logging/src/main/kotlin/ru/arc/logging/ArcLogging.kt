@@ -1,6 +1,7 @@
 package ru.arc.logging
 
 import org.apache.logging.log4j.LogManager
+import org.apache.logging.log4j.ThreadContext
 import ru.arc.config.Config
 
 /**
@@ -160,7 +161,7 @@ object ArcLogging {
         val plain = plainForBuffer(text)
         val throwable = LogFormat.extractThrowable(*args)
 
-        emitStructured(level, plain, throwable)
+        val structuredEmitted = emitStructured(level, plain, throwable)
 
         val tag = platform.brandTag
         val styled =
@@ -171,7 +172,14 @@ object ArcLogging {
                 LogLevel.ERROR -> "<dark_gray>[$tag]</dark_gray> <red><bold>[ERROR]</bold></red> $text"
             }
 
-        platform.writeConsole(level, styled, plain, throwable)
+        val previousMirror = ThreadContext.get(ArcDiagnosticLogging.CONSOLE_MIRROR_KEY)
+        try {
+            if (structuredEmitted) ThreadContext.put(ArcDiagnosticLogging.CONSOLE_MIRROR_KEY, "true")
+            platform.writeConsole(level, styled, plain, throwable)
+        } finally {
+            if (previousMirror == null) ThreadContext.remove(ArcDiagnosticLogging.CONSOLE_MIRROR_KEY)
+            else ThreadContext.put(ArcDiagnosticLogging.CONSOLE_MIRROR_KEY, previousMirror)
+        }
 
         when (level) {
             LogLevel.WARN -> {
@@ -211,15 +219,17 @@ object ArcLogging {
         level: LogLevel,
         plainMessage: String,
         throwable: Throwable?,
-    ) {
-        if (disableStructuredEmit) return
+    ): Boolean {
+        if (disableStructuredEmit) return false
         val logger = resolveCallerLogger()
         val log4jLevel = level.toLog4j()
+        if (!logger.isEnabled(log4jLevel)) return false
         if (throwable != null) {
             logger.log(log4jLevel, plainMessage, throwable)
         } else {
             logger.log(log4jLevel, plainMessage)
         }
+        return true
     }
 
     private fun getLogLevelCached(): LogLevel {

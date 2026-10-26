@@ -26,6 +26,12 @@ enabled: false
 # Порог консольных логов ArcLogging (DEBUG|INFO|WARN|ERROR)
 level: INFO
 
+# ARC / ProxyARC устанавливает один владелец на контекст Log4j.
+# logs/arc-debug.log: очередь 4096, ротация 10 MB, 7 архивов .gz.
+# DEBUG не включается автоматически; WARN/ERROR и сбои остаются в основном логе.
+diagnostics-file:
+  enabled: true
+
 # Не выводить DEBUG, если вызов из класса с префиксом пакета
 debug-quiet-sources:
   - ru.arc.sync

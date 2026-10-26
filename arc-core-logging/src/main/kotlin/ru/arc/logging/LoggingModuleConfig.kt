@@ -17,6 +17,10 @@ open class LoggingModuleConfig(
     open val enabled: Boolean
         get() = config.bool("enabled", false)
 
+    /** Host-owned local diagnostic file; installation changes require host reload/restart. */
+    open val diagnosticsFileEnabled: Boolean
+        get() = config.bool("diagnostics-file.enabled", true)
+
     open val host: String
         get() = config.string("host", "localhost")
 
