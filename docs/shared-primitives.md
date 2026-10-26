@@ -66,6 +66,7 @@ CI verifier reject missing modules and high-signal local duplicates.
 | Narrow teleport exception | `arc-core-paper`: `ScopedTeleportAuthorizer` | Authorize one player and one exact world/position/rotation only for the dynamic extent of one action. Nested scopes are rejected and cleanup is unconditional. |
 | Complete Paper player escrow | `arc-core-paper`: `PaperPlayerStateService`, `PaperPlayerStateCodec`, `PaperPlayerDataPersistence`; `arc-core-paper-testing`: `RecordingPaperPlayerDataPersistence` | Capture/restore on the primary thread, use versioned native item bytes plus SHA-256 and bounds, verify every restored field, then persist through the exact Paper boundary. Explicit partial APIs preserve inventory or location for cross-server recovery without weakening full restore. |
 | Paper lifecycle composition | `arc-core-paper`: `PaperPluginRuntime` | Compose rather than inherit: own reload epochs and closeable resources explicitly, close tasks first, and emit canonical bootstrap/ready events. |
+| Plugin stop preparation and drain readiness | `arc-core`: `PluginHotload`; `arc-core-paper`: `PaperPluginHotload` | Invoke the existing stop callback once, observe all real named drains and preserve each failure/cancellation. Keep the console prepare/status endpoint after gameplay stops. Guard a same-instance enable without waiting; reset only successful cleanup. [Lifecycle and replacement runbook](#plugin-hotload-readiness). |
 | Shared native Paper sidebar | `arc-core-paper-api`: `ArcSidebarService`, `ArcSidebarFrame`, `ArcSidebarPriorities`; `arc-core-paper`: `PaperArcSidebarService` | Register one lifecycle-owned source, publish the exact current 0–15 rows per player, and hide it when inactive. ARC owns the physical scoreboard; the highest active priority wins and the next source is restored immediately. Event frames may carry hidden-name entries so name-tag state stays on the same board even with no visible rows. |
 | Configurable inventory layout | `arc-core-menu`: `MenuLayoutParser`, `MenuContract`, `MenuCatalogRepository` | Declare consumer capability `menu`. YAML owns placement and background; code declares required semantic IDs. Validate the complete candidate and swap one generation only on success. |
 | Paper inventory sessions and bounded observations | `arc-core-paper-menu`: `PaperMenuService`, `PaperMenuContent`, `PaperMenuFrame`, `PaperMenuItemFactory`, `PaperMenuTextContract`; `arc-core-paper-api`: `ArcTelemetryProvider` | Inventory Framework is internal. YAML owns safe item presentation including MiniMessage name/lore composition, conditions and repeated rows. Code supplies typed component tags and actions. `PaperMenuFrame` is the bounded bridge for slot-oriented renderers: it accepts only configured physical slots or one configured logical region. Cancel inventory mutation, except an explicit domain-reserved `PaperMenuTransferHandler` top-slot pickup; dispatch typed semantic targets once, reject invalid text/region overflow before mutation, invalidate stale generations and delayed feedback, and close the service at shutdown. ARC registers the optional telemetry provider at runtime. Consumers resolve it through Paper's service registry and skip observations when it is absent. UI observations contain stable semantic IDs, slots and row/page indexes, click/action kinds, material keys, amounts, lifecycle phase, and bounded JDK values; they never carry item stacks, lore/NBT, titles, input text, or domain payloads. |
@@ -109,6 +110,58 @@ ru.arc.testing
 ru.arc.paper.testing
 ru.arc.testing.containers
 ```
+
+## Plugin hotload readiness
+
+Keep one passive `PaperPluginHotload(plugin) { stopAndReturnNamedDrains() }`
+adapter across same-instance enables. Call `beginGeneration()` before creating
+the next runtime, then `register()`. The first generation starts immediately;
+another generation is refused while cleanup is pending, failed, or still active.
+No future is joined on the lifecycle thread.
+
+The callback uses the same domain stop as disable: stop admission, close the
+existing runtime/resources, capture the actual storage/native/history terminal
+stages, then call `retireGameplayRegistrations()` after accepted operations no
+longer need Bukkit-owned tasks or channels. That explicit method unregisters
+listeners, services and plugin-message channels, cancels Bukkit tasks, and
+replaces old descriptor command executors/completers with detached inert
+handlers. Include any synchronous close/retirement errors as failed named
+stages alongside real drains. This helper adds no second resource registry.
+
+Both maintenance prepare and `onDisable` call `prepare()`. Only actual disable
+calls `close()`, which unregisters exact maintenance command identities and
+detaches their callback. Do not own the maintenance adapter in the gameplay
+runtime; its status must survive prepare. Re-register it after a successful
+next `beginGeneration()`.
+
+The local or remote console needs `<plugin-name-lowercase>.hotload` permission.
+Only these exact command arguments are accepted:
+
+```text
+<plugin-name-lowercase>:hotload prepare
+<plugin-name-lowercase>:hotload status
+```
+
+`ARC_HOTLOAD schema=1` reports the loaded `pluginMeta.version`, overall `state`,
+each `phase.<name>` and its failure class. `active` means stop has not begun;
+`preparing` means a returned drain is still pending; `ready` means every phase
+finished successfully; `failed` preserves a synchronous stop error, drain
+failure, or cancellation. A failed phase stays visible while other phases
+finish. Derived observer-future cancellation cannot cancel accepted cleanup.
+Phase names are stable lowercase tokens (up to 48 characters, at most 32 phases).
+
+Before replacing a plugin, verify the loaded version and exact old/new JAR
+hashes, require `ready`, keep its shared providers alive through the drain,
+then use the supported per-plugin loader path. Recheck the new version,
+readiness and registrations. A metadata version or successful build is not a
+hotload compatibility marker. Prove two A → stop → B cycles in one native
+process with a real saved operation and a pending callback; check duplicate
+commands, listeners, services, tasks, threads and visible owners. Same-instance
+disable/enable and new-classloader unload/load are different evidence. If a
+loader, native fixture or runtime observation is unavailable, report that
+specific gap; unit/MockBukkit checks do not establish native compatibility.
+Shared-provider ABI/bootstrap changes require coordinated replacement or the
+documented restart; never substitute server reload or reload-all.
 
 ## Required integration order
 

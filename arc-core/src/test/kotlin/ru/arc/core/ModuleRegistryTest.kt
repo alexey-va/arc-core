@@ -1,6 +1,7 @@
 package ru.arc.core
 
 import io.kotest.core.spec.style.FreeSpec
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
@@ -9,6 +10,34 @@ class ModuleRegistryTest : FreeSpec({
     beforeTest { ModuleRegistry.resetForTests() }
 
     "ModuleRegistry" - {
+        "checked shutdown preserves failures and still closes every module" {
+            val closed = mutableListOf<String>()
+            for (id in listOf("first", "second")) ModuleRegistry.register(object : PluginModule {
+                override val name = id
+                override fun init() = Unit
+                override fun shutdown() { closed += id; error("close-$id") }
+            })
+            ModuleRegistry.initAll()
+            val failure = shouldThrow<IllegalStateException> { ModuleRegistry.shutdownAllChecked() }
+            closed shouldBe listOf("second", "first")
+            failure.cause!!.message shouldBe "close-second"
+            failure.cause!!.suppressed.single().message shouldBe "close-first"
+            ModuleRegistry.getModules() shouldBe emptyList()
+            ModuleRegistry.lifecycleReporter shouldBe NoOpModuleLifecycleReporter
+        }
+
+        "terminal drain retains failed partial-start cleanup without changing best effort startup" {
+            var closes = 0
+            ModuleRegistry.register(object : PluginModule {
+                override val name = "partial"
+                override fun init() { error("start") }
+                override fun shutdown() { closes++; error("partial-close") }
+            })
+            ModuleRegistry.initAll()
+            shouldThrow<IllegalStateException> { ModuleRegistry.shutdownAllChecked() }.cause!!.message shouldBe "partial-close"
+            closes shouldBe 1
+        }
+
         "should init modules in priority order" {
             val order = mutableListOf<String>()
             val low = object : PluginModule {

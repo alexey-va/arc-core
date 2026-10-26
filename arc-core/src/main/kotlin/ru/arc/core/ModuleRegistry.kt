@@ -13,6 +13,7 @@ object ModuleRegistry {
     private val initializedModules = mutableListOf<PluginModule>()
     private val runtimeStatuses = ConcurrentHashMap<String, ModuleRuntimeStatus>()
     private var initialized = false
+    private var initializationCleanupFailure: Exception? = null
 
     /** Set before [initAll] for platform-specific console output. */
     var lifecycleReporter: ModuleLifecycleReporter = NoOpModuleLifecycleReporter
@@ -41,6 +42,7 @@ object ModuleRegistry {
             moduleLog.error("ModuleRegistry already initialized")
             return
         }
+        initializationCleanupFailure = null
         val sorted = modules.filter { it.enabled }.sortedBy { it.priority }
         val reporter = lifecycleReporter
         reporter.onInitStart(sorted.size)
@@ -67,6 +69,9 @@ object ModuleRegistry {
                         module.shutdown()
                     } catch (cleanupError: Exception) {
                         e.addSuppressed(cleanupError)
+                        val previousCleanup = initializationCleanupFailure
+                        if (previousCleanup == null) initializationCleanupFailure = cleanupError
+                        else if (previousCleanup !== cleanupError) previousCleanup.addSuppressed(cleanupError)
                         moduleLog.error("Module '${module.name}' cleanup after failed init also failed", cleanupError)
                     }
                     val elapsed = System.currentTimeMillis() - start
@@ -146,7 +151,16 @@ object ModuleRegistry {
         }
     }
 
-    fun shutdownAll() {
+    fun shutdownAll() { shutdownAllCollectingFailure() }
+
+    /** Close every module, preserving failed partial-start cleanup in the owner's terminal drain. */
+    fun shutdownAllChecked() {
+        shutdownAllCollectingFailure()?.let { throw IllegalStateException("Could not shut down every plugin module", it) }
+    }
+
+    private fun shutdownAllCollectingFailure(): Exception? {
+        var failure = initializationCleanupFailure
+        initializationCleanupFailure = null
         val sorted = initializedModules.asReversed()
         val reporter = lifecycleReporter
         reporter.onShutdownStart(sorted.size)
@@ -163,6 +177,8 @@ object ModuleRegistry {
                 }
                 reporter.onShutdownSuccess(module.name)
             } catch (e: Exception) {
+                val previous = failure
+                if (previous == null) failure = e else if (previous !== e) previous.addSuppressed(e)
                 val elapsed = System.currentTimeMillis() - start
                 runtimeStatuses.compute(module.name) { _, previous ->
                     (previous ?: ModuleRuntimeStatus(module.name)).copy(
@@ -179,6 +195,8 @@ object ModuleRegistry {
         modules.clear()
         initialized = false
         reporter.onShutdownComplete()
+        lifecycleReporter = NoOpModuleLifecycleReporter
+        return failure
     }
 
     fun getModules(): List<PluginModule> = modules.toList()
@@ -191,6 +209,7 @@ object ModuleRegistry {
         modules.clear()
         runtimeStatuses.clear()
         initialized = false
+        initializationCleanupFailure = null
         lifecycleReporter = NoOpModuleLifecycleReporter
     }
 }

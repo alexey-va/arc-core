@@ -43,10 +43,9 @@ object LokiLogging {
     @Volatile
     private var installState: InstallState? = null
 
-    private val listenerConfigurations =
-        java.util.Collections.newSetFromMap(
-            java.util.concurrent.ConcurrentHashMap<Configuration, Boolean>(),
-        )
+    private val reconfigurationListeners = java.util.IdentityHashMap<Configuration, ConfigurationListener>()
+    private val ownedAppenders = java.util.IdentityHashMap<Configuration, MutableSet<org.apache.logging.log4j.core.Appender>>()
+    private var generation = 0L
 
     @JvmStatic
     fun loadConfig(folder: Path, configFile: String = DEFAULT_CONFIG_FILE): Config =
@@ -67,6 +66,7 @@ object LokiLogging {
      */
     @JvmStatic
     @JvmOverloads
+    @Synchronized
     fun install(
         config: Config,
         target: LokiAttachTarget = LokiAttachTarget.LOGGER_PREFIX,
@@ -77,7 +77,7 @@ object LokiLogging {
         val module = LoggingModuleConfig(config)
         if (!module.enabled) {
             log.debug("Loki appender disabled in config (enabled=false)")
-            installState = null
+            close()
             return false
         }
 
@@ -87,9 +87,37 @@ object LokiLogging {
 
     /** Re-apply last install (e.g. ProxyARC `/proxyarc reload` after logging.yml change). */
     @JvmStatic
+    @Synchronized
     fun reinstallFromState(): Boolean {
         val state = installState ?: return false
         return install(state.config, state.target, state.loggerPrefix, state.appenderName)
+    }
+
+    /** Detaches only this generation's hooks and appenders from the server's Log4j context. */
+    @JvmStatic
+    @Synchronized
+    fun close() {
+        generation++
+        installState = null // A reconfiguration callback already queued cannot reinstall us.
+        var failure: Throwable? = null
+        fun attempt(action: () -> Unit) {
+            try { action() } catch (problem: Throwable) {
+                if (failure == null) failure = problem else if (failure !== problem) failure!!.addSuppressed(problem)
+            }
+        }
+        reconfigurationListeners.forEach { (configuration, listener) -> attempt { configuration.removeListener(listener) } }
+        reconfigurationListeners.clear()
+        ownedAppenders.forEach { (configuration, appenders) ->
+            appenders.forEach { appender ->
+                (configuration.loggers.values + configuration.rootLogger).forEach { logger ->
+                    attempt { if (logger.appenders[appender.name] === appender) logger.removeAppender(appender.name) }
+                }
+                attempt { configuration.appenders.remove(appender.name, appender) }
+                attempt { appender.stop() }
+            }
+        }
+        ownedAppenders.clear()
+        failure?.let { throw IllegalStateException("Could not detach every Loki logging resource", it) }
     }
 
     @JvmStatic
@@ -128,9 +156,11 @@ object LokiLogging {
     fun resolveLokiLevel(config: Config): Level = LoggingModuleConfig(config).lokiLevel.toLog4j()
 
     private fun registerReconfigurationListener(configuration: Configuration) {
-        if (!listenerConfigurations.add(configuration)) return
-        configuration.addListener(
-            ConfigurationListener { reconfigurable ->
+        if (configuration in reconfigurationListeners) return
+        val listenerGeneration = generation
+        val listener = ConfigurationListener {
+            synchronized(this) {
+                if (generation != listenerGeneration) return@ConfigurationListener
                 val state = installState ?: return@ConfigurationListener
                 val module = LoggingModuleConfig(state.config)
                 if (!module.enabled) return@ConfigurationListener
@@ -138,8 +168,10 @@ object LokiLogging {
                 registerReconfigurationListener(
                     (LogManager.getRootLogger() as Logger).context.configuration,
                 )
-            },
-        )
+            }
+        }
+        configuration.addListener(listener)
+        reconfigurationListeners[configuration] = listener
     }
 
     private fun attachAppender(
@@ -179,6 +211,9 @@ object LokiLogging {
                             setFilter(filter)
                         }.build()
                         .also {
+                            ownedAppenders.getOrPut(configuration) {
+                                java.util.Collections.newSetFromMap(java.util.IdentityHashMap())
+                            }.add(it)
                             it.start()
                             configuration.addAppender(it)
                         }

@@ -58,6 +58,13 @@ visible from the first commit. A plugin may remain small; it must not replace
 the baseline with a local superclass, scheduler bag, health DTO, locale engine,
 or MockBukkit singleton.
 
+Plugins supporting runtime replacement compose `PaperPluginHotload` around
+their existing stop owner and real named drain stages. Keep prepare/status
+outside the gameplay runtime, guard same-instance enable, and retire standard
+Bukkit registrations explicitly after domain stop. Follow the
+[shared hotload readiness runbook](shared-primitives.md#plugin-hotload-readiness);
+source/build checks and metadata versions do not prove native loader support.
+
 The Paper test-kit exposes concrete fixture types, such as `WorldMock`, through
 its published API. Feature-specific test adapters may use those types while
 `MockBukkitTestRuntime` retains server setup and teardown. The verifier rejects

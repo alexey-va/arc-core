@@ -67,6 +67,21 @@ object ArcLogging {
         installLoki(spec)
     }
 
+    /** Release platform callbacks and global logger registrations before unloading the owner. */
+    @JvmStatic
+    fun close() {
+        try { LokiLogging.close() } finally {
+            platform = Slf4jLoggingPlatform("arc")
+            configSource = LoggingConfigSource { ru.arc.config.EmptyConfig }
+            opsSink = LoggingOpsSink { _, _ -> }
+            lokiSpec = null
+            configVersion = -1
+            quietSourcesConfigVersion = -1
+            cachedQuietSources = emptySet()
+            cachedLogLevel = LogLevel.INFO
+        }
+    }
+
     @JvmStatic
     @JvmOverloads
     fun withContext(
