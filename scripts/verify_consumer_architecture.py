@@ -596,6 +596,7 @@ def verify(root: Path, manifest_path: Path) -> list[Violation]:
 HOST_IMPLEMENTATION_PREFIXES = (
     "ru/arc/paper/runtime/PaperNativeCleanupServiceProvider",
     "ru/arc/paper/scene/PaperSceneObservationServiceProvider",
+    "ru/arc/paper/scene/PaperSceneEntityInfoServiceProvider",
     "ru/arc/paper/packet/PaperVisualPacketRuntime",
     "ru/arc/paper/sql/PaperSqlServiceProvider",
     "ru/arc/paper/sql/SharedPaperSqlService",
