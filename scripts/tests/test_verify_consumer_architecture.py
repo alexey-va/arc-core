@@ -151,8 +151,10 @@ class ProviderHost {
         with zipfile.ZipFile(jar, "w") as archive:
             archive.writestr("ru/arc/paper/runtime/PaperNativeCleanupServiceProvider.class", b"fixture")
             archive.writestr("ru/arc/paper/runtime/PaperNativeCleanupServiceProvider$Cleanup.class", b"fixture")
+            archive.writestr("ru/arc/paper/scene/PaperSceneObservationServiceProvider.class", b"fixture")
+            archive.writestr("ru/arc/paper/scene/PaperSceneObservationServiceProvider$Entry.class", b"fixture")
         failures = verify_artifact(jar, provider_host=False)
-        self.assertEqual(2, len(failures))
+        self.assertEqual(4, len(failures))
         self.assertTrue(all(failure.rule == "artifact-owner" for failure in failures))
         output = StringIO()
         with redirect_stdout(output):

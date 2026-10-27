@@ -10,16 +10,23 @@ import io.mockk.mockk
 import io.mockk.verify
 import org.bukkit.FluidCollisionMode
 import org.bukkit.Location
+import org.bukkit.Material
 import org.bukkit.World
 import org.bukkit.attribute.Attribute
 import org.bukkit.entity.Player
 import org.bukkit.plugin.Plugin
+import org.bukkit.inventory.EquipmentSlot
+import org.bukkit.inventory.ItemStack
+import org.bukkit.inventory.meta.LeatherArmorMeta
 import org.bukkit.util.RayTraceResult
 import org.bukkit.util.Vector
 import ru.arc.core.BudgetedTaskQueue
 import ru.arc.core.LifecycleTaskScope
 import ru.arc.core.TestTaskScheduler
 import ru.arc.paper.api.ArcNativeCleanupService
+import ru.arc.paper.api.ArcSceneBounds
+import ru.arc.paper.api.ArcSceneObservationService
+import ru.arc.paper.scene.PaperSceneObservationServiceProvider
 import ru.arc.paper.display.PacketDisplayViewer
 import ru.arc.paper.display.TestPacketDisplayAudience
 import ru.arc.paper.display.TestPacketEventsApi
@@ -256,9 +263,61 @@ class PaperPacketNpcsTest : FreeSpec({
             }
         }
     }
+
+    "scene observations require explicit opt-in and detach only live default-visible actor appearance" {
+        MockBukkitTestRuntime.open().use { paper ->
+            PaperSceneObservationServiceProvider(paper.createSimplePlugin("ArcCore")).use { observations ->
+                NpcFixture(observations).use { f ->
+                    val actor = f.owner.spawnPlayer(Location(f.world, 0.0, 64.0, 0.0),
+                        PacketNpcProfile(UUID.randomUUID(), "public", "dGV4dHVyZQ==", null))
+                    actor.sceneLabel = "Анна"
+                    actor.scale = .75
+                    actor.sit(actor.location)
+                    actor.bodyYaw = 45f; actor.headYaw = 90f; actor.pitch = 15f
+                    val helmet = ItemStack(Material.LEATHER_HELMET).apply {
+                        itemMeta = (itemMeta as LeatherArmorMeta).apply {
+                            @Suppress("DEPRECATION")
+                            setCustomModelData(25)
+                            setColor(org.bukkit.Color.fromRGB(0x123456))
+                        }
+                    }
+                    actor.setEquipment(EquipmentSlot.HEAD, helmet)
+                    val bounds = ArcSceneBounds(f.world.uid, -1.0, 63.0, -1.0, 1.0, 66.0, 1.0)
+                    observations.entities(bounds, 512) shouldBe emptyList()
+                    f.owner.enableSceneObservation(); f.owner.enableSceneObservation()
+                    val snapshot = observations.entities(bounds, 1).single()
+                    snapshot.name shouldBe "Анна"
+                    snapshot.skinTexture shouldBe "dGV4dHVyZQ=="
+                    snapshot.bodyYaw shouldBe 45f
+                    snapshot.headYaw shouldBe 90f
+                    snapshot.scale shouldBe .75
+                    snapshot.seated shouldBe true
+                    snapshot.equipment.single().material shouldBe "minecraft:leather_helmet"
+                    snapshot.equipment.single().customModelData shouldBe 25
+                    snapshot.equipment.single().tint shouldBe 0x123456
+                    actor.setEquipment(EquipmentSlot.HEAD, ItemStack(Material.AIR))
+                    snapshot.equipment.size shouldBe 1
+                    observations.entities(bounds, 1).single().equipment shouldBe emptyList()
+                    actor.isVisibleByDefault = false
+                    actor.showTo(f.player)
+                    observations.entities(bounds, 512) shouldBe emptyList()
+                    actor.isVisibleByDefault = true
+                    actor.teleport(Location(f.world, 1.0, 64.0, 0.0))
+                    observations.entities(bounds, 512) shouldBe emptyList()
+                    actor.teleport(Location(f.world, 0.0, 64.0, 0.0))
+                    actor.remove()
+                    observations.entities(bounds, 512) shouldBe emptyList()
+                    f.close()
+                    observations.registerEntitySource(f.plugin, "test-npcs") { _, _ -> emptyList() }.close()
+                }
+                observations.entities(ArcSceneBounds(UUID.randomUUID(), 0.0, 0.0, 0.0, 1.0, 1.0, 1.0), 512) shouldBe emptyList()
+            }
+        }
+    }
 })
 
-private class NpcFixture : AutoCloseable {
+private class NpcFixture(observations: ArcSceneObservationService? = null) : AutoCloseable {
+    val plugin = mockk<Plugin>(relaxed = true)
     val backend = NpcBackend()
     private var channel = Any()
     var inputTime = 0L
@@ -299,8 +358,9 @@ private class NpcFixture : AutoCloseable {
         every { player.location } answers { eye.clone().subtract(0.0, 1.62, 0.0) }
         every { player.sentChunkKeys } answers { chunks }
         every { player.getAttribute(Attribute.ENTITY_INTERACTION_RANGE) } returns null
-        val plugin = mockk<Plugin>(relaxed = true)
+        every { plugin.isEnabled } returns true
         every { plugin.logger } returns Logger.getAnonymousLogger()
+        every { plugin.server.servicesManager.load(ArcSceneObservationService::class.java) } returns observations
         every { plugin.server.getPlayer(playerId) } returns player
         val ownedIds = mutableSetOf<Int>()
         every { transport.ownedIds } returns ownedIds

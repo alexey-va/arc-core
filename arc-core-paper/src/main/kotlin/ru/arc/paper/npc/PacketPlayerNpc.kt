@@ -7,6 +7,8 @@ import org.bukkit.World
 import org.bukkit.entity.Player
 import org.bukkit.inventory.EquipmentSlot
 import org.bukkit.inventory.ItemStack
+import ru.arc.paper.api.ArcSceneEquipment
+import ru.arc.paper.scene.PaperSceneSnapshots
 import java.lang.ref.WeakReference
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -45,11 +47,15 @@ class PacketPlayerNpc internal constructor(
     var isSeated: Boolean = false
         private set
     private var equipment = emptyMap<PacketSlot, PacketItem>()
+    private var observedEquipment = emptyMap<EquipmentSlot, ArcSceneEquipment>()
     private val hidden = mutableSetOf<UUID>()
     private val shown = mutableSetOf<UUID>()
     private var swing = 0L
     private var hurt = 0L
     val uniqueId: UUID get() = profile.uuid
+    /** Public observer label; profile names remain the immutable packet identity. */
+    var sceneLabel: String = profile.name
+        set(value) { owner.checkThread(); require(value.length <= 128); field = value }
     val location: Location get() { owner.checkThread(); return position.clone().also { it.yaw = bodyYaw; it.pitch = pitch } }
     val world: World get() { owner.checkThread(); return requireNotNull(position.world) }
     val isValid: Boolean get() = active && !owner.closed
@@ -138,7 +144,11 @@ class PacketPlayerNpc internal constructor(
         }
         val captured = owner.itemSnapshot(item)
         if (equipment[target] != captured) equipment = equipment + (target to captured)
+        val observed = PaperSceneSnapshots.equipment(slot, item)
+        observedEquipment = if (observed == null) observedEquipment - slot else observedEquipment + (slot to observed)
     }
+
+    internal fun sceneEquipment(): List<ArcSceneEquipment> = observedEquipment.values.toList()
 
     fun swingMainHand() { owner.checkThread(); swing++ }
     fun playHurtAnimation() { owner.checkThread(); hurt++ }

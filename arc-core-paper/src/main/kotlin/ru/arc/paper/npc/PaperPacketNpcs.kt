@@ -19,6 +19,9 @@ import org.bukkit.util.BoundingBox
 import ru.arc.core.BudgetedTaskQueue
 import ru.arc.core.LifecycleTaskScope
 import ru.arc.paper.api.ArcNativeCleanupService
+import ru.arc.paper.api.ArcSceneBounds
+import ru.arc.paper.api.ArcSceneEntity
+import ru.arc.paper.api.ArcSceneObservationService
 import ru.arc.paper.display.BukkitPacketDisplayAudience
 import ru.arc.paper.display.PacketDisplayAudienceSource
 import ru.arc.paper.display.PacketDisplayViewer
@@ -62,6 +65,8 @@ class PaperPacketNpcs internal constructor(
     )
 
     private val transport = suppliedTransport ?: PacketNpcTransport(plugin, source, ::enqueueInput)
+    private val sceneSourceKey = source
+    private var sceneLease: AutoCloseable? = null
     private val handles = linkedMapOf<Int, PacketPlayerNpc>()
     private data class Viewer(val connection: PacketNpcConnection, val world: UUID)
     private val viewers = mutableMapOf<UUID, Viewer>()
@@ -93,6 +98,36 @@ class PaperPacketNpcs internal constructor(
         handles[actor.entityId] = actor
         transport.ownedIds.add(actor.entityId)
         return actor
+    }
+
+    /**
+     * Explicitly publish this owner's public actors to passive scene observers. Private/default-
+     * hidden actors remain excluded. The host owns the registry; this owner closes its lease.
+     * Queries examine at most 512 actor handles and never resolve skins or expose native frames.
+     */
+    fun enableSceneObservation() {
+        checkThread(); check(!closed) { "Packet NPC owner is closed" }
+        if (sceneLease != null) return
+        val service = requireNotNull(plugin.server.servicesManager.load(ArcSceneObservationService::class.java)) {
+            "ArcSceneObservationService is unavailable; enable a compatible ArcCore before public packet NPCs"
+        }
+        sceneLease = service.registerEntitySource(plugin, sceneSourceKey, ::sceneSnapshot)
+    }
+
+    private fun sceneSnapshot(bounds: ArcSceneBounds, limit: Int): List<ArcSceneEntity> {
+        checkThread()
+        if (closed) return emptyList()
+        val result = ArrayList<ArcSceneEntity>(limit)
+        for (actor in handles.values.take(512)) {
+            if (!actor.isValid || !actor.isVisibleByDefault) continue
+            val frame = actor.frame()
+            if (!bounds.contains(frame.worldId, frame.x, frame.y, frame.z)) continue
+            result.add(ArcSceneEntity(frame.worldId, "packet-npc:${frame.profile.uuid}", "PLAYER", actor.sceneLabel,
+                frame.x, frame.y, frame.z, frame.bodyYaw, frame.headYaw, frame.pitch, frame.pose.name,
+                frame.scale, frame.seated, frame.profile.texture, actor.sceneEquipment()))
+            if (result.size == limit) break
+        }
+        return result
     }
 
     internal fun checkThread() = audience.checkThread()
@@ -233,6 +268,8 @@ class PaperPacketNpcs internal constructor(
         completion?.let { return it.copy() }
         val result = CompletableFuture<Void>().also { completion = it }
         closed = true
+        sceneLease?.close()
+        sceneLease = null
         capture?.cancel(false)
         tasks.close()
         if (ownsWork) work.close()
