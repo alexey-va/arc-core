@@ -14,6 +14,8 @@ import java.util.UUID
  * 8 chunk listeners. Chunk hints are passive; a failed listener is removed and logged once.
  * Closing a lease, disabling its plugin or stopping the host removes the source callback.
  * Private or per-viewer actors must never be registered as public observations.
+ * Optional display queries reuse entity-source leases, return at most 128 records/2688 pose
+ * samples, and publish nothing unless a source explicitly overrides its JVM default method.
  * A source exception or record-count overrun fails that query without caching a partial result.
  */
 interface ArcSceneObservationService {
@@ -24,10 +26,14 @@ interface ArcSceneObservationService {
     fun chunkChanged(worldId: UUID, chunkX: Int, chunkZ: Int)
     fun entities(bounds: ArcSceneBounds, limit: Int): List<ArcSceneEntity>
     fun locations(limit: Int): List<ArcSceneLocation>
+    /** Optional public decorative displays; older providers and sources publish none. */
+    fun displays(bounds: ArcSceneBounds, limit: Int): List<ArcSceneDisplay> = emptyList()
 }
 
 fun interface ArcSceneEntitySource {
     fun snapshot(bounds: ArcSceneBounds, limit: Int): List<ArcSceneEntity>
+    /** Explicit opt-in only. Never include private or per-viewer packet displays. */
+    fun displays(bounds: ArcSceneBounds, limit: Int): List<ArcSceneDisplay> = emptyList()
 }
 
 fun interface ArcSceneLocationSource {

@@ -10,6 +10,7 @@ import org.bukkit.plugin.ServicePriority
 import ru.arc.paper.api.ArcSceneBounds
 import ru.arc.paper.api.ArcSceneChunkListener
 import ru.arc.paper.api.ArcSceneEntity
+import ru.arc.paper.api.ArcSceneDisplay
 import ru.arc.paper.api.ArcSceneEntitySource
 import ru.arc.paper.api.ArcSceneLocation
 import ru.arc.paper.api.ArcSceneLocationSource
@@ -109,6 +110,27 @@ class PaperSceneObservationServiceProvider(private val host: Plugin) : ArcSceneO
             if (locationSources[id] !== entry || !entry.plugin.isEnabled) continue
             check(values.size <= limit - result.size) { "Scene location source exceeded its requested limit" }
             for (value in values) if (ids.add(value.id)) result.add(value)
+            if (result.size == limit) break
+        }
+        return Collections.unmodifiableList(result)
+    }
+
+    override fun displays(bounds: ArcSceneBounds, limit: Int): List<ArcSceneDisplay> {
+        checkOpen()
+        require(limit in 1..128) { "Scene display query limit must be 1..128" }
+        val result = ArrayList<ArcSceneDisplay>(limit)
+        val ids = hashSetOf<String>()
+        for ((id, entry) in entitySources.toMap()) {
+            if (entitySources[id] !== entry) continue
+            if (!entry.plugin.isEnabled) { entitySources.remove(id); continue }
+            val remaining = limit - result.size
+            val values = entry.source.displays(bounds, remaining)
+            if (closed) break
+            if (entitySources[id] !== entry || !entry.plugin.isEnabled) continue
+            check(values.size <= remaining) { "Scene display source exceeded its requested limit" }
+            for (value in values) {
+                if (bounds.contains(value.worldId, value.pose.x, value.pose.y, value.pose.z) && ids.add(value.id)) result.add(value)
+            }
             if (result.size == limit) break
         }
         return Collections.unmodifiableList(result)

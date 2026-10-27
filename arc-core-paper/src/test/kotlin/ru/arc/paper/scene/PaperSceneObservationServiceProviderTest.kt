@@ -8,6 +8,13 @@ import ru.arc.paper.api.ArcSceneBounds
 import ru.arc.paper.api.ArcSceneEntity
 import ru.arc.paper.api.ArcSceneLocation
 import ru.arc.paper.api.ArcSceneObservationService
+import ru.arc.paper.api.ArcSceneEntitySource
+import ru.arc.paper.api.ArcSceneDisplay
+import ru.arc.paper.api.ArcSceneDisplayContent
+import ru.arc.paper.api.ArcSceneItem
+import ru.arc.paper.api.ArcSceneDisplayPose
+import ru.arc.paper.api.ArcSceneVector3
+import ru.arc.paper.api.ArcSceneQuaternion
 import ru.arc.paper.testing.MockBukkitTestRuntime
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
@@ -17,6 +24,10 @@ class PaperSceneObservationServiceProviderTest : FreeSpec({
     val bounds = ArcSceneBounds(world, 0.0, 0.0, 0.0, 10.0, 100.0, 10.0)
     fun entity(id: String, x: Double = 1.0, worldId: UUID = world) = ArcSceneEntity(worldId, id, "PLAYER", "Resident",
         x, 64.0, 1.0, 0f, 0f, 0f, "STANDING", 1.0, false, null, emptyList())
+    fun display(id: String, x: Double = 1.0, worldId: UUID = world) = ArcSceneDisplay(worldId, id,
+        ArcSceneDisplayPose(x, 64.0, 1.0, 0f, 0f, ArcSceneVector3(0f, 0f, 0f), ArcSceneVector3(1f, 1f, 1f),
+            ArcSceneQuaternion(0f, 0f, 0f, 1f), ArcSceneQuaternion(0f, 0f, 0f, 1f)), "CENTER", 15, 15, 1f, 0f, 1f,
+        ArcSceneDisplayContent.Item(ArcSceneItem("minecraft:paper", 1, null, null, null), "GUI"), null)
 
     "queries capture on Main enforce bounds and hand only remaining capacity to each source" {
         MockBukkitTestRuntime.open().use { paper ->
@@ -61,6 +72,42 @@ class PaperSceneObservationServiceProviderTest : FreeSpec({
                 }
                 service.registerEntitySource(plugin, "overrun") { _, _ -> listOf(entity("one"), entity("two")) }
                 shouldThrow<IllegalStateException> { service.entities(bounds, 1) }
+            }
+        }
+    }
+
+    "display opt-in reuses bounded leases filters worlds and bounds and releases every lifecycle" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val plugin = paper.createSimplePlugin("Crates")
+            val host = paper.createSimplePlugin("ArcCore")
+            PaperSceneObservationServiceProvider(host).use { service ->
+                service.registerEntitySource(plugin, "legacy") { _, _ -> emptyList() }
+                service.displays(bounds, 128) shouldBe emptyList()
+                var calls = 0
+                val lease = service.registerEntitySource(plugin, "ambient", object : ArcSceneEntitySource {
+                    override fun snapshot(bounds: ArcSceneBounds, limit: Int) = emptyList<ArcSceneEntity>()
+                    override fun displays(bounds: ArcSceneBounds, limit: Int): List<ArcSceneDisplay> {
+                        Bukkit.isPrimaryThread() shouldBe true
+                        calls++
+                        return listOf(display("public"), display("edge", 10.0), display("foreign", worldId = UUID(0, 2))).take(limit)
+                    }
+                })
+                val captured = service.displays(bounds, 3)
+                captured.map { it.id } shouldBe listOf("public")
+                shouldThrow<UnsupportedOperationException> { (captured as MutableList).clear() }
+                for (limit in listOf(0, 129)) shouldThrow<IllegalArgumentException> { service.displays(bounds, limit) }
+                lease.close(); lease.close()
+                service.displays(bounds, 128) shouldBe emptyList()
+                calls shouldBe 1
+                service.registerEntitySource(plugin, "overrun", object : ArcSceneEntitySource {
+                    override fun snapshot(bounds: ArcSceneBounds, limit: Int) = emptyList<ArcSceneEntity>()
+                    override fun displays(bounds: ArcSceneBounds, limit: Int) = listOf(display("one"), display("two"))
+                })
+                shouldThrow<IllegalStateException> { service.displays(bounds, 1) }
+                paper.server.pluginManager.disablePlugin(plugin)
+                service.displays(bounds, 1) shouldBe emptyList()
+                service.close()
+                shouldThrow<IllegalStateException> { service.displays(bounds, 1) }
             }
         }
     }
