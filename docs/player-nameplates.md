@@ -102,6 +102,24 @@ apply the newest immutable snapshot.
 
 ## Optional packet rendering
 
+`PaperPlayerNameplates.openViewerScoped` is the opt-in path for viewer-specific
+content such as clan relationships. It preserves the existing `open` signature
+and behavior. Its `PaperNameplateViewerContent` callback runs on the primary
+thread after visibility checks, receives the composed base rows and returns a
+component or null to hide the plate. It must use cached, bounded, read-only
+gameplay state. Equal components share one private-audience display; at most
+16 variants are rendered per target, with excess variants hidden. A target has
+one visible variant per viewer. Audience changes hide old private viewers before
+updating and reusing a handle; attachment loss and close retire every variant.
+
+An existing specialized renderer can reserve its targets through the Java-shaped
+`ArcNameplateClaim` service in `arc-core-paper-api`. Its `owns(UUID)` includes
+temporarily hidden match phases. Ordinary consumers must yield to claims and
+fail closed while a known specialized plugin is enabled without its provider.
+The shared API stays in ArcCore's runtime JAR and remains compile-only in both
+claim provider and consumer. This allows mutually exclusive target ownership
+without changing an existing event's private nameplate policy.
+
 The default remains `NativePaperNameplateDisplayFactory`. A consumer that already
 owns `PaperPacketDisplays` may explicitly inject
 `PacketPaperNameplateDisplayFactory(displays, options)` into

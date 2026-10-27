@@ -209,6 +209,9 @@ class PaperPacketDisplays internal constructor(
             yieldAll(participant.captureSteps(currentAudience))
             yield(Unit)
         }
+        // Pin private audience state before frames, including yields during frame capture.
+        // Otherwise a reused handle could expose its old text to a newly admitted viewer.
+        val visibility = visibilityRevision
         val frames = arrayListOf<Pair<PacketDisplay, PacketDisplayFrame>>()
         var frameBatchSize = 0
         for (display in handles.values) {
@@ -246,7 +249,6 @@ class PaperPacketDisplays internal constructor(
             yield(Unit)
         }
         for (viewer in currentAudience) {
-            val visibility = visibilityRevision
             val groupVisibility = hashMapOf<PacketDisplayAudienceGroup, Boolean>()
             val desired = arrayListOf<PacketDisplayFrame>()
             val desiredPassengers = hashMapOf<Int, MutableList<Int>>()

@@ -413,6 +413,37 @@ class PaperPacketDisplayBudgetTest : FreeSpec({
             val closing = displays.closeAsync(); cleanup.drain(closing); work.close()
         }
     }
+
+    "a newly admitted viewer never receives text captured before the private audience changed" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val plugin = paper.loadPlugin<TestPaperPlugin>()
+            val player = paper.addPlayer("NewAudience")
+            val world = paper.addSimpleWorld("private-text")
+            val scheduler = TestTaskScheduler()
+            val work = BudgetedTaskQueue(LifecycleTaskScope(scheduler), 1, Long.MAX_VALUE)
+            val cleanup = QueueCleanup()
+            val transport = BudgetTransport()
+            val displays = PaperPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()),
+                fixedAudience(player, world.uid), work, false, cleanup)
+            val handle = displays.spawnText(Location(world, 0.0, 64.0, 0.0), Component.text("Private A"))
+            handle.isVisibleByDefault = false
+            val sweep = displays.refresh()
+            scheduler.tick(2) // Capture viewer, then immutable A frame; viewer admission has not started.
+            sweep.isDone shouldBe false
+            transport.frames shouldBe emptyList()
+            handle.text(Component.text("Public B"))
+            handle.showTo(player)
+            scheduler.tick(20)
+            sweep.join()
+            transport.frames shouldBe emptyList()
+
+            val fresh = displays.refresh()
+            scheduler.tick(20)
+            fresh.join()
+            transport.frames.single().single().metadata.content shouldBe PacketDisplayContent.Text(Component.text("Public B"))
+            val closing = displays.closeAsync(); cleanup.drain(closing); work.close()
+        }
+    }
 })
 
 private fun fixedAudience(player: Player?, world: UUID) = object : TestPacketDisplayAudience() {

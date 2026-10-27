@@ -16,6 +16,8 @@ import ru.arc.nameplate.PlayerNameplateRegistry
 import ru.arc.nameplate.PlayerNameplateSnapshot
 import java.util.UUID
 import java.util.logging.Level
+import net.kyori.adventure.text.Component
+import org.bukkit.entity.Player
 
 /**
  * Lifecycle owner that renders one composed TextDisplay nameplate per player.
@@ -33,6 +35,7 @@ class PaperPlayerNameplates private constructor(
     scheduler: TaskScheduler,
     private val displays: PaperNameplateDisplayFactory,
     private val visibility: PaperNameplateVisibilityPolicy,
+    private val viewerContent: PaperNameplateViewerContent?,
 ) : Listener, AutoCloseable {
     private data class RenderedNameplate(
         var revision: Long,
@@ -40,16 +43,24 @@ class PaperPlayerNameplates private constructor(
         val visibleViewers: MutableSet<UUID> = linkedSetOf(),
     )
 
+    private data class ViewerVariant(
+        var content: Component,
+        val display: PaperNameplateDisplay,
+        val visibleViewers: MutableSet<UUID> = linkedSetOf(),
+    )
+
     private val tasks = LifecycleTaskScope(scheduler)
     private val rendered = linkedMapOf<UUID, RenderedNameplate>()
+    private val viewerRendered = linkedMapOf<UUID, MutableList<ViewerVariant>>()
     private val reportedFailures = hashSetOf<UUID>()
     private var closed = false
 
     val activeDisplayCount: Int
-        get() = rendered.size
+        get() = rendered.size + viewerRendered.values.sumOf { it.size }
 
     val visibleViewerCount: Int
-        get() = rendered.values.sumOf { it.visibleViewers.size }
+        get() = rendered.values.sumOf { it.visibleViewers.size } +
+            viewerRendered.values.sumOf { variants -> variants.sumOf { it.visibleViewers.size } }
 
     /** Reconciles registry, online targets and per-viewer privacy immediately. */
     fun refreshNow() {
@@ -89,6 +100,10 @@ class PaperPlayerNameplates private constructor(
             runCatching(current.display::close).onFailure(failures::add)
         }
         rendered.clear()
+        viewerRendered.values.flatten().forEach { current ->
+            runCatching(current.display::close).onFailure(failures::add)
+        }
+        viewerRendered.clear()
         reportedFailures.clear()
         if (failures.isNotEmpty()) {
             throw IllegalStateException("Could not remove ${failures.size} Paper nameplate display(s)", failures.first())
@@ -116,7 +131,7 @@ class PaperPlayerNameplates private constructor(
         requirePrimaryThread()
         val targetIds = registry.targetIds()
         reportedFailures.retainAll(targetIds)
-        (rendered.keys - targetIds).forEach(::detach)
+        ((rendered.keys + viewerRendered.keys) - targetIds).forEach(::detach)
         targetIds.forEach { playerId ->
             val snapshot = registry.snapshot(playerId) ?: return@forEach
             runCatching { reconcile(snapshot) }
@@ -129,6 +144,11 @@ class PaperPlayerNameplates private constructor(
         val target = plugin.server.getPlayer(snapshot.playerId)
         if (target == null || !target.isOnline || target.isDead) {
             detach(snapshot.playerId)
+            return
+        }
+
+        viewerContent?.let {
+            reconcileViewerScoped(snapshot, target, it)
             return
         }
 
@@ -161,12 +181,53 @@ class PaperPlayerNameplates private constructor(
         current.visibleViewers.retainAll(onlineViewerIds)
     }
 
+    private fun reconcileViewerScoped(snapshot: PlayerNameplateSnapshot, target: Player,
+        content: PaperNameplateViewerContent) {
+        val desired = linkedMapOf<Component, MutableMap<UUID, Player>>()
+        plugin.server.onlinePlayers.forEach { viewer ->
+            if (!visibility.canView(viewer, target)) return@forEach
+            val component = content.render(viewer, target, snapshot.content) ?: return@forEach
+            if (component !in desired && desired.size >= MAX_VIEWER_VARIANTS) return@forEach
+            desired.getOrPut(component) { linkedMapOf() }[viewer.uniqueId] = viewer
+        }
+        val variants = viewerRendered.getOrPut(target.uniqueId) { mutableListOf() }
+        val unused = variants.toMutableList()
+        val assignments = desired.map { (component, audience) ->
+            val current = unused.firstOrNull { it.content == component && it.display.isAttachedTo(target) }
+                ?: unused.firstOrNull { it.display.isAttachedTo(target) }
+                ?: ViewerVariant(component, displays.create(target, component)).also(variants::add)
+            unused.remove(current)
+            Triple(current, component, audience)
+        }
+        // Remove old private audiences before reusing handles for different content.
+        // A viewer switching groups must never briefly receive the other group's text.
+        assignments.forEach { (current, _, audience) ->
+            (current.visibleViewers - audience.keys).forEach { id ->
+                plugin.server.getPlayer(id)?.let(current.display::hide)
+                current.visibleViewers.remove(id)
+            }
+        }
+        unused.forEach { current -> current.display.close(); variants.remove(current) }
+        assignments.forEach { (current, component, audience) ->
+            if (current.content != component) {
+                current.display.update(component)
+                current.content = component
+            }
+            audience.forEach { (id, viewer) ->
+                if (current.visibleViewers.add(id)) current.display.show(viewer)
+            }
+        }
+        if (variants.isEmpty()) viewerRendered.remove(target.uniqueId)
+    }
+
     private fun handleFailure(
         playerId: UUID,
         failure: Throwable,
     ) {
-        runCatching { rendered.remove(playerId)?.display?.close() }
-        if (reportedFailures.add(playerId)) {
+        val report = playerId !in reportedFailures
+        runCatching { detach(playerId) }
+        reportedFailures.add(playerId)
+        if (report) {
             plugin.logger.log(
                 Level.WARNING,
                 "ARC_NAMEPLATE outcome=reconcile_failed reason=${failure.javaClass.simpleName}",
@@ -176,8 +237,16 @@ class PaperPlayerNameplates private constructor(
     }
 
     private fun detach(playerId: UUID) {
-        rendered.remove(playerId)?.display?.close()
+        val displays = listOfNotNull(rendered.remove(playerId)?.display) +
+            viewerRendered.remove(playerId).orEmpty().map { it.display }
+        var failure: Throwable? = null
+        displays.forEach { display ->
+            runCatching(display::close).onFailure { problem ->
+                if (failure == null) failure = problem else failure?.addSuppressed(problem)
+            }
+        }
         reportedFailures.remove(playerId)
+        failure?.let { throw it }
     }
 
     private fun requirePrimaryThread() {
@@ -185,6 +254,20 @@ class PaperPlayerNameplates private constructor(
     }
 
     companion object {
+        private const val MAX_VIEWER_VARIANTS = 16
+
+        /** Opt-in viewer content; legacy [open] callers retain their single-display behavior. */
+        fun openViewerScoped(
+            plugin: Plugin,
+            registry: PlayerNameplateRegistry,
+            options: PaperNameplateOptions,
+            scheduler: TaskScheduler,
+            displays: PaperNameplateDisplayFactory,
+            visibility: PaperNameplateVisibilityPolicy,
+            content: PaperNameplateViewerContent,
+        ): PaperPlayerNameplates = PaperPlayerNameplates(plugin, registry, options, scheduler, displays,
+            visibility, content).also(PaperPlayerNameplates::start)
+
         /**
          * Opens and schedules one nameplate runtime for the owning plugin.
          * Register the result with [ru.arc.paper.runtime.PaperPluginRuntime.own]
@@ -204,6 +287,7 @@ class PaperPlayerNameplates private constructor(
             scheduler = scheduler,
             displays = displays,
             visibility = visibility,
+            viewerContent = null,
         ).also(PaperPlayerNameplates::start)
     }
 }

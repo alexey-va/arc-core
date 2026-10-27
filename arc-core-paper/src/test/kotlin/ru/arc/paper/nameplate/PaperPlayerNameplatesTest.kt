@@ -99,6 +99,51 @@ class PaperPlayerNameplatesTest : FreeSpec({
         nameplates.close()
     }
 
+    "viewer content shares equal variants and moves private audiences without stale content" {
+        val target = paper.addPlayer("Target")
+        val ally = paper.addPlayer("Ally")
+        val allyTwo = paper.addPlayer("AllyTwo")
+        val stranger = paper.addPlayer("Stranger")
+        val registry = PlayerNameplateRegistry()
+        registry.upsert(target.uniqueId,
+            NameplateLayer(NameplateLayerKey("clans", "identity"), 0, Component.text("[CLAN]")))
+        val displays = RecordingPaperNameplateDisplayFactory()
+        val safe = mutableSetOf(ally.uniqueId, allyTwo.uniqueId)
+        val nameplates = PaperPlayerNameplates.openViewerScoped(plugin, registry, PaperNameplateOptions(),
+            BukkitTaskScheduler(plugin), displays, PaperNameplateVisibilityPolicy { viewer, subject -> viewer != subject },
+            PaperNameplateViewerContent { viewer, _, _ -> Component.text(if (viewer.uniqueId in safe) "ally" else "unknown") })
+        nameplates.refreshNow()
+        nameplates.activeDisplayCount shouldBe 2
+        nameplates.visibleViewerCount shouldBe 3
+        displays.records.first { plain(it.contents.last()) == "ally" }.shownTo shouldBe setOf(ally.uniqueId, allyTwo.uniqueId)
+        displays.records.first { plain(it.contents.last()) == "unknown" }.shownTo shouldBe setOf(stranger.uniqueId)
+
+        safe += stranger.uniqueId
+        nameplates.refreshNow()
+        nameplates.activeDisplayCount shouldBe 1
+        displays.records.single { !it.closed }.shownTo shouldBe setOf(ally.uniqueId, allyTwo.uniqueId, stranger.uniqueId)
+        displays.records.single { !it.closed }.attached = false
+        nameplates.refreshNow()
+        displays.records.count { !it.closed } shouldBe 1
+        nameplates.close()
+        displays.records.all { it.closed } shouldBe true
+    }
+
+    "viewer content can hide a claimed target without creating displays" {
+        val target = paper.addPlayer("Target")
+        paper.addPlayer("Viewer")
+        val registry = PlayerNameplateRegistry()
+        val displays = RecordingPaperNameplateDisplayFactory()
+        registry.upsert(target.uniqueId,
+            NameplateLayer(NameplateLayerKey("clans", "identity"), 0, Component.text("[CLAN]")))
+        val nameplates = PaperPlayerNameplates.openViewerScoped(plugin, registry, PaperNameplateOptions(),
+            BukkitTaskScheduler(plugin), displays, PaperNameplateVisibilityPolicy { _, _ -> true },
+            PaperNameplateViewerContent { _, _, _ -> null })
+        nameplates.refreshNow()
+        displays.records shouldBe emptyList()
+        nameplates.close()
+    }
+
     "offline target data remains registered without leaking a display" {
         val playerId = UUID.fromString("00000000-0000-0000-0000-000000000099")
         val registry = PlayerNameplateRegistry()
