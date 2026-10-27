@@ -96,6 +96,7 @@ class PaperPacketNpcs internal constructor(
     }
 
     internal fun checkThread() = audience.checkThread()
+    internal fun nextEntityId(): Int = transport.nextEntityId()
     internal fun itemSnapshot(item: ItemStack) = transport.itemSnapshot(item)
     internal fun lease(viewerId: UUID, entityId: Int): PacketNpcLease? = viewers[viewerId]?.connection?.lease(entityId)
     internal fun remove(actor: PacketPlayerNpc) {

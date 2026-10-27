@@ -43,18 +43,24 @@ internal object PacketNpcPackets {
         add(scale(frame))
         add(WrapperPlayServerEntityHeadLook(frame.entityId, frame.headYaw))
         if (frame.equipment.isNotEmpty()) add(equipment(frame))
+        if (frame.seated) addAll(spawnSeat(frame))
     }
 
     fun update(old: PacketNpcFrame, frame: PacketNpcFrame): List<PacketWrapper<*>> = buildList {
+        if (old.seated && !frame.seated) {
+            val seat = requireNotNull(old.seat)
+            add(WrapperPlayServerSetPassengers(seat.entityId, intArrayOf()))
+            add(WrapperPlayServerDestroyEntities(seat.entityId))
+        }
         if (old.pose != frame.pose || old.bed != frame.bed) add(metadata(frame))
         if (old.scale != frame.scale) add(scale(frame))
         if (old.equipment != frame.equipment) add(equipment(frame))
         val dx = frame.x - old.x
         val dy = frame.y - old.y
         val dz = frame.z - old.z
-        if (dx != 0.0 || dy != 0.0 || dz != 0.0 || old.bodyYaw != frame.bodyYaw || old.pitch != frame.pitch) {
+        if (dx != 0.0 || dy != 0.0 || dz != 0.0 || old.bodyYaw != frame.bodyYaw || old.pitch != frame.pitch || old.seated != frame.seated) {
             // Quantized absolute endpoints prevent accumulated relative-movement rounding drift.
-            if (abs(dx) < 8.0 && abs(dy) < 8.0 && abs(dz) < 8.0) {
+            if (old.seated == frame.seated && abs(dx) < 8.0 && abs(dy) < 8.0 && abs(dz) < 8.0) {
                 add(WrapperPlayServerEntityRelativeMoveAndRotation(frame.entityId, dx, dy, dz, frame.bodyYaw, frame.pitch, true))
             } else {
                 // In 1.21.11 ENTITY_TELEPORT moves the render position but leaves the
@@ -63,6 +69,12 @@ internal object PacketNpcPackets {
                 add(WrapperPlayServerEntityPositionSync(frame.entityId,
                     EntityPositionData(Vector3d(frame.x, frame.y, frame.z), Vector3d.zero(), frame.bodyYaw, frame.pitch), true))
             }
+        }
+        if (frame.seated) {
+            if (!old.seated) addAll(spawnSeat(frame))
+            else if (dx != 0.0 || dy != 0.0 || dz != 0.0 || old.scale != frame.scale || old.bodyYaw != frame.bodyYaw)
+                add(WrapperPlayServerEntityPositionSync(requireNotNull(frame.seat).entityId,
+                    EntityPositionData(seatPosition(frame), Vector3d.zero(), frame.bodyYaw, 0f), true))
         }
         if (old.headYaw != frame.headYaw) add(WrapperPlayServerEntityHeadLook(frame.entityId, frame.headYaw))
         // At most one recent gesture survives a coalesced burst, never historical animation replay.
@@ -77,10 +89,30 @@ internal object PacketNpcPackets {
             add(WrapperPlayServerSetPassengers(frame.entityId, intArrayOf()))
             add(WrapperPlayServerDestroyEntities(*children))
         }
+        frame.seat?.let { add(WrapperPlayServerSetPassengers(it.entityId, intArrayOf())) }
         add(WrapperPlayServerDestroyEntities(frame.entityId))
+        frame.seat?.let { add(WrapperPlayServerDestroyEntities(it.entityId)) }
         add(WrapperPlayServerPlayerInfoRemove(frame.profile.uuid))
         add(WrapperPlayServerTeams(frame.teamName, TeamMode.REMOVE, null as ScoreBoardTeamInfo?, emptyList<String>()))
     }
+
+    private fun spawnSeat(frame: PacketNpcFrame): List<PacketWrapper<*>> {
+        val seat = requireNotNull(frame.seat)
+        return listOf(
+            WrapperPlayServerSpawnEntity(seat.entityId, Optional.of(seat.uuid), EntityTypes.ARMOR_STAND,
+                seatPosition(frame), 0f, frame.bodyYaw, frame.bodyYaw, 0, Optional.empty()),
+            WrapperPlayServerEntityMetadata(seat.entityId, listOf(
+                EntityData(0, EntityDataTypes.BYTE, 0x20.toByte()), // invisible
+                EntityData(5, EntityDataTypes.BOOLEAN, true), // no gravity
+                EntityData(15, EntityDataTypes.BYTE, 0x10.toByte()), // marker: zero native dimensions
+            )),
+            WrapperPlayServerSetPassengers(seat.entityId, intArrayOf(frame.entityId)),
+        )
+    }
+
+    // Exact 1.21.11: marker PASSENGER=(0,0,0), Avatar VEHICLE=(0,.6,0)*scale;
+    // Entity.positionRider subtracts VEHICLE from the carrier's passenger position.
+    private fun seatPosition(frame: PacketNpcFrame) = Vector3d(frame.x, frame.y + .6 * frame.scale, frame.z)
 
     private fun equipment(frame: PacketNpcFrame) = WrapperPlayServerEntityEquipment(frame.entityId,
         frame.equipment.map { (slot, item) -> Equipment(slot, item.copy()) })

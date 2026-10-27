@@ -58,6 +58,21 @@ the consumer owns a real, correctly oriented bed and the feet anchor. Waking
 clears the bed metadata. The six player equipment slots, main-hand swing and hurt
 animation are supported. An equipment item is copied on Paper before encoding.
 
+`sit(location)` mounts the player on one invisible client-only marker armor stand
+owned by the same frame/connection generation. The location is the player's native
+feet origin, as for `teleport`, not the furniture surface. On 1.21.11 the marker has
+zero dimensions and its passenger attachment is zero; `Avatar` has a `(0, .6, 0)`
+vehicle attachment scaled by `minecraft:scale`, so Core places the marker `.6 * scale`
+above the supplied feet. This follows the exact mapped server's
+`Entity.positionRider`, `Avatar.STANDING_DIMENSIONS` and `ArmorStand.MARKER_DIMENSIONS`.
+Marker metadata is invisible index 0, no-gravity index 5 and marker flag index 15.
+The consumer owns arrival, the furniture's real support, occupied space and a safe
+adjacent exit. `stand()` removes the mount without choosing an exit; teleporting,
+a non-standing pose and removal also end it. Mount changes preserve the actor ID,
+profile, admitted lease and display children. Dismount resets the client movement
+base before walking resumes. Carrier IDs remain eligible for cleanup after a
+partial dismount, including when the latest frame is already standing.
+
 Range defaults to 48 blocks. `isVisibleByDefault`, `showTo` and `hideFrom` express
 actor privacy. Each viewer also needs the current world and received chunk.
 World/respawn, chunk load/unload, reconnect and retired actors invalidate the
@@ -124,6 +139,8 @@ Do not broaden this version contract by reusing remembered indices.
 followed by an equipment update and walking through the 1.21.11 position decoder, latest
 frame admission, sleep/equipment/gestures, lifecycle replay, input admission,
 partial-write retirement and display/carrier ordering.
+It also covers seated spawn, scale offsets, idle suppression, dismount/walk,
+chunk replay, retained child leases and partial-dismount carrier cleanup.
 `PaperPacketNpcsTest` covers viewer world/range/chunk/session changes, main-thread
 input revalidation and host cleanup. The existing display tests protect the
 native attachment route.

@@ -223,6 +223,39 @@ class PaperPacketNpcsTest : FreeSpec({
             }
         }
     }
+
+    "a seated handle preserves feet input and ends its mount on movement pose world change and removal" {
+        MockBukkitTestRuntime.open().use {
+            NpcFixture().use { f ->
+                val actor = f.spawn()
+                val feet = actor.location
+                actor.sit(feet)
+                actor.isSeated shouldBe true
+                actor.location shouldBe feet
+                actor.pose shouldBe PacketNpcPose.STANDING
+                f.refresh()
+                val seat = requireNotNull(actor.frame().seat)
+                f.transport.ownedIds shouldBe setOf(actor.entityId)
+                var calls = 0
+                f.owner.onInteract = { _, _, _ -> calls++ }
+                f.owner.interact(f.player.uniqueId, f.connection, actor.entityId,
+                    requireNotNull(f.connection.lease(actor.entityId)), PacketNpcInteraction.INTERACT)
+                calls shouldBe 1
+                actor.teleport(feet.clone().add(.1, 0.0, 0.0))
+                actor.isSeated shouldBe false
+                actor.frame().seat shouldBe seat
+                actor.sit(feet)
+                actor.pose = PacketNpcPose.SLEEPING
+                actor.isSeated shouldBe false
+                actor.sit(feet)
+                actor.teleport(Location(mockk { every { uid } returns UUID.randomUUID() }, 0.0, 64.0, 0.0))
+                actor.isSeated shouldBe false
+                actor.remove()
+                actor.isSeated shouldBe false
+                runCatching { actor.sit(feet) }.isFailure shouldBe true
+            }
+        }
+    }
 })
 
 private class NpcFixture : AutoCloseable {

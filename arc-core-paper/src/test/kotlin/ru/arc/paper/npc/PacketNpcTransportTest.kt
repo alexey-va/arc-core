@@ -209,6 +209,79 @@ class PacketNpcTransportTest : FreeSpec({
         java.lang.ref.Reference.reachabilityFence(channel)
     }
 
+    "seating keeps the actor and its child lease while native riding offsets and dismount reset movement" {
+        val backend = NpcBackend()
+        val channel = Any()
+        val connection = PacketNpcConnection(channel, Logger.getAnonymousLogger(), backend)
+        val standing = npcFrame().copy(seat = PacketNpcSeat(100, UUID(0, 100)))
+        connection.submit(listOf(standing)); backend.runAll()
+        val lease = requireNotNull(connection.lease(standing.entityId))
+        lease.registerChild(200, channel) shouldBe true
+        backend.clear()
+        val seated = standing.copy(y = 63.9, seated = true)
+        connection.submit(listOf(seated)); backend.runAll()
+        backend.writes.filterIsInstance<WrapperPlayServerSpawnEntity>().single().let {
+            it.entityId shouldBe 100
+            it.position shouldBe Vector3d(0.0, 64.5, 0.0)
+        }
+        backend.writes.filterIsInstance<WrapperPlayServerSetPassengers>().single().let {
+            it.entityId shouldBe 100
+            it.passengers.toList() shouldBe listOf(standing.entityId)
+        }
+        backend.writes.filterIsInstance<WrapperPlayServerEntityMetadata>().single().entityMetadata
+            .associate { it.index to it.value } shouldBe mapOf(0 to 0x20.toByte(), 5 to true, 15 to 0x10.toByte())
+        (connection.lease(standing.entityId) === lease) shouldBe true
+        lease.childIds().toList() shouldBe listOf(200)
+        backend.clear()
+        connection.submit(listOf(seated)); backend.runAll()
+        backend.writes shouldBe emptyList()
+        connection.submit(listOf(seated.copy(scale = .5))); backend.runAll()
+        backend.writes.filterIsInstance<WrapperPlayServerEntityPositionSync>().single().values.position.y shouldBe 64.2
+        backend.clear()
+        connection.submit(listOf(standing)); backend.runAll()
+        backend.writes.filterIsInstance<WrapperPlayServerSetPassengers>().single().passengers.size shouldBe 0
+        backend.writes.filterIsInstance<WrapperPlayServerDestroyEntities>().single().entityIds.toList() shouldBe listOf(100)
+        backend.writes.filterIsInstance<WrapperPlayServerEntityPositionSync>().single().id shouldBe standing.entityId
+        (connection.lease(standing.entityId) === lease) shouldBe true
+        backend.clear()
+        connection.submit(listOf(standing.copy(x = .0625))); backend.runAll()
+        backend.writes.filterIsInstance<WrapperPlayServerEntityRelativeMoveAndRotation>().single().deltaX shouldBe .0625
+        connection.closeAsync(); backend.runAll()
+        lease.isActive() shouldBe false
+        java.lang.ref.Reference.reachabilityFence(channel)
+    }
+
+    "seated chunk replay and partial dismount retire the retained carrier before reusing a connection" {
+        for (partialDismount in listOf(false, true)) {
+            val backend = NpcBackend()
+            val channel = Any()
+            val connection = PacketNpcConnection(channel, Logger.getAnonymousLogger(), backend)
+            val actor = npcFrame().copy(seat = PacketNpcSeat(100, UUID(0, 100)), seated = true)
+            connection.submit(listOf(actor)); backend.runAll()
+            val lease = requireNotNull(connection.lease(actor.entityId))
+            lease.registerChild(200, channel)
+            backend.clear()
+            if (partialDismount) {
+                backend.failAfter = 1 // The unmount reached the channel, carrier destruction did not.
+                connection.submit(listOf(actor.copy(seated = false)))
+            } else connection.submit(listOf(actor), setOf(actor.chunkKey))
+            backend.runAll()
+            val destroyed = backend.writes.filterIsInstance<WrapperPlayServerDestroyEntities>().flatMap { it.entityIds.toList() }
+            destroyed.toSet() shouldBe setOf(200, actor.entityId, 100)
+            (destroyed.indexOf(200) < destroyed.indexOf(actor.entityId)) shouldBe true
+            lease.isActive() shouldBe false
+            if (partialDismount) {
+                connection.isDrained shouldBe true
+                connection.closeAsync().isCompletedExceptionally shouldBe true
+                backend.writes.filterIsInstance<WrapperPlayServerSpawnEntity>().size shouldBe 0
+            } else {
+                backend.writes.filterIsInstance<WrapperPlayServerSpawnEntity>().map { it.entityId }.toSet() shouldBe setOf(actor.entityId, 100)
+                (connection.lease(actor.entityId) !== lease) shouldBe true
+            }
+            java.lang.ref.Reference.reachabilityFence(channel)
+        }
+    }
+
     "visibility revocation cancels an unspawned stale frame and chunk reset replays an identical actor" {
         val backend = NpcBackend()
         val channel = Any()

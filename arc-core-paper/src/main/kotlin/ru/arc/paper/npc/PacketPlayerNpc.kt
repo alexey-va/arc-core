@@ -41,6 +41,9 @@ class PacketPlayerNpc internal constructor(
     private var lifetime = AtomicBoolean(true)
     private var active = true
     private var bed: Location? = null
+    private var seat: PacketNpcSeat? = null
+    var isSeated: Boolean = false
+        private set
     private var equipment = emptyMap<PacketSlot, PacketItem>()
     private val hidden = mutableSetOf<UUID>()
     private val shown = mutableSetOf<UUID>()
@@ -67,7 +70,7 @@ class PacketPlayerNpc internal constructor(
     var pitch: Float = location.pitch
         set(value) { owner.checkThread(); require(value.isFinite()); field = value.coerceIn(-90f, 90f) }
     var pose: PacketNpcPose = PacketNpcPose.STANDING
-        set(value) { owner.checkThread(); field = value }
+        set(value) { owner.checkThread(); if (value != PacketNpcPose.STANDING) stand(); field = value }
     var sleepingBed: Location?
         get() = bed?.clone()
         set(value) {
@@ -88,6 +91,7 @@ class PacketPlayerNpc internal constructor(
         owner.checkThread()
         requireNotNull(location.world)
         require(listOf(location.x, location.y, location.z).all(Double::isFinite))
+        stand()
         if (position.world?.uid != location.world?.uid) {
             lifetime.set(false)
             lifetime = AtomicBoolean(true)
@@ -98,6 +102,28 @@ class PacketPlayerNpc internal constructor(
         bodyYaw = location.yaw
         pitch = location.pitch
     }
+
+    /**
+     * Sit at an authoritative player-feet anchor using a client-only marker carrier.
+     * The consumer must first reach and validate its seat; this does not find safe terrain.
+     * [location] keeps the same feet-origin contract as [teleport], including native scaled
+     * dimensions and attached displays. No entity, task or collision is added to the server.
+     * Teleport, a non-standing pose and removal end the mount. Call [stand] before resuming
+     * movement, then supply the consumer's safe exit position through [teleport].
+     */
+    fun sit(location: Location) {
+        owner.checkThread()
+        check(isValid) { "NPC is removed" }
+        require(location.world?.uid == position.world?.uid) { "NPC seat must be in the actor world" }
+        teleport(location)
+        pose = PacketNpcPose.STANDING
+        bed = null
+        if (seat == null) seat = PacketNpcSeat(owner.nextEntityId(), UUID.randomUUID())
+        isSeated = true
+    }
+
+    /** End the native riding pose at the current feet position; does not choose or teleport to an exit. */
+    fun stand() { owner.checkThread(); isSeated = false }
 
     fun setEquipment(slot: EquipmentSlot, item: ItemStack) {
         owner.checkThread()
@@ -126,6 +152,7 @@ class PacketPlayerNpc internal constructor(
     fun remove() {
         owner.checkThread()
         if (!active) return
+        stand()
         active = false
         lifetime.set(false)
         owner.remove(this)
@@ -139,7 +166,7 @@ class PacketPlayerNpc internal constructor(
         quantize(position.x), quantize(position.y), quantize(position.z),
         angle(bodyYaw), angle(headYaw), angle(pitch), pose,
         bed?.takeIf { pose == PacketNpcPose.SLEEPING }?.let { PacketNpcBed(it.blockX, it.blockY, it.blockZ) },
-        equipment, swing, hurt, lifetime, scale = scale,
+        equipment, swing, hurt, lifetime, scale = scale, seat = seat, seated = isSeated,
     )
 
     internal fun lease(viewerId: UUID): PacketNpcLease? = owner.lease(viewerId, entityId)
@@ -149,6 +176,7 @@ class PacketPlayerNpc internal constructor(
 }
 
 internal data class PacketNpcBed(val x: Int, val y: Int, val z: Int)
+internal data class PacketNpcSeat(val entityId: Int, val uuid: UUID)
 
 /** Detached values only; [lifetime] is a cancellation fence, never a Bukkit callback. */
 internal data class PacketNpcFrame(
@@ -160,6 +188,10 @@ internal data class PacketNpcFrame(
     val swing: Long, val hurt: Long, val lifetime: AtomicBoolean,
     val audience: AtomicBoolean = AtomicBoolean(true),
     val scale: Double = 1.0,
+    // Retain the allocated identity after dismount: an interrupted update may still have
+    // written the old carrier, so retirement must clean it even when the newest pose stands.
+    val seat: PacketNpcSeat? = null,
+    val seated: Boolean = false,
 ) {
     val chunkKey: Long get() = (floor(x).toInt().shr(4).toLong() and 0xffffffffL) or (floor(z).toInt().shr(4).toLong() shl 32)
     val teamName: String get() = "arcnpc${entityId.toString(36)}"
