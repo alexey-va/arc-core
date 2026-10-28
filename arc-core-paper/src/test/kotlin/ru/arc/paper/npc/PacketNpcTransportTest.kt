@@ -9,6 +9,7 @@ import com.github.retrooper.packetevents.manager.server.ServerManager
 import com.github.retrooper.packetevents.manager.server.ServerVersion
 import com.github.retrooper.packetevents.protocol.attribute.Attributes
 import com.github.retrooper.packetevents.protocol.ConnectionState
+import com.github.retrooper.packetevents.protocol.entity.data.EntityDataTypes
 import com.github.retrooper.packetevents.protocol.entity.pose.EntityPose
 import com.github.retrooper.packetevents.protocol.item.ItemStack
 import com.github.retrooper.packetevents.protocol.item.type.ItemTypes
@@ -166,6 +167,68 @@ class PacketNpcTransportTest : FreeSpec({
         connection.submit(listOf(child.copy(scale = 1.25)), resetAll = true); backend.runAll()
         backend.writes.filterIsInstance<WrapperPlayServerUpdateAttributes>().single().properties.single().value shouldBe 1.25
         java.lang.ref.Reference.reachabilityFence(channel)
+    }
+
+    "main-hand use captures equipment before native byte metadata and preserves the other appearance fields" {
+        val bread = ItemStack.builder().type(ItemTypes.BREAD).amount(1).version(ClientVersion.V_1_21_11).build()
+        val idle = npcFrame().copy(pose = PacketNpcPose.CROUCHING)
+        val eating = idle.copy(equipment = mapOf(EquipmentSlot.MAIN_HAND to bread), usingMainHand = true)
+        for (packets in listOf(PacketNpcPackets.spawn(eating), PacketNpcPackets.update(idle, eating))) {
+            val metadata = packets.filterIsInstance<WrapperPlayServerEntityMetadata>().single()
+            val flags = metadata.entityMetadata.single { it.index == 8 }
+            flags.type shouldBe EntityDataTypes.BYTE
+            flags.value shouldBe 0x01.toByte()
+            metadata.entityMetadata.single { it.index == 6 }.value shouldBe EntityPose.CROUCHING
+            metadata.entityMetadata.single { it.index == 14 }.value shouldBe Optional.empty<Any>()
+            metadata.entityMetadata.single { it.index == 16 }.value shouldBe 0x7f.toByte()
+            val equipment = packets.filterIsInstance<WrapperPlayServerEntityEquipment>().single()
+            equipment.equipment.single().slot shouldBe EquipmentSlot.MAIN_HAND
+            equipment.equipment.single().item shouldBe bread
+            (packets.indexOf(equipment) < packets.indexOf(metadata)) shouldBe true
+        }
+        PacketNpcPackets.update(eating, eating) shouldBe emptyList()
+        val stopped = PacketNpcPackets.update(eating, eating.copy(usingMainHand = false))
+        stopped.size shouldBe 1
+        stopped.filterIsInstance<WrapperPlayServerEntityMetadata>().single().entityMetadata.single { it.index == 8 }.value shouldBe 0.toByte()
+        val sleeping = eating.copy(pose = PacketNpcPose.SLEEPING, bed = PacketNpcBed(1, 64, 2))
+        val sleepMetadata = PacketNpcPackets.update(eating, sleeping).filterIsInstance<WrapperPlayServerEntityMetadata>().single()
+        sleepMetadata.entityMetadata.single { it.index == 8 }.value shouldBe 1.toByte()
+        sleepMetadata.entityMetadata.single { it.index == 6 }.value shouldBe EntityPose.SLEEPING
+        (sleepMetadata.entityMetadata.single { it.index == 14 }.value as Optional<*>).isPresent shouldBe true
+    }
+
+    "main-hand use coalesces without gesture replay and follows chunk reconnect and removal generations" {
+        val backend = NpcBackend()
+        val channel = Any()
+        val connection = PacketNpcConnection(channel, Logger.getAnonymousLogger(), backend)
+        val idle = npcFrame()
+        connection.submit(listOf(idle)); backend.runAll(); backend.clear()
+        backend.ordinary = false
+        val eating = idle.copy(usingMainHand = true)
+        connection.submit(listOf(eating)); backend.runOne()
+        connection.submit(listOf(idle))
+        backend.ordinary = true
+        backend.runAll()
+        backend.writes shouldBe emptyList()
+        connection.submit(listOf(eating)); backend.runAll(); backend.clear()
+        val oldLease = connection.lease(idle.entityId)!!
+        connection.submit(listOf(eating), setOf(eating.chunkKey)); backend.runAll()
+        oldLease.isActive() shouldBe false
+        backend.writes.filterIsInstance<WrapperPlayServerSpawnEntity>().size shouldBe 1
+        backend.writes.filterIsInstance<WrapperPlayServerEntityMetadata>().single().entityMetadata.single { it.index == 8 }.value shouldBe 1.toByte()
+        backend.clear()
+        connection.disconnect()
+        val replacementChannel = Any()
+        val replacement = PacketNpcConnection(replacementChannel, Logger.getAnonymousLogger(), backend)
+        replacement.submit(listOf(eating)); backend.runAll()
+        backend.writes.filterIsInstance<WrapperPlayServerEntityMetadata>().single().entityMetadata.single { it.index == 8 }.value shouldBe 1.toByte()
+        backend.clear()
+        replacement.submit(emptyList()); backend.runAll()
+        replacement.lease(eating.entityId) shouldBe null
+        backend.writes.filterIsInstance<WrapperPlayServerDestroyEntities>().single().entityIds.toList() shouldBe listOf(eating.entityId)
+        backend.writes.filterIsInstance<WrapperPlayServerPlayerInfoRemove>().size shouldBe 1
+        java.lang.ref.Reference.reachabilityFence(channel)
+        java.lang.ref.Reference.reachabilityFence(replacementChannel)
     }
 
     "moving actors share limited admission fairly while every pending capture advances" {

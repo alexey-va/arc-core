@@ -77,6 +77,14 @@ class PacketPlayerNpc internal constructor(
         set(value) { owner.checkThread(); require(value.isFinite()); field = value.coerceIn(-90f, 90f) }
     var pose: PacketNpcPose = PacketNpcPose.STANDING
         set(value) { owner.checkThread(); if (value != PacketNpcPose.STANDING) stand(); field = value }
+    /**
+     * Native continuous main-hand item use (for example eating), independent of swing and pose.
+     * Both accessors belong to Paper's owning thread. The consumer supplies the held item,
+     * duration and sound; Core consumes no item and repeated values emit no packet delta.
+     */
+    var isUsingMainHand: Boolean = false
+        get() { owner.checkThread(); return field }
+        set(value) { owner.checkThread(); field = value }
     var sleepingBed: Location?
         get() = bed?.clone()
         set(value) {
@@ -163,6 +171,7 @@ class PacketPlayerNpc internal constructor(
         owner.checkThread()
         if (!active) return
         stand()
+        isUsingMainHand = false
         active = false
         lifetime.set(false)
         owner.remove(this)
@@ -176,7 +185,7 @@ class PacketPlayerNpc internal constructor(
         quantize(position.x), quantize(position.y), quantize(position.z),
         angle(bodyYaw), angle(headYaw), angle(pitch), pose,
         bed?.takeIf { pose == PacketNpcPose.SLEEPING }?.let { PacketNpcBed(it.blockX, it.blockY, it.blockZ) },
-        equipment, swing, hurt, lifetime, scale = scale, seat = seat, seated = isSeated,
+        equipment, swing, hurt, lifetime, scale = scale, seat = seat, seated = isSeated, usingMainHand = isUsingMainHand,
     )
 
     internal fun lease(viewerId: UUID): PacketNpcLease? = owner.lease(viewerId, entityId)
@@ -202,6 +211,7 @@ internal data class PacketNpcFrame(
     // written the old carrier, so retirement must clean it even when the newest pose stands.
     val seat: PacketNpcSeat? = null,
     val seated: Boolean = false,
+    val usingMainHand: Boolean = false,
 ) {
     val chunkKey: Long get() = (floor(x).toInt().shr(4).toLong() and 0xffffffffL) or (floor(z).toInt().shr(4).toLong() shl 32)
     val teamName: String get() = "arcnpc${entityId.toString(36)}"

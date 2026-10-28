@@ -231,6 +231,31 @@ class PaperPacketNpcsTest : FreeSpec({
         }
     }
 
+    "main-hand use is main-thread owned captured without gestures and cleared on removal" {
+        MockBukkitTestRuntime.open().use {
+            NpcFixture().use { f ->
+                val actor = f.spawn()
+                actor.isUsingMainHand shouldBe false
+                actor.isUsingMainHand = true
+                actor.frame().usingMainHand shouldBe true
+                actor.frame().swing shouldBe 0
+                actor.isUsingMainHand = true
+                val access = CompletableFuture.supplyAsync {
+                    val readRejected = runCatching { actor.isUsingMainHand }.isFailure
+                    val writeRejected = runCatching { actor.isUsingMainHand = false }.isFailure
+                    readRejected to writeRejected
+                }.join()
+                access shouldBe (true to true)
+                actor.isUsingMainHand shouldBe true
+                actor.isUsingMainHand = false
+                actor.frame().usingMainHand shouldBe false
+                actor.isUsingMainHand = true
+                actor.remove()
+                actor.isUsingMainHand shouldBe false
+            }
+        }
+    }
+
     "a seated handle preserves feet input and ends its mount on movement pose world change and removal" {
         MockBukkitTestRuntime.open().use {
             NpcFixture().use { f ->

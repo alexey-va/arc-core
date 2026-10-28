@@ -39,10 +39,12 @@ internal object PacketNpcPackets {
             listOf(frame.profile.name)))
         add(WrapperPlayServerSpawnEntity(frame.entityId, Optional.of(frame.profile.uuid), EntityTypes.PLAYER,
             Vector3d(frame.x, frame.y, frame.z), frame.pitch, frame.bodyYaw, frame.headYaw, 0, Optional.empty()))
+        // LivingEntity.onSyncedDataUpdated captures the held item when use starts.
+        // It must already be equipped before the active-hand metadata arrives.
+        if (frame.equipment.isNotEmpty()) add(equipment(frame))
         add(metadata(frame))
         add(scale(frame))
         add(WrapperPlayServerEntityHeadLook(frame.entityId, frame.headYaw))
-        if (frame.equipment.isNotEmpty()) add(equipment(frame))
         if (frame.seated) addAll(spawnSeat(frame))
     }
 
@@ -52,9 +54,9 @@ internal object PacketNpcPackets {
             add(WrapperPlayServerSetPassengers(seat.entityId, intArrayOf()))
             add(WrapperPlayServerDestroyEntities(seat.entityId))
         }
-        if (old.pose != frame.pose || old.bed != frame.bed) add(metadata(frame))
-        if (old.scale != frame.scale) add(scale(frame))
         if (old.equipment != frame.equipment) add(equipment(frame))
+        if (old.pose != frame.pose || old.bed != frame.bed || old.usingMainHand != frame.usingMainHand) add(metadata(frame))
+        if (old.scale != frame.scale) add(scale(frame))
         val dx = frame.x - old.x
         val dy = frame.y - old.y
         val dz = frame.z - old.z
@@ -122,10 +124,12 @@ internal object PacketNpcPackets {
 
     internal fun metadata(frame: PacketNpcFrame): WrapperPlayServerEntityMetadata {
         // Verified from the mapped 1.21.11 server's Entity/LivingEntity/Avatar defineId order:
-        // Entity has 0..7; LivingEntity adds 8..14 (sleeping position); Avatar adds main arm15
+        // Entity has 0..7; LivingEntity adds flags8 and 9..14 (sleeping position); Avatar adds main arm15
         // and skin layers16. Player's old skin index17 is WRONG since the Avatar extraction.
         return WrapperPlayServerEntityMetadata(frame.entityId, listOf(
             EntityData(6, EntityDataTypes.ENTITY_POSE, EntityPose.valueOf(frame.pose.name)),
+            // IS_USING=1; OFF_HAND=2 remains clear, selecting the main hand; SPIN_ATTACK=4 is clear.
+            EntityData(8, EntityDataTypes.BYTE, (if (frame.usingMainHand) 0x01 else 0x00).toByte()),
             EntityData(14, EntityDataTypes.OPTIONAL_BLOCK_POSITION,
                 Optional.ofNullable(frame.bed?.let { Vector3i(it.x, it.y, it.z) })),
             EntityData(16, EntityDataTypes.BYTE, 0x7f.toByte()),

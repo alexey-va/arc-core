@@ -2,7 +2,8 @@
 
 `ru.arc.paper.npc.PaperPacketNpcs` renders ephemeral player actors without Bukkit
 entities, native AI, tracking, collision, chunk tickets or persistence. It targets
-Minecraft/Paper 1.21.11 with the installed PacketEvents 2.12.1 plugin. Declare the
+Minecraft/Paper 1.21.11 with the PacketEvents 2.12.1 API. The item-use metadata
+type is also verified against the installed PacketEvents 2.14.0 artifact. Declare the
 `paper-packet-npcs` consumer capability, depend on ArcCore and PacketEvents, and keep
 PacketEvents and `arc-core-paper-api` out of the consumer's shaded artifact.
 
@@ -28,6 +29,10 @@ actor.headYaw = lookingYaw
 actor.pitch = lookingPitch
 actor.scale = 0.5
 actor.swingMainHand()
+actor.setEquipment(EquipmentSlot.HAND, bread)
+actor.isUsingMainHand = true
+// At the end of the consumer's activity, before restoring its ordinary held item:
+actor.isUsingMainHand = false
 ```
 
 The two-argument owner constructor supplies an owned native queue. The profile's
@@ -57,6 +62,15 @@ without replacing the actor or its attached displays. Standing/crouching
 the consumer owns a real, correctly oriented bed and the feet anchor. Waking
 clears the bed metadata. The six player equipment slots, main-hand swing and hurt
 animation are supported. An equipment item is copied on Paper before encoding.
+
+`isUsingMainHand` starts/stops native continuous item use, including the eating
+pose for held food. Both accessors are main-thread only. The consumer owns the
+item, activity duration and sound; Core consumes nothing and sends no sound or
+swing animation. Equipment precedes use metadata on spawn and combined updates:
+the 1.21.11 client captures the active held item when that metadata arrives.
+Unchanged values send nothing, pending changes coalesce to the newest state, and
+chunk or connection replay restores the current use state. Removing the actor
+clears the handle's use state and retires its existing entity/profile generation.
 
 `sit(location)` mounts the player on one invisible client-only marker armor stand
 owned by the same frame/connection generation. The location is the player's native
@@ -130,9 +144,15 @@ entity/profile cleanup identities before a same-channel replacement is allowed.
 
 The 1.21.11 server's mapped `Entity`, `LivingEntity` and `Avatar` static
 `SynchedEntityData.defineId` calls establish the used metadata: pose index 6,
+living-flags byte index 8 (`IS_USING=0x01`, `OFF_HAND=0x02`, `SPIN_ATTACK=0x04`),
 optional sleeping block index 14, skin-layer byte index 16. Since `Player` now
 extends `Avatar`, the historical player skin index 17 is incorrect. The checked
 PacketEvents 2.12.1 wrappers provide the matching metadata types and constructors.
+Main-hand use writes only `0x01`, leaving off-hand and spin-attack flags clear;
+stopping writes `0x00`. `LivingEntity.isUsingItem`, `getUsedItemHand`,
+`startUsingItem` and the client branch of `onSyncedDataUpdated` establish those
+bits and the equipment-before-metadata requirement. PacketEvents 2.14.0 retains
+`EntityDataTypes.BYTE` as `EntityDataType<Byte>`.
 Do not broaden this version contract by reusing remembered indices.
 
 `PacketNpcTransportTest` covers 48 actors, idle deltas, relative movement, a summon
@@ -141,11 +161,14 @@ frame admission, sleep/equipment/gestures, lifecycle replay, input admission,
 partial-write retirement and display/carrier ordering.
 It also covers seated spawn, scale offsets, idle suppression, dismount/walk,
 chunk replay, retained child leases and partial-dismount carrier cleanup.
+Main-hand-use cases cover spawn/start/stop byte metadata, equipment ordering,
+unchanged/coalesced state, independent pose/bed/skin fields, replay and retirement.
 `PaperPacketNpcsTest` covers viewer world/range/chunk/session changes, main-thread
-input revalidation and host cleanup. The existing display tests protect the
+input revalidation, item-use accessor ownership/removal and host cleanup. The existing display tests protect the
 native attachment route.
 
 These are source/recording-transport checks. Skin appearance, walking/looking
-smoothness, bed orientation, mounted cart/caption motion, empty-hand clicks and
-two-viewer entry/departure still require Minecraft-client observation. A successful
+smoothness, bed orientation, mounted cart/caption motion, empty-hand clicks,
+native hand-to-mouth eating and two-viewer entry/departure still require
+Minecraft-client observation. A successful
 build or packet trace does not establish that visual acceptance.
