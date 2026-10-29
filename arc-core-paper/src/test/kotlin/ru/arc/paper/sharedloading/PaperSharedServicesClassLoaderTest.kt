@@ -34,20 +34,32 @@ import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.function.Supplier
 import javax.sql.DataSource
 
 class PaperSharedServicesClassLoaderTest : FreeSpec({
+    "passenger host API exposes only JDK types and its own shared contracts" {
+        val contracts = arrayOf(ArcDisplayPassengerService::class.java, ArcDisplayPassengerOwner::class.java)
+        publicSignatureTypes(*contracts).all { it.classLoader == null || it in contracts } shouldBe true
+        ArcDisplayPassengerOwner::class.java.getMethod(
+            "duringOwnPassengerWrites", Set::class.java, Supplier::class.java,
+        ).parameterTypes.toList() shouldBe listOf(Set::class.java, Supplier::class.java)
+    }
+
     "separate display consumer classes share host passenger ownership through only the API" {
         MockBukkitTestRuntime.open().use { paper ->
             val host = paper.createSimplePlugin("PassengerHost")
             PaperDisplayPassengerServiceProvider(host).use { service ->
                 paper.server.servicesManager.load(ArcDisplayPassengerService::class.java) shouldBe service
-                consumerLoader().use { loaderA ->
-                    consumerLoader().use { loaderB ->
+                consumerLoader(isolateKotlin = true).use { loaderA ->
+                    consumerLoader(isolateKotlin = true).use { loaderB ->
                         val name = "ru.arc.paper.display.PacketDisplayPassengerState"
                         val typeA = loaderA.loadClass(name)
                         val typeB = loaderB.loadClass(name)
                         (typeA !== typeB) shouldBe true
+                        val kotlinFunctionA = loaderA.loadClass("kotlin.jvm.functions.Function0")
+                        (kotlinFunctionA !== kotlin.jvm.functions.Function0::class.java) shouldBe true
+                        (kotlinFunctionA !== loaderB.loadClass("kotlin.jvm.functions.Function0")) shouldBe true
                         (loaderA.loadClass(ArcDisplayPassengerOwner::class.java.name) === ArcDisplayPassengerOwner::class.java) shouldBe true
                         (loaderB.loadClass(ArcDisplayPassengerService::class.java.name) === ArcDisplayPassengerService::class.java) shouldBe true
                         val channel = Any()
@@ -55,6 +67,10 @@ class PaperSharedServicesClassLoaderTest : FreeSpec({
                         val b = typeB.getConstructor(ArcDisplayPassengerOwner::class.java).newInstance(service.open(channel)) as ArcDisplayPassengerOwner
                         a.seedNative(77, listOf(11)); b.seedNative(77, listOf(11))
                         a.setMounted(77, listOf(100)); b.setMounted(77, listOf(200))
+                        a.duringOwnPassengerWrites(setOf(77), Supplier {
+                            b.isOwnPassengerWrite(77)
+                        }) shouldBe true
+                        b.isOwnPassengerWrite(77) shouldBe false
                         b.nativePassengers(77, emptyList()) shouldBe listOf(11, 100)
                         a.setMounted(77, emptyList()); a.close()
                         b.observeNative(77, intArrayOf(12)).toList() shouldBe listOf(12, 200)
@@ -180,21 +196,24 @@ private const val SQL_RUNTIME_CLASS = "ru.arc.sql.SqlRuntime"
 private const val SQL_SERVICES_CLASS = "ru.arc.paper.sql.PaperSqlServices"
 private const val REDIS_CLIENT_CLASS = "ru.arc.paper.redis.PaperRedisClient"
 
-private fun consumerLoader(): IsolatedConsumerClassLoader =
+private fun consumerLoader(isolateKotlin: Boolean = false): IsolatedConsumerClassLoader =
     IsolatedConsumerClassLoader(
         arrayOf(
             PaperSqlServices::class.java.codeSourceUrl(),
             SqlRuntime::class.java.codeSourceUrl(),
             PaperRedisClient::class.java.codeSourceUrl(),
             RedisOperations::class.java.codeSourceUrl(),
+            kotlin.jvm.functions.Function0::class.java.codeSourceUrl(),
         ).distinct().toTypedArray(),
         ArcSqlService::class.java.classLoader,
+        isolateKotlin,
     )
 
 private fun Class<*>.codeSourceUrl(): URL = requireNotNull(protectionDomain.codeSource?.location)
 
-private class IsolatedConsumerClassLoader(urls: Array<URL>, parent: ClassLoader) : URLClassLoader(urls, parent) {
-    private val childPackages = listOf("ru.arc.paper.sql.", "ru.arc.sql.", "ru.arc.paper.redis.", "ru.arc.redis.", "ru.arc.paper.display.")
+private class IsolatedConsumerClassLoader(urls: Array<URL>, parent: ClassLoader, isolateKotlin: Boolean) : URLClassLoader(urls, parent) {
+    private val childPackages = listOf("ru.arc.paper.sql.", "ru.arc.sql.", "ru.arc.paper.redis.", "ru.arc.redis.", "ru.arc.paper.display.") +
+        if (isolateKotlin) listOf("kotlin.") else emptyList()
 
     override fun loadClass(name: String, resolve: Boolean): Class<*> {
         if (childPackages.none(name::startsWith)) return super.loadClass(name, resolve)

@@ -1,5 +1,7 @@
 package ru.arc.paper.api
 
+import java.util.function.Supplier
+
 /**
  * Host-owned passenger accounting shared across shaded display consumers. The connection is a
  * weakly held channel identity, never a Player. Each display queue opens one owner and closes it
@@ -23,7 +25,8 @@ interface ArcDisplayPassengerOwner : AutoCloseable {
     fun nativePassengers(vehicleId: Int, fallback: List<Int>): List<Int>
     fun observeNative(vehicleId: Int, passengers: IntArray): IntArray
     fun setMounted(vehicleId: Int, passengers: List<Int>)
-    fun <T> duringOwnPassengerWrites(vehicleIds: Set<Int>, action: () -> T): T
+    /** JDK callback identity is shared even when consumers shade separate Kotlin runtimes. */
+    fun <T> duringOwnPassengerWrites(vehicleIds: Set<Int>, action: Supplier<T>): T
     fun isOwnPassengerWrite(vehicleId: Int): Boolean
     fun forgetVehicles(vehicleIds: IntArray)
     fun isDisconnected(): Boolean

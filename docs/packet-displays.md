@@ -12,7 +12,8 @@ Other consumers of `arc-core-paper` need no PacketEvents dependency unless they
 construct this service. Install core scheduling before construction.
 The ArcCore host must install `PaperDisplayPassengerServiceProvider` as the shared
 `ArcDisplayPassengerService` before display construction. Consumers compile against the
-host-owned API and must not shade it. The host must also install [the shared visual packet provider](visual-packets.md)
+host-owned API and must not shade it. Passenger callbacks use `java.util.function.Supplier`,
+not Kotlin function types: independently shaded Kotlin runtimes must never cross this API. The host must also install [the shared visual packet provider](visual-packets.md)
 before constructing a visual owner. All plugin copies resolve the same
 `ArcVisualPacketBudget` API through Bukkit services; keep that API compile-only
 in consumers and supplied by ArcCore.

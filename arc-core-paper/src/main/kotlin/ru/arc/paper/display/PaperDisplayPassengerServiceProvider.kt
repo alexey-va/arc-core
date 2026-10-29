@@ -6,6 +6,7 @@ import org.bukkit.plugin.ServicePriority
 import ru.arc.paper.api.ArcDisplayPassengerOwner
 import ru.arc.paper.api.ArcDisplayPassengerService
 import java.util.WeakHashMap
+import java.util.function.Supplier
 
 /** One host service, so consumer classloaders cannot create competing native passenger baselines. */
 class PaperDisplayPassengerServiceProvider(private val host: Plugin) : ArcDisplayPassengerService, AutoCloseable {
@@ -123,10 +124,10 @@ internal class SharedDisplayPassengers : ArcDisplayPassengerService, AutoCloseab
             Unit
         }
 
-        override fun <T> duringOwnPassengerWrites(vehicleIds: Set<Int>, action: () -> T): T {
+        override fun <T> duringOwnPassengerWrites(vehicleIds: Set<Int>, action: Supplier<T>): T {
             val previous = connection.ownWrites.get()
             connection.ownWrites.set(previous.orEmpty() + vehicleIds)
-            return try { action() } finally {
+            return try { action.get() } finally {
                 if (previous == null) connection.ownWrites.remove() else connection.ownWrites.set(previous)
             }
         }
