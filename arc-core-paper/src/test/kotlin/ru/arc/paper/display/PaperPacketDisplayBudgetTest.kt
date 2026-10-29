@@ -26,6 +26,60 @@ import java.util.logging.LogRecord
 import java.util.logging.Level
 
 class PaperPacketDisplayBudgetTest : FreeSpec({
+    "privacy revoked during a warmed static sweep cannot publish cached visibility" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val plugin = paper.loadPlugin<TestPaperPlugin>()
+            val world = paper.addSimpleWorld("cached-privacy")
+            val player = paper.addPlayer("Viewer")
+            val scheduler = TestTaskScheduler()
+            val work = BudgetedTaskQueue(LifecycleTaskScope(scheduler), 1, Long.MAX_VALUE)
+            val cleanup = QueueCleanup()
+            val transport = BudgetTransport()
+            val displays = PaperPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()),
+                fixedAudience(player, world.uid), work, false, cleanup)
+            val handle = displays.spawnText(Location(world, 0.0, 64.0, 0.0), Component.text("private"))
+            val first = displays.refresh(); scheduler.tick(20); first.join()
+            transport.frames.size shouldBe 1
+            val cached = displays.refresh()
+            scheduler.tick(2) // Capture audience, pin privacy, reuse frames, then yield at the existing viewer.
+            cached.isDone shouldBe false
+            handle.hideFrom(player)
+            scheduler.tick(20); cached.join()
+            transport.frames.size shouldBe 1
+            val fresh = displays.refresh(); scheduler.tick(20); fresh.join()
+            transport.frames.size shouldBe 2
+            transport.frames.last() shouldBe emptyList()
+            val closing = displays.closeAsync(); cleanup.drain(closing); work.close()
+        }
+    }
+
+    "a warmed static scene spends no per-display capture or visibility quanta" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val plugin = paper.loadPlugin<TestPaperPlugin>()
+            val world = paper.addSimpleWorld("static-budget")
+            val player = paper.addPlayer("Viewer")
+            val scheduler = TestTaskScheduler()
+            val work = BudgetedTaskQueue(LifecycleTaskScope(scheduler), 4, Long.MAX_VALUE)
+            val cleanup = QueueCleanup()
+            val transport = BudgetTransport()
+            val displays = PaperPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()),
+                fixedAudience(player, world.uid), work, false, cleanup)
+            repeat(336) { displays.spawnText(Location(world, 0.0, 64.0, 0.0), Component.text("static-$it")) }
+            fun refreshTicks(): Int {
+                val sweep = displays.refresh()
+                var ticks = 0
+                while (!sweep.isDone) { check(++ticks < 100); scheduler.tick() }
+                sweep.join()
+                return ticks
+            }
+            (refreshTicks() > 10) shouldBe true
+            val initial = transport.frames.last()
+            refreshTicks() shouldBe 1 // audience, existing-viewer check, submission, completion
+            (transport.frames.last() === initial) shouldBe true
+            val closing = displays.closeAsync(); cleanup.drain(closing); work.close()
+        }
+    }
+
     "the last handle retires viewers within budget and an idle owner stops audience and event-loop work" {
         MockBukkitTestRuntime.open().use { paper ->
             val plugin = paper.loadPlugin<TestPaperPlugin>()

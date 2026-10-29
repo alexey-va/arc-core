@@ -1,6 +1,7 @@
 package ru.arc.paper.display
 
 import com.destroystokyo.paper.event.player.PlayerPostRespawnEvent
+import com.github.retrooper.packetevents.PacketEvents
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FreeSpec
 import io.kotest.matchers.shouldBe
@@ -10,7 +11,12 @@ import io.mockk.verify
 import io.papermc.paper.event.packet.PlayerChunkUnloadEvent
 import net.kyori.adventure.text.Component
 import org.bukkit.Location
+import org.bukkit.Color
+import org.bukkit.Material
 import org.bukkit.block.data.BlockData
+import org.bukkit.entity.Display
+import org.bukkit.entity.ItemDisplay
+import org.bukkit.entity.TextDisplay
 import org.bukkit.entity.Player
 import org.bukkit.entity.Horse
 import org.bukkit.event.player.PlayerRespawnEvent
@@ -30,8 +36,188 @@ import ru.arc.paper.testing.MockBukkitTestRuntime
 import ru.arc.paper.testing.failOnUnsupportedMockBukkitOperation
 import ru.arc.paper.testing.loadPlugin
 import java.util.UUID
+import java.util.concurrent.CompletableFuture
 
 class PaperPacketDisplaysTest : FreeSpec({
+    "static scenes reuse detached frames and visibility while still submitting current camera and AFK state" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val plugin = paper.loadPlugin<TestPaperPlugin>()
+            val world = paper.addSimpleWorld("cached-scene")
+            val player = paper.addPlayer("Viewer")
+            val audience = MutableAudience().apply { values = listOf(viewer(player, world.uid)) }
+            val transport = RecordingTransport()
+            testPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), audience).use { displays ->
+                val handles = List(64) { displays.spawnText(Location(world, 1.0, 64.0, 1.0), Component.text("row-$it")) }
+                displays.refreshFully()
+                val connection = transport.forPlayer(player)
+                val first = connection.last().frames
+                // Typical scene reconciliation reassigns equal copied values.
+                handles.forEach { it.text(it.text()); it.teleport(it.location); it.transformation = it.transformation }
+                val camera = PacketDisplayView(1.0, 65.6, 1.0, 0.0, 0.0, -1.0, afk = true)
+                audience.values = audience.values.map { it.copy(view = camera) }
+                displays.refreshFully()
+                (connection.last().frames === first) shouldBe true
+                connection.lastView shouldBe camera
+
+                handles.first().text(Component.text("updated"))
+                displays.refreshFully()
+                val changed = connection.last().frames
+                (changed === first) shouldBe false
+                val changedFirst = changed.single { it.entityId == handles.first().entityId }
+                changedFirst.metadata.content shouldBe PacketDisplayContent.Text(Component.text("updated"))
+                (changed.single { it.entityId == handles[1].entityId } === first.single { it.entityId == handles[1].entityId }) shouldBe true
+                first.single { it.entityId == handles.first().entityId }.metadata.content shouldBe PacketDisplayContent.Text(Component.text("row-0"))
+
+                handles.first().teleport(Location(world, 2.0, 64.0, 1.0))
+                displays.refreshFully()
+                val moved = connection.last().frames.single { it.entityId == handles.first().entityId }
+                moved.x shouldBe 2.0
+                (moved.metadata === changedFirst.metadata) shouldBe true
+                handles.first().pauseWhenNotObserved = false
+                displays.refreshFully()
+                connection.last().frames.single { it.entityId == handles.first().entityId }.pauseWhenNotObserved shouldBe false
+                val added = displays.spawnText(Location(world, 1.0, 64.0, 1.0), Component.text("added"))
+                displays.refreshFully()
+                connection.last().frames.size shouldBe handles.size + 1
+                connection.last().frames.single { it.entityId == added.entityId }.metadata.content shouldBe
+                    PacketDisplayContent.Text(Component.text("added"))
+                // Visibility must change even though neither the viewer nor the display moved.
+                handles.first().viewRange = 0f
+                displays.refreshFully()
+                connection.last().frames.any { it.entityId == handles.first().entityId } shouldBe false
+                handles.first().viewRange = 1f
+                displays.refreshFully()
+                connection.last().frames.any { it.entityId == handles.first().entityId } shouldBe true
+            }
+        }
+    }
+
+    "each metadata change replaces the immutable snapshot and equal assignments reuse it" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val plugin = paper.loadPlugin<TestPaperPlugin>()
+            val world = paper.addSimpleWorld("metadata-cache")
+            testPacketDisplays(plugin, RecordingTransport(), LifecycleTaskScope(TestTaskScheduler()), MutableAudience()).use { displays ->
+                val display = displays.spawnText(Location(world, 1.0, 64.0, 1.0), Component.text("before"))
+                val changes = listOf<() -> Unit>(
+                    { display.billboard = Display.Billboard.CENTER },
+                    { display.brightness = Display.Brightness(10, 12) },
+                    { display.interpolationDelay = 1 },
+                    { display.interpolationDuration = 2 },
+                    { display.teleportDuration = 3 },
+                    { display.viewRange = 2f },
+                    { display.shadowRadius = .5f },
+                    { display.shadowStrength = .5f },
+                    { display.displayWidth = 4f },
+                    { display.displayHeight = 3f },
+                    { display.glowColorOverride = Color.RED },
+                    { display.isGlowing = true },
+                    { display.lineWidth = 100 },
+                    { display.backgroundColor = Color.BLACK },
+                    { display.textOpacity = 100 },
+                    { display.isShadowed = true },
+                    { display.isSeeThrough = true },
+                    { display.isDefaultBackground = true },
+                    { display.alignment = TextDisplay.TextAlignment.LEFT },
+                    { display.text(Component.text("after")) },
+                    { display.transformation = Transformation(Vector3f(1f), Quaternionf(), Vector3f(2f), Quaternionf()) },
+                )
+                for (change in changes) {
+                    val before = requireNotNull(display.frame())
+                    change()
+                    val after = requireNotNull(display.frame())
+                    (after.metadata != before.metadata) shouldBe true
+                    after.entityId shouldBe before.entityId
+                    change()
+                    (display.frame() === after) shouldBe true
+                }
+            }
+        }
+    }
+
+    "cached block and item content changes only when the native content changes" {
+        val previousApi = PacketEvents.getAPI()
+        PacketEvents.setAPI(TestPacketEventsApi())
+        try {
+            MockBukkitTestRuntime.open().use { paper ->
+                val plugin = paper.loadPlugin<TestPaperPlugin>()
+                val world = paper.addSimpleWorld("content-cache")
+                val transport = object : PacketDisplayTransport by RecordingTransport() {
+                    var itemCaptures = 0
+                    override fun blockStateId(block: BlockData) = block.material.ordinal
+                    override fun itemSnapshot(item: ItemStack): com.github.retrooper.packetevents.protocol.item.ItemStack {
+                        itemCaptures++
+                        val type = when (item.type) {
+                            Material.DIAMOND -> com.github.retrooper.packetevents.protocol.item.type.ItemTypes.DIAMOND
+                            Material.EMERALD -> com.github.retrooper.packetevents.protocol.item.type.ItemTypes.EMERALD
+                            else -> error("Unexpected test material: ${item.type}")
+                        }
+                        return com.github.retrooper.packetevents.protocol.item.ItemStack.builder().type(type).amount(item.amount)
+                            .version(com.github.retrooper.packetevents.protocol.player.ClientVersion.V_1_21_11).build()
+                    }
+                }
+                testPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), MutableAudience()).use { displays ->
+                    val location = Location(world, 1.0, 64.0, 1.0)
+                    val block = displays.spawnBlock(location, Material.STONE.createBlockData())
+                    val first = requireNotNull(block.frame())
+                    block.blockData = Material.STONE.createBlockData()
+                    (block.frame() === first) shouldBe true
+                    block.block = Material.DIRT.createBlockData()
+                    requireNotNull(block.frame()).metadata.content shouldBe PacketDisplayContent.Block(Material.DIRT.ordinal)
+                    first.metadata.content shouldBe PacketDisplayContent.Block(Material.STONE.ordinal)
+
+                    val item = displays.spawnItem(location, ItemStack(Material.DIAMOND))
+                    val before = requireNotNull(item.frame())
+                    item.itemStack = ItemStack(Material.DIAMOND)
+                    (item.frame() === before) shouldBe true
+                    item.itemStack = ItemStack(Material.EMERALD)
+                    val after = requireNotNull(item.frame())
+                    (after.metadata.content != before.metadata.content) shouldBe true
+                    transport.itemCaptures shouldBe 2
+                    item.itemDisplayTransform = ItemDisplay.ItemDisplayTransform.GROUND
+                    (requireNotNull(item.frame()).metadata.content as PacketDisplayContent.Item).transform shouldBe
+                        ItemDisplay.ItemDisplayTransform.GROUND.ordinal.toByte()
+                }
+            }
+        } finally { PacketEvents.setAPI(previousApi) }
+    }
+
+    "adding and closing a dynamic group invalidates warmed static visibility" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val plugin = paper.loadPlugin<TestPaperPlugin>()
+            val world = paper.addSimpleWorld("cached-group")
+            val player = paper.addPlayer("Viewer")
+            val audience = MutableAudience().apply { values = listOf(viewer(player, world.uid)) }
+            val transport = RecordingTransport()
+            testPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), audience).use { displays ->
+                val display = displays.spawnText(Location(world, 1.0, 64.0, 1.0), Component.text("gated"))
+                displays.refreshFully()
+                val connection = transport.forPlayer(player)
+                val first = connection.last().frames
+                displays.refreshFully()
+                (connection.last().frames === first) shouldBe true
+                var allowed = false
+                var calls = 0
+                val group = displays.createAudienceGroup { calls++; allowed }
+                display.audienceGroup = group
+                displays.refreshFully()
+                connection.last().frames shouldBe emptyList()
+                allowed = true
+                displays.refreshFully()
+                connection.last().frames.single().entityId shouldBe display.entityId
+                calls shouldBe 2
+                group.close()
+                displays.refreshFully()
+                connection.last().frames shouldBe emptyList()
+                display.audienceGroup = null
+                displays.refreshFully()
+                connection.last().frames.single().entityId shouldBe display.entityId
+                display.remove()
+                displays.refreshFully()
+                connection.last().frames shouldBe emptyList()
+            }
+        }
+    }
+
     "Bukkit captures optional canonical AFK status once per viewer into detached snapshots" {
         failOnUnsupportedMockBukkitOperation {
             MockBukkitTestRuntime.open().use { paper ->
@@ -652,8 +838,16 @@ private class RecordingConnection : PacketDisplayConnection {
         val nativePassengers: Map<Int, List<Int>>,
     )
     override val identity: Any = Any()
+    var lastView: PacketDisplayView? = null
     private val frames = mutableListOf<Frame>()
     fun last() = frames.last()
+    override fun submitViewAsync(desired: List<PacketDisplayFrame>, view: PacketDisplayView?, resetChunks: Set<Long>,
+                                 resetAll: Boolean, desiredPassengers: Map<Int, List<Int>>,
+                                 nativePassengerSnapshots: Map<Int, List<Int>>, liveVehicleIds: Set<Int>?): CompletableFuture<Void> {
+        lastView = view
+        submit(desired, resetChunks, resetAll, desiredPassengers, nativePassengerSnapshots, liveVehicleIds)
+        return CompletableFuture.completedFuture(null)
+    }
     override fun submit(
         desired: List<PacketDisplayFrame>,
         resetChunks: Set<Long>,

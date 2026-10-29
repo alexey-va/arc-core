@@ -43,6 +43,8 @@ sealed class PacketDisplay protected constructor(
     private var visibleTo = mutableSetOf<UUID>()
     private var hiddenFrom = mutableSetOf<UUID>()
     private var active = true
+    private var cachedMetadata: PacketDisplayMetadata? = null
+    private var cachedFrame: PacketDisplayFrame? = null
     val isValid: Boolean get() = active && !owner.closed
     val location: Location get() = position.clone()
     internal val attachmentTargetId: UUID? get() = attachedPlayerId
@@ -50,6 +52,7 @@ sealed class PacketDisplay protected constructor(
     internal val attachmentEntityTargetId: UUID? get() = attachedEntityId
     internal val attachmentEntity: LivingEntity? get() = attachedEntity?.get()
     internal val attachmentNpc: PacketPlayerNpc? get() = attachedNpc?.get()
+    internal val isAttached: Boolean get() = attachedPlayerId != null || attachedEntityId != null || attachedNpc != null
     var isVisibleByDefault: Boolean = true
         set(value) { owner.checkThread(); if (field != value) { field = value; owner.visibilityChanged() } }
     /**
@@ -57,7 +60,7 @@ sealed class PacketDisplay protected constructor(
      * while the viewer is idle or uses a third-person camera. Privacy and packet budgets still apply.
      */
     var pauseWhenNotObserved: Boolean = true
-        set(value) { owner.checkThread(); field = value }
+        set(value) { owner.checkThread(); if (field != value) { field = value; frameChanged() } }
     /** Additional shared gate; never grants access denied by this handle's explicit audience. */
     var audienceGroup: PacketDisplayAudienceGroup? = null
         set(value) {
@@ -67,17 +70,32 @@ sealed class PacketDisplay protected constructor(
             if (field !== value) { field = value; owner.visibilityChanged() }
         }
     var billboard: Display.Billboard = Display.Billboard.FIXED
+        set(value) { if (field != value) { field = value; metadataChanged() } }
     var brightness: Display.Brightness? = null
+        set(value) { if (field != value) { field = value; metadataChanged() } }
     var interpolationDelay: Int = 0
+        set(value) { if (field != value) { field = value; metadataChanged() } }
     var interpolationDuration: Int = 0
+        set(value) { if (field != value) { field = value; metadataChanged() } }
     var teleportDuration: Int = 0
+        set(value) { if (field != value) { field = value; metadataChanged() } }
     var viewRange: Float = 1f
+        set(value) { if (field != value) { field = value; metadataChanged() } }
     var shadowRadius: Float = 0f
+        set(value) { if (field != value) { field = value; metadataChanged() } }
     var shadowStrength: Float = 1f
+        set(value) { if (field != value) { field = value; metadataChanged() } }
     var displayWidth: Float = 0f
+        set(value) { if (field != value) { field = value; metadataChanged() } }
     var displayHeight: Float = 0f
+        set(value) { if (field != value) { field = value; metadataChanged() } }
     var glowColorOverride: Color? = null
+        set(value) { if (field != value) { field = value; metadataChanged() } }
     var isGlowing: Boolean = false
+        set(value) { if (field != value) { field = value; metadataChanged() } }
+
+    protected fun metadataChanged() { cachedMetadata = null; frameChanged() }
+    private fun frameChanged() { cachedFrame = null; owner.sceneChanged() }
 
     var transformation: Transformation
         get() = transform.let {
@@ -90,19 +108,23 @@ sealed class PacketDisplay protected constructor(
         }
         set(value) {
             owner.checkThread()
-            transform = DisplayTransform(
+            val next = DisplayTransform(
                 value.translation.let { DisplayVector(it.x, it.y, it.z) },
                 value.scale.let { DisplayVector(it.x, it.y, it.z) },
                 value.leftRotation.let { DisplayRotation(it.x, it.y, it.z, it.w) },
                 value.rightRotation.let { DisplayRotation(it.x, it.y, it.z, it.w) },
             )
+            if (transform != next) { transform = next; metadataChanged() }
         }
 
     fun teleport(location: Location) {
         owner.checkThread()
         val worldId = requireNotNull(location.world) { "A packet display must belong to a world" }.uid
+        if (positionWorldId == worldId && position.x == location.x && position.y == location.y &&
+            position.z == location.z && position.yaw == location.yaw && position.pitch == location.pitch) return
         position = location.clone()
         positionWorldId = worldId
+        frameChanged()
     }
 
     /**
@@ -143,6 +165,7 @@ sealed class PacketDisplay protected constructor(
         attachedEntityId = null
         attachedEntity = null
         attachedNpc = null
+        cachedFrame = null
     }
 
     /**
@@ -168,6 +191,7 @@ sealed class PacketDisplay protected constructor(
         attachedPlayer = null
         playerHeadWorldOffset = null
         attachedNpc = null
+        frameChanged()
     }
 
     /**
@@ -185,6 +209,7 @@ sealed class PacketDisplay protected constructor(
         attachedEntityId = null
         attachedEntity = null
         attachedNpc = WeakReference(npc)
+        cachedFrame = null
     }
 
     /** Returns this display to its last [teleport] position. */
@@ -197,6 +222,7 @@ sealed class PacketDisplay protected constructor(
         attachedEntityId = null
         attachedEntity = null
         attachedNpc = null
+        cachedFrame = null
     }
 
     fun showTo(player: Player) {
@@ -236,6 +262,8 @@ sealed class PacketDisplay protected constructor(
         owner.remove(this)
         visibleTo = mutableSetOf()
         hiddenFrom = mutableSetOf()
+        cachedFrame = null
+        cachedMetadata = null
     }
 
     internal fun visibleTo(viewer: PacketDisplayViewer, frame: PacketDisplayFrame): Boolean {
@@ -250,6 +278,7 @@ sealed class PacketDisplay protected constructor(
     }
 
     internal fun frame(attachedPlayer: PacketDisplayViewer? = null, entity: PacketDisplayCarrier? = null): PacketDisplayFrame? {
+        if (!isAttached) cachedFrame?.let { return it }
         val targetId = attachedPlayerId
         if (targetId != null && attachedPlayer?.id != targetId) return null
         if (attachedEntityId != null && entity?.id != attachedEntityId) return null
@@ -257,15 +286,22 @@ sealed class PacketDisplay protected constructor(
         if (attachedNpc != null && (npc == null || !npc.isValid)) return null
         val npcLocation = npc?.location
         val worldId = npcLocation?.world?.uid ?: entity?.worldId ?: attachedPlayer?.worldId ?: positionWorldId
+        val x = npcLocation?.x ?: entity?.let { it.x + attachedEntityOrigin.x } ?: attachedPlayer?.let { it.x + (playerHeadWorldOffset?.x ?: 0.0) } ?: position.x
+        val y = npcLocation?.let { it.y + requireNotNull(npc).height } ?: entity?.let { it.y + attachedEntityOrigin.y } ?: attachedPlayer?.let { it.y + it.height + (playerHeadWorldOffset?.y ?: 0.0) } ?: position.y
+        val z = npcLocation?.z ?: entity?.let { it.z + attachedEntityOrigin.z } ?: attachedPlayer?.let { it.z + (playerHeadWorldOffset?.z ?: 0.0) } ?: position.z
+        val vehicleId = npc?.entityId ?: entity?.entityId ?:
+            attachedPlayer?.entityId.takeIf { targetId != null && playerHeadWorldOffset == null }
+        cachedFrame?.let { previous ->
+            if (previous.worldId == worldId && previous.x == x && previous.y == y && previous.z == z &&
+                previous.attachmentVehicleId == vehicleId) return previous
+        }
         return PacketDisplayFrame(
             entityId = entityId,
             uuid = uniqueId,
-            x = npcLocation?.x ?: entity?.let { it.x + attachedEntityOrigin.x } ?: attachedPlayer?.let { it.x + (playerHeadWorldOffset?.x ?: 0.0) } ?: position.x,
-            y = npcLocation?.let { it.y + requireNotNull(npc).height } ?: entity?.let { it.y + attachedEntityOrigin.y } ?: attachedPlayer?.let { it.y + it.height + (playerHeadWorldOffset?.y ?: 0.0) } ?: position.y,
-            z = npcLocation?.z ?: entity?.let { it.z + attachedEntityOrigin.z } ?: attachedPlayer?.let { it.z + (playerHeadWorldOffset?.z ?: 0.0) } ?: position.z,
+            x = x, y = y, z = z,
             yaw = position.yaw,
             pitch = position.pitch,
-            metadata = PacketDisplayMetadata(
+            metadata = cachedMetadata ?: PacketDisplayMetadata(
             content = content(), transform = transform,
             interpolationDelay = interpolationDelay,
             interpolationDuration = interpolationDuration.coerceAtLeast(0),
@@ -275,12 +311,11 @@ sealed class PacketDisplay protected constructor(
             viewRange = viewRange, shadowRadius = shadowRadius, shadowStrength = shadowStrength,
             displayWidth = displayWidth, displayHeight = displayHeight,
             glowRgb = glowColorOverride?.asRGB() ?: -1, glowing = isGlowing,
-        ),
+        ).also { cachedMetadata = it },
             worldId = worldId,
-            attachmentVehicleId = npc?.entityId ?: entity?.entityId ?:
-                attachedPlayer?.entityId.takeIf { targetId != null && playerHeadWorldOffset == null },
+            attachmentVehicleId = vehicleId,
             pauseWhenNotObserved = pauseWhenNotObserved,
-        )
+        ).also { cachedFrame = it }
     }
 
     internal abstract fun content(): PacketDisplayContent
@@ -298,8 +333,10 @@ class PacketBlockDisplay internal constructor(
         get() = storedBlock.clone()
         set(value) {
             owner.checkThread()
+            if (storedBlock == value) return
             storedBlock = value.clone()
             stateId = owner.blockStateId(storedBlock)
+            metadataChanged()
         }
     override fun content(): PacketDisplayContent = PacketDisplayContent.Block(stateId)
 }
@@ -313,10 +350,13 @@ class PacketItemDisplay internal constructor(
         get() = item.clone()
         set(value) {
             owner.checkThread()
+            if (item == value) return
             item = value.clone()
             snapshot = owner.itemSnapshot(item)
+            metadataChanged()
         }
     var itemDisplayTransform: ItemDisplay.ItemDisplayTransform = ItemDisplay.ItemDisplayTransform.NONE
+        set(value) { if (field != value) { field = value; metadataChanged() } }
     override fun content(): PacketDisplayContent = PacketDisplayContent.Item(snapshot, itemDisplayTransform.ordinal.toByte())
 }
 
@@ -325,14 +365,21 @@ class PacketTextDisplay internal constructor(
 ) : PacketDisplay(owner, entityId, location) {
     private var text = text
     var lineWidth: Int = 200
+        set(value) { if (field != value) { field = value; metadataChanged() } }
     var backgroundColor: Color? = Color.fromARGB(0x40000000)
+        set(value) { if (field != value) { field = value; metadataChanged() } }
     var textOpacity: Byte = -1
+        set(value) { if (field != value) { field = value; metadataChanged() } }
     var isShadowed: Boolean = false
+        set(value) { if (field != value) { field = value; metadataChanged() } }
     var isSeeThrough: Boolean = false
+        set(value) { if (field != value) { field = value; metadataChanged() } }
     var isDefaultBackground: Boolean = false
+        set(value) { if (field != value) { field = value; metadataChanged() } }
     var alignment: TextDisplay.TextAlignment = TextDisplay.TextAlignment.CENTER
+        set(value) { if (field != value) { field = value; metadataChanged() } }
     fun text(): Component = text
-    fun text(value: Component) { owner.checkThread(); text = value }
+    fun text(value: Component) { owner.checkThread(); if (text != value) { text = value; metadataChanged() } }
     override fun content(): PacketDisplayContent {
         var flags = 0
         if (isShadowed) flags = flags or 1

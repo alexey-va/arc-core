@@ -72,7 +72,39 @@ class PaperPacketDisplays internal constructor(
         currentTick = java.util.function.LongSupplier { Bukkit.getCurrentTick().toLong() },
     )
 
-    private data class ViewerState(val connection: PacketDisplayConnection, val worldId: UUID)
+    private class CapturedFrames(
+        val revision: Long,
+        val entries: List<Pair<PacketDisplay, PacketDisplayFrame>>,
+        val reusableVisibility: Boolean,
+    )
+
+    /** Contains no Player reference; retained only with this viewer's current connection state. */
+    private class CachedVisibility(val scene: CapturedFrames, viewer: PacketDisplayViewer, val epoch: Long,
+                                   val desired: List<PacketDisplayFrame>) {
+        private val worldId = viewer.worldId
+        private val entityId = viewer.entityId
+        private val x = viewer.x
+        private val y = viewer.y
+        private val z = viewer.z
+        private val sentChunks = viewer.sentChunks
+        fun matches(scene: CapturedFrames, viewer: PacketDisplayViewer, epoch: Long): Boolean =
+            this.scene === scene && this.epoch == epoch && worldId == viewer.worldId && entityId == viewer.entityId &&
+                x == viewer.x && y == viewer.y && z == viewer.z && sentChunks == viewer.sentChunks
+    }
+
+    private data class ViewerState(val connection: PacketDisplayConnection, val worldId: UUID,
+                                   val visibility: CachedVisibility? = null)
+
+    /** One sliced sweep. Native references never leave Main or enter the retained visibility cache. */
+    private class Capture {
+        val audience = arrayListOf<PacketDisplayViewer>()
+        val audienceById = hashMapOf<UUID, PacketDisplayViewer>()
+        val nativeCarriers = hashMapOf<UUID, PacketDisplayCarrier>()
+        val passengerSnapshots = hashMapOf<Int, List<Int>>()
+        val liveVehiclesByWorld = hashMapOf<UUID, MutableSet<Int>>()
+        val epochs = hashMapOf<UUID, Long>()
+        lateinit var frames: CapturedFrames
+    }
     private val handles = ConcurrentHashMap<Int, PacketDisplay>()
     private val audienceGroups = ConcurrentHashMap.newKeySet<PacketDisplayAudienceGroup>()
     private val viewers = ConcurrentHashMap<UUID, ViewerState>()
@@ -85,7 +117,10 @@ class PaperPacketDisplays internal constructor(
     private var capture: CompletableFuture<Unit>? = null
     internal var visibilityRevision = 0L
         private set
-    internal fun visibilityChanged() { visibilityRevision++ }
+    private var sceneRevision = 0L
+    private var staticFrames: CapturedFrames? = null
+    internal fun sceneChanged() { sceneRevision++; staticFrames = null }
+    internal fun visibilityChanged() { visibilityRevision++; sceneChanged() }
     private var completion: CompletableFuture<Void>? = null
     // Each connection has at most one prepared submission in this owner sweep.
     private val submissions = ConcurrentHashMap.newKeySet<CompletableFuture<Void>>()
@@ -98,17 +133,17 @@ class PaperPacketDisplays internal constructor(
 
     fun spawnBlock(location: Location, block: BlockData): PacketBlockDisplay {
         checkSpawn(location)
-        return PacketBlockDisplay(this, transport.nextEntityId(), location, block).also { handles[it.entityId] = it }
+        return PacketBlockDisplay(this, transport.nextEntityId(), location, block).also { handles[it.entityId] = it; sceneChanged() }
     }
 
     fun spawnItem(location: Location, item: ItemStack): PacketItemDisplay {
         checkSpawn(location)
-        return PacketItemDisplay(this, transport.nextEntityId(), location, item).also { handles[it.entityId] = it }
+        return PacketItemDisplay(this, transport.nextEntityId(), location, item).also { handles[it.entityId] = it; sceneChanged() }
     }
 
     fun spawnText(location: Location, text: Component): PacketTextDisplay {
         checkSpawn(location)
-        return PacketTextDisplay(this, transport.nextEntityId(), location, text).also { handles[it.entityId] = it }
+        return PacketTextDisplay(this, transport.nextEntityId(), location, text).also { handles[it.entityId] = it; sceneChanged() }
     }
 
     /** Creates a scene gate; configure it before the first frame and close it with the scene. */
@@ -192,69 +227,91 @@ class PaperPacketDisplays internal constructor(
             }
             return@sequence
         }
-        val currentAudience = arrayListOf<PacketDisplayViewer>()
-        val audienceById = hashMapOf<UUID, PacketDisplayViewer>()
-        val nativeCarriers = hashMapOf<UUID, PacketDisplayCarrier>()
-        val passengerSnapshots = hashMapOf<Int, List<Int>>()
-        val liveVehiclesByWorld = hashMapOf<UUID, MutableSet<Int>>()
-        val epochs = hashMapOf<UUID, Long>()
+        val current = Capture()
         yieldAll(audience.captureSteps { viewer ->
-            currentAudience.add(viewer)
-            audienceById[viewer.id] = viewer
-            passengerSnapshots[viewer.entityId] = viewer.passengerEntityIds
-            liveVehiclesByWorld.getOrPut(viewer.worldId, ::hashSetOf).add(viewer.entityId)
-            epochs[viewer.id] = viewerEpochs[viewer.id] ?: 0L
+            current.audience.add(viewer)
+            current.audienceById[viewer.id] = viewer
+            current.passengerSnapshots[viewer.entityId] = viewer.passengerEntityIds
+            current.liveVehiclesByWorld.getOrPut(viewer.worldId, ::hashSetOf).add(viewer.entityId)
+            current.epochs[viewer.id] = viewerEpochs[viewer.id] ?: 0L
         })
         for (participant in captureParticipants) {
-            yieldAll(participant.captureSteps(currentAudience))
+            yieldAll(participant.captureSteps(current.audience))
             yield(Unit)
         }
-        // Pin private audience state before frames, including yields during frame capture.
-        // Otherwise a reused handle could expose its old text to a newly admitted viewer.
+        // Fence private state before frames, including any yields during frame capture.
         val visibility = visibilityRevision
+        yieldAll(captureFrameSteps(current))
+        for (id in viewers.keys) {
+            if (id !in current.audienceById) forgetViewer(id)?.let(admissions::add)
+            yield(Unit)
+        }
+        for (viewer in current.audience) {
+            yieldAll(captureViewerSteps(current, viewer, visibility, admissions))
+        }
+    }.iterator()
+
+    private fun captureFrameSteps(current: Capture): Iterator<Unit> = sequence {
+        staticFrames?.let { current.frames = it; return@sequence }
+        val revision = sceneRevision
         val frames = arrayListOf<Pair<PacketDisplay, PacketDisplayFrame>>()
+        var attached = false
+        var grouped = false
         var frameBatchSize = 0
         for (display in handles.values) {
+            attached = attached || display.isAttached
+            grouped = grouped || display.audienceGroup != null
             val targetId = display.attachmentTargetId
-            var target = targetId?.let(audienceById::get)
+            var target = targetId?.let(current.audienceById::get)
             // A Citizens PLAYER carrier is native, but has no online viewer/connection entry.
             if (targetId != null && target == null) {
                 if (frameBatchSize != 0) { frameBatchSize = 0; yield(Unit) }
                 display.attachmentPlayer?.let { carrier ->
                     yieldAll(BukkitPacketDisplayAudience.captureCarrierSteps(carrier) { snapshot ->
                         target = snapshot
-                        audienceById[snapshot.id] = snapshot
-                        passengerSnapshots[snapshot.entityId] = snapshot.passengerEntityIds
-                        liveVehiclesByWorld.getOrPut(snapshot.worldId, ::hashSetOf).add(snapshot.entityId)
+                        current.audienceById[snapshot.id] = snapshot
+                        current.passengerSnapshots[snapshot.entityId] = snapshot.passengerEntityIds
+                        current.liveVehiclesByWorld.getOrPut(snapshot.worldId, ::hashSetOf).add(snapshot.entityId)
                     })
                 }
             }
             val entityTargetId = display.attachmentEntityTargetId
-            if (entityTargetId != null && entityTargetId !in nativeCarriers) {
+            if (entityTargetId != null && entityTargetId !in current.nativeCarriers) {
                 if (frameBatchSize != 0) { frameBatchSize = 0; yield(Unit) }
                 display.attachmentEntity?.let { carrier ->
                     yieldAll(BukkitPacketDisplayAudience.captureEntitySteps(carrier) { snapshot ->
-                        nativeCarriers[snapshot.id] = snapshot
-                        passengerSnapshots[snapshot.entityId] = snapshot.passengerEntityIds
-                        liveVehiclesByWorld.getOrPut(snapshot.worldId, ::hashSetOf).add(snapshot.entityId)
+                        current.nativeCarriers[snapshot.id] = snapshot
+                        current.passengerSnapshots[snapshot.entityId] = snapshot.passengerEntityIds
+                        current.liveVehiclesByWorld.getOrPut(snapshot.worldId, ::hashSetOf).add(snapshot.entityId)
                     })
                 }
             }
-            display.frame(target, entityTargetId?.let(nativeCarriers::get))?.let { frames.add(display to it) }
+            display.frame(target, entityTargetId?.let(current.nativeCarriers::get))?.let { frames.add(display to it) }
             if (++frameBatchSize == PURE_CAPTURE_BATCH_SIZE) { frameBatchSize = 0; yield(Unit) }
         }
         if (frameBatchSize != 0) yield(Unit)
-        for (id in viewers.keys) {
-            if (id !in audienceById) forgetViewer(id)?.let(admissions::add)
-            yield(Unit)
+        val captured = CapturedFrames(revision, frames, !attached && !grouped)
+        current.frames = captured
+        // Never retain a mixed generation captured across mutation/yield boundaries.
+        if (!attached && revision == sceneRevision) staticFrames = captured
+    }.iterator()
+
+    private fun captureViewerSteps(current: Capture, viewer: PacketDisplayViewer, visibility: Long,
+                                   admissions: MutableList<CompletableFuture<Void>>): Iterator<Unit> = sequence {
+        val scene = current.frames
+        val epoch = current.epochs.getValue(viewer.id)
+        val previous = viewers[viewer.id]
+        val cached = previous?.visibility?.takeIf {
+            scene.reusableVisibility && scene.revision == sceneRevision && it.matches(scene, viewer, epoch)
         }
-        for (viewer in currentAudience) {
+        val fresh = if (cached == null) arrayListOf<PacketDisplayFrame>() else null
+        val desired = cached?.desired ?: requireNotNull(fresh)
+        val desiredPassengers = hashMapOf<Int, MutableList<Int>>()
+        val nativePassengers = hashMapOf<Int, List<Int>>()
+        if (fresh != null) {
             val groupVisibility = hashMapOf<PacketDisplayAudienceGroup, Boolean>()
-            val desired = arrayListOf<PacketDisplayFrame>()
-            val desiredPassengers = hashMapOf<Int, MutableList<Int>>()
-            val nativePassengers = hashMapOf<Int, List<Int>>()
             var visibilityBatchSize = 0
-            for ((display, frame) in frames) {
+            for ((display, frame) in scene.entries) {
                 val targetId = display.attachmentTargetId
                 val entityTargetId = display.attachmentEntityTargetId
                 val packetCarrier = display.attachmentNpc
@@ -262,8 +319,8 @@ class PaperPacketDisplays internal constructor(
                 var nativeCheck = targetId != null || entityTargetId != null
                 // Carrier visibility and uncached scene predicates retain individual native steps.
                 if (nativeCheck && visibilityBatchSize != 0) { visibilityBatchSize = 0; yield(Unit) }
-                val carrier = targetId?.let(audienceById::get)
-                val nativeCarrier = entityTargetId?.let(nativeCarriers::get)
+                val carrier = targetId?.let(current.audienceById::get)
+                val nativeCarrier = entityTargetId?.let(current.nativeCarriers::get)
                 val carrierVisible = if (entityTargetId != null) nativeCarrier != null &&
                     BukkitPacketDisplayAudience.isCurrent(nativeCarrier) &&
                     (entityTargetId == viewer.id || (viewer.id in nativeCarrier.trackedBy && viewer.player.canSee(nativeCarrier.entity)))
@@ -277,10 +334,10 @@ class PaperPacketDisplays internal constructor(
                         nativeCheck = true
                     }
                     if (group == null || groupVisibility[group] == true) {
-                        desired.add(if (packetLease == null) frame else frame.copy(attachmentLease = packetLease))
+                        fresh.add(if (packetLease == null) frame else frame.copy(attachmentLease = packetLease))
                         frame.attachmentVehicleId?.let { vehicleId ->
                             desiredPassengers.getOrPut(vehicleId, ::arrayListOf).add(frame.entityId)
-                            nativePassengers[vehicleId] = passengerSnapshots[vehicleId].orEmpty()
+                            nativePassengers[vehicleId] = current.passengerSnapshots[vehicleId].orEmpty()
                         }
                     }
                 }
@@ -288,26 +345,27 @@ class PaperPacketDisplays internal constructor(
                 else if (++visibilityBatchSize == PURE_CAPTURE_BATCH_SIZE) { visibilityBatchSize = 0; yield(Unit) }
             }
             if (visibilityBatchSize != 0) yield(Unit)
-            // A world/respawn/chunk transition during a sliced capture must not publish the old view.
-            if (!audience.isCurrent(viewer) || visibility != visibilityRevision || epochs[viewer.id] != (viewerEpochs[viewer.id] ?: 0L)) { yield(Unit); continue }
-            val previous = viewers[viewer.id]
-            if (desired.isEmpty() && previous == null) {
-                resetChunks.remove(viewer.id); resetViewers.remove(viewer.id)
-                yield(Unit); continue
-            }
-            val connection = transport.connection(viewer.player)
-            if (connection == null) { forgetViewer(viewer.id)?.let(admissions::add); yield(Unit); continue }
-            if (previous != null && previous.connection.identity !== connection.identity) {
-                previous.connection.closeAsync().also { admissions.add(it); track(it) }
-            }
-            // These collections are detached and never mutated after handoff. Sorting/copies/merge run on Netty.
-            connection.submitViewAsync(desired, viewer.view, resetChunks.remove(viewer.id).orEmpty(),
-                resetViewers.remove(viewer.id) || (previous != null && previous.worldId != viewer.worldId),
-                desiredPassengers, nativePassengers, liveVehiclesByWorld[viewer.worldId].orEmpty() + desiredPassengers.keys)
-                .also { admissions.add(it); track(it) }
-            viewers[viewer.id] = ViewerState(connection, viewer.worldId)
-            yield(Unit)
         }
+        // Camera/AFK, connection and replay checks stay live even when static visibility is reused.
+        if (!audience.isCurrent(viewer) || visibility != visibilityRevision || epoch != (viewerEpochs[viewer.id] ?: 0L)) { yield(Unit); return@sequence }
+        if (desired.isEmpty() && previous == null) {
+            resetChunks.remove(viewer.id); resetViewers.remove(viewer.id)
+            yield(Unit); return@sequence
+        }
+        val connection = transport.connection(viewer.player)
+        if (connection == null) { forgetViewer(viewer.id)?.let(admissions::add); yield(Unit); return@sequence }
+        if (previous != null && previous.connection.identity !== connection.identity) {
+            previous.connection.closeAsync().also { admissions.add(it); track(it) }
+        }
+        // These collections are detached and never mutated after handoff. Sorting/copies/merge run on Netty.
+        connection.submitViewAsync(desired, viewer.view, resetChunks.remove(viewer.id).orEmpty(),
+            resetViewers.remove(viewer.id) || (previous != null && previous.worldId != viewer.worldId),
+            desiredPassengers, nativePassengers, current.liveVehiclesByWorld[viewer.worldId].orEmpty() + desiredPassengers.keys)
+            .also { admissions.add(it); track(it) }
+        val reusable = if (scene.reusableVisibility && scene.revision == sceneRevision)
+            cached ?: CachedVisibility(scene, viewer, epoch, desired) else null
+        viewers[viewer.id] = ViewerState(connection, viewer.worldId, reusable)
+        yield(Unit)
     }.iterator()
 
     @EventHandler
@@ -374,6 +432,7 @@ class PaperPacketDisplays internal constructor(
         val result = CompletableFuture<Void>()
         completion = result
         closed = true
+        staticFrames = null
         capture?.cancel(false)
         if (ownsWork) work.close()
         tasks.close()

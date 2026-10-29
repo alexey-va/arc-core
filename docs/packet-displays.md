@@ -63,6 +63,16 @@ scenes may take multiple ticks to capture; geometry, population and visibility
 limits are unchanged. Paper's sent-chunk snapshot getter remains one indivisible
 native call.
 
+Unchanged handles reuse their detached frame and metadata; moving handles reuse
+metadata until a visual property changes. Equal content, transform and position
+assignments keep that snapshot. A scene without attachments also reuses its
+captured frame list. For a previously observed viewer, a scene without attachments
+or audience groups reuses visibility only while its revision, the viewer's
+position/world/entity, received chunks and reset epoch match. Dynamic groups and
+carrier visibility still run each refresh. Camera/AFK capture, participants,
+connection checks and replay submission remain live even when static visibility
+is reused. Cached results retire with the viewer/owner and never retain a Player.
+
 Short sweeps explicitly spend the queue's remaining allowance in the current
 Paper tick, without first waiting for a delayed task. `drainAvailable` binds the
 queue to Paper's tick identity: all display owners and scheduled continuations
