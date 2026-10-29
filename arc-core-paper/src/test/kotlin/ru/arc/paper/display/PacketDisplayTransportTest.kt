@@ -924,6 +924,65 @@ class PacketDisplayTransportTest : FreeSpec({
         backend.writes.filterIsInstance<WrapperPlayServerDestroyEntities>().single()
         backend.writes.filterIsInstance<WrapperPlayServerSpawnEntity>().single().entityId shouldBe display.entityId
     }
+    "two independent display queues interleave mounts and one owner's cleanup preserves the other" {
+        val service = SharedDisplayPassengers()
+        val channel = Any()
+        val aState = PacketDisplayPassengerState(service.open(channel))
+        val bState = PacketDisplayPassengerState(service.open(channel))
+        val aBackend = RecordingPacketBackend()
+        val bBackend = RecordingPacketBackend()
+        val a = PacketDisplayAttachment(channel, Logger.getAnonymousLogger(), aBackend, aState)
+        val b = PacketDisplayAttachment(channel, Logger.getAnonymousLogger(), bBackend, bState)
+        val first = frame(100).copy(attachmentVehicleId = 77)
+        val second = frame(200).copy(attachmentVehicleId = 77)
+        a.submit(listOf(first), desiredPassengers = mapOf(77 to listOf(100)), nativePassengerSnapshots = mapOf(77 to listOf(11)))
+        aBackend.runAll()
+        b.submit(listOf(second), desiredPassengers = mapOf(77 to listOf(200)), nativePassengerSnapshots = mapOf(77 to listOf(11)))
+        bBackend.runAll()
+        bBackend.writes.filterIsInstance<WrapperPlayServerSetPassengers>().single().passengers.toList() shouldBe listOf(11, 100, 200)
+        aState.observeNative(77, intArrayOf(12)).toList() shouldBe listOf(12, 100, 200)
+        aBackend.clear()
+        val closed = a.closeAsync(); aBackend.runAll(); closed.join()
+        aBackend.writes.filterIsInstance<WrapperPlayServerSetPassengers>().single().passengers.toList() shouldBe listOf(12, 200)
+        bState.nativePassengers(77) shouldBe listOf(12)
+        bBackend.clear()
+        b.closeAsync(); bBackend.runAll()
+        bBackend.writes.filterIsInstance<WrapperPlayServerSetPassengers>().single().passengers.toList() shouldBe listOf(12)
+        service.close()
+        java.lang.ref.Reference.reachabilityFence(channel)
+    }
+
+    "rejected and partially written links never erase another owner's admitted passenger" {
+        val service = SharedDisplayPassengers()
+        val channel = Any()
+        val aState = PacketDisplayPassengerState(service.open(channel))
+        val bState = PacketDisplayPassengerState(service.open(channel))
+        val aBackend = RecordingPacketBackend().apply { ordinaryTransactions = 1 }
+        val bBackend = RecordingPacketBackend()
+        val a = PacketDisplayAttachment(channel, Logger.getAnonymousLogger(), aBackend, aState)
+        val b = PacketDisplayAttachment(channel, Logger.getAnonymousLogger(), bBackend, bState)
+        val first = frame(100).copy(attachmentVehicleId = 77)
+        val second = frame(200).copy(attachmentVehicleId = 77)
+        b.submit(listOf(second), desiredPassengers = mapOf(77 to listOf(200)), nativePassengerSnapshots = mapOf(77 to listOf(11)))
+        bBackend.runAll()
+        a.submit(listOf(first), desiredPassengers = mapOf(77 to listOf(100)), nativePassengerSnapshots = mapOf(77 to listOf(11)))
+        aBackend.tasks.removeFirst().invoke() // spawn admitted; link rejected
+        bState.observeNative(77, intArrayOf(12)).toList() shouldBe listOf(12, 200)
+        aBackend.clear()
+        aBackend.ordinaryTransactions = 1
+        aBackend.failOnFlush = 1 // mount may have reached the channel
+        aBackend.runAll()
+        bState.nativePassengers(77) shouldBe listOf(12, 100)
+        aBackend.clear(); aBackend.failOnFlush = null
+        a.deferReplacementUntilCleanup(channel) shouldBe true
+        aBackend.runAll()
+        aBackend.writes.filterIsInstance<WrapperPlayServerSetPassengers>().single().passengers.toList() shouldBe listOf(12, 200)
+        bState.nativePassengers(77) shouldBe listOf(12)
+        b.closeAsync(); bBackend.runAll()
+        service.close()
+        java.lang.ref.Reference.reachabilityFence(channel)
+    }
+
 })
 
 private class RecordingPacketBackend(

@@ -10,7 +10,9 @@ The host supplies PacketEvents **2.12.1**, Paper **1.21.11**, and the shared
 `packetevents` as a plugin dependency and compile it only; do not shade it.
 Other consumers of `arc-core-paper` need no PacketEvents dependency unless they
 construct this service. Install core scheduling before construction.
-The ArcCore host must also install [the shared visual packet provider](visual-packets.md)
+The ArcCore host must install `PaperDisplayPassengerServiceProvider` as the shared
+`ArcDisplayPassengerService` before display construction. Consumers compile against the
+host-owned API and must not shade it. The host must also install [the shared visual packet provider](visual-packets.md)
 before constructing a visual owner. All plugin copies resolve the same
 `ArcVisualPacketBudget` API through Bukkit services; keep that API compile-only
 in consumers and supplied by ArcCore.
@@ -134,9 +136,23 @@ use the same coalesced connection queue and visual packet budget; native full-re
 `SET_PASSENGERS` packets are merged with only fake display IDs whose spawn and
 link were admitted. Core keeps the latest native passenger list and appends its
 admitted IDs, so a later real passenger update cannot silently unmount them or
-replace them with a stale list. A vehicle may have only one active
-`PaperPacketDisplays` owner attaching fake passengers; cross-owner merging is not
-provided. Carrier visibility is bounded by the existing Paper tracking/visibility
+replace them with a stale list. Multiple `PaperPacketDisplays` owners may attach to the same vehicle through the
+host passenger service. It keeps one real-passenger baseline per connection/vehicle
+and a separate admitted set per owner. A queue writes real IDs, other owners' IDs,
+and its own new IDs; detaching or closing that queue removes only its own IDs.
+Native replacements strip all registered synthetic IDs before updating the baseline.
+A rejected write rolls back that owner's possible IDs, while a partial write failure
+retains them until cleanup. Native observation continues during admission delays.
+Vehicle destruction invalidates every affected owner; only actual connection loss
+clears all owners. Successful queue cleanup releases its owner lease. The service
+uses weak channel keys and bounds each connection to 256 owners, each owner to 4096
+vehicles, and each owner/vehicle relation to 4096 IDs. Exhaustion rejects new visual
+state; it never truncates real passengers. Host stop invalidates retained leases.
+
+All consumers attaching to the same carrier must use this shared transport version;
+an older shaded transport has an independent baseline and cannot be repaired by a
+host-only upgrade. In particular, coordinate ARC and ArcOrigin for player attachments.
+The existing `attachTo(player)` API and native height-based anchor are unchanged. Carrier visibility is bounded by the existing Paper tracking/visibility
 snapshot; viewers that cannot see the carrier do not receive its mounted displays.
 
 Rate or channel pressure retains one latest desired scene, with one delayed

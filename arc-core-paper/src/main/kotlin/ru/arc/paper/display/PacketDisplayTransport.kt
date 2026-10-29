@@ -28,6 +28,8 @@ import org.bukkit.block.data.BlockData
 import org.bukkit.entity.Player
 import org.bukkit.inventory.ItemStack
 import org.bukkit.plugin.Plugin
+import ru.arc.paper.api.ArcDisplayPassengerOwner
+import ru.arc.paper.api.ArcDisplayPassengerService
 import ru.arc.paper.api.VisualPacketAdmission
 import ru.arc.paper.packet.PaperVisualPackets
 import java.lang.ref.WeakReference
@@ -126,8 +128,14 @@ internal class PacketEventsChannelBackend(plugin: Plugin, source: String) : Pack
 internal class PacketEventsDisplayTransport(
     private val logger: Logger,
     private val backend: PacketDisplayChannelBackend,
+    private val passengers: ArcDisplayPassengerService = SharedDisplayPassengers(),
 ) : PacketDisplayTransport {
-    constructor(plugin: Plugin, source: String) : this(plugin.logger, PacketEventsChannelBackend(plugin, source))
+    constructor(plugin: Plugin, source: String) : this(
+        plugin.logger, PacketEventsChannelBackend(plugin, source),
+        requireNotNull(plugin.server.servicesManager.load(ArcDisplayPassengerService::class.java)) {
+            "ArcCore display passenger service is unavailable; enable the matching host before display owners"
+        },
+    )
     /* Weak keys and weak channel snapshots avoid retaining disconnected players. */
     private var attachments = WeakHashMap<Player, PacketDisplayAttachment>()
     private val passengerLock = Any()
@@ -184,7 +192,7 @@ internal class PacketEventsDisplayTransport(
             val current = attachments[player]
             if (current != null && current.isUsableFor(channel)) return current
             if (current?.deferReplacementUntilCleanup(channel) == true) return null
-            val passengerState = PacketDisplayPassengerState()
+            val passengerState = PacketDisplayPassengerState(passengers.open(channel))
             synchronized(passengerLock) { passengerStates[player.uniqueId] = WeakReference(passengerState) }
             val replacement = PacketDisplayAttachment(channel, logger, backend, passengerState)
             attachments[player] = replacement
@@ -222,130 +230,11 @@ internal class PacketEventsDisplayTransport(
     }
 }
 
-/** Per-viewer native passenger baseline plus only this queue's admitted fake IDs. */
-internal class PacketDisplayPassengerState {
-    private val trackedVehicles = mutableSetOf<Int>()
-    private val native = mutableMapOf<Int, List<Int>>()
-    private val observedNative = mutableSetOf<Int>()
-    private val mounted = mutableMapOf<Int, List<Int>>()
-    private val deadVehicles = mutableSetOf<Int>()
-    private val invalidatedVehicles = mutableSetOf<Int>()
-    private val ownPassengerWrites = ThreadLocal<Set<Int>?>()
-    @Volatile private var disconnected = false
-
-    /** PacketEvents raises send events while encoding Core's already budgeted passenger writes. */
-    fun <T> duringOwnPassengerWrites(vehicleIds: Set<Int>, action: () -> T): T {
-        val previous = ownPassengerWrites.get()
-        ownPassengerWrites.set(previous.orEmpty() + vehicleIds)
-        return try {
-            action()
-        } finally {
-            if (previous == null) ownPassengerWrites.remove() else ownPassengerWrites.set(previous)
-        }
-    }
-
-    fun isOwnPassengerWrite(vehicleId: Int): Boolean = vehicleId in ownPassengerWrites.get().orEmpty()
-
-    @Synchronized
-    fun seedNative(vehicleId: Int, passengers: List<Int>) {
-        trackedVehicles += vehicleId
-        deadVehicles.remove(vehicleId)
-        if (vehicleId !in observedNative) native[vehicleId] = withoutMounted(vehicleId, passengers)
-    }
-
-    @Synchronized
-    fun nativePassengers(vehicleId: Int, fallback: List<Int> = emptyList()): List<Int> {
-        if (vehicleId in deadVehicles) return emptyList()
-        return native[vehicleId] ?: withoutMounted(vehicleId, fallback).also { native[vehicleId] = it }
-    }
-
-    /** Captures a full native replacement list, then appends admitted packet displays. */
-    @Synchronized
-    fun observeNative(vehicleId: Int, passengers: IntArray): IntArray {
-        if (isOwnPassengerWrite(vehicleId)) return passengers
-        if (disconnected || vehicleId !in trackedVehicles) return passengers
-        deadVehicles.remove(vehicleId)
-        observedNative += vehicleId
-        native[vehicleId] = withoutMounted(vehicleId, passengers.toList())
-        return (native[vehicleId].orEmpty() + mounted[vehicleId].orEmpty()).distinct().toIntArray()
-    }
-
-    @Synchronized
-    fun setMounted(vehicleId: Int, passengers: List<Int>) {
-        deadVehicles.remove(vehicleId)
-        invalidatedVehicles.remove(vehicleId)
-        if (passengers.isEmpty()) {
-            trackedVehicles.remove(vehicleId)
-            native.remove(vehicleId)
-            observedNative.remove(vehicleId)
-            mounted.remove(vehicleId)
-        } else {
-            trackedVehicles += vehicleId
-            mounted[vehicleId] = passengers.distinct()
-        }
-    }
-
-    @Synchronized
-    fun forgetVehicles(vehicleIds: IntArray) {
-        vehicleIds.forEach { id ->
-            if (id in trackedVehicles) {
-                deadVehicles += id
-                if (mounted[id].orEmpty().isNotEmpty()) invalidatedVehicles += id
-            }
-            trackedVehicles.remove(id)
-            native.remove(id)
-            observedNative.remove(id)
-            mounted.remove(id)
-        }
-    }
-
-    @Synchronized
-    fun clear() {
-        native.clear()
-        trackedVehicles.clear()
-        observedNative.clear()
-        mounted.clear()
-        deadVehicles.clear()
-        invalidatedVehicles.clear()
-    }
-
-    fun isDisconnected(): Boolean = disconnected
-
-    @Synchronized
-    fun isDead(vehicleId: Int): Boolean = vehicleId in deadVehicles
-
-    @Synchronized
-    fun invalidatedVehicles(): Set<Int> = invalidatedVehicles.toSet()
-
-    @Synchronized
-    fun acknowledgeInvalidations(vehicleIds: Set<Int>) {
-        invalidatedVehicles.removeAll(vehicleIds)
-    }
-
-    @Synchronized
-    fun retainVehicles(vehicleIds: Set<Int>) {
-        (trackedVehicles - vehicleIds - mounted.keys).forEach { id ->
-            trackedVehicles.remove(id)
-            native.remove(id)
-            observedNative.remove(id)
-            deadVehicles.remove(id)
-        }
-        val discarded = deadVehicles - vehicleIds - mounted.keys
-        deadVehicles.removeAll(discarded)
-        invalidatedVehicles.removeAll(discarded)
-    }
-
-    @Synchronized
-    fun closeConnection() {
-        disconnected = true
-        clear()
-    }
-
-    @Synchronized
-    private fun withoutMounted(vehicleId: Int, passengers: List<Int>): List<Int> {
-        val fakeIds = mounted[vehicleId].orEmpty().toSet()
-        return passengers.filterNot(fakeIds::contains)
-    }
+/** Queue-local facade over the host's connection-wide owner accounting. */
+internal class PacketDisplayPassengerState(
+    private val owner: ArcDisplayPassengerOwner = SharedDisplayPassengers().open(Any()),
+) : ArcDisplayPassengerOwner by owner {
+    fun nativePassengers(vehicleId: Int): List<Int> = owner.nativePassengers(vehicleId, emptyList())
 }
 
 /**
@@ -450,7 +339,10 @@ internal class PacketDisplayAttachment internal constructor(
                 submittedPassengers.isEmpty() && cleanupIds.isEmpty()
         }
         clean = empty
-        if (closing.get() && empty) closed.complete(null)
+        if (closing.get() && empty) {
+            passengerState.close()
+            closed.complete(null)
+        }
     }
 
     override fun submit(

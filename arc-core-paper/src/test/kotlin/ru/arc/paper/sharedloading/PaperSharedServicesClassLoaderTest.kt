@@ -4,6 +4,9 @@ import io.kotest.core.spec.style.FreeSpec
 import io.kotest.matchers.shouldBe
 import org.bukkit.plugin.Plugin
 import org.bukkit.plugin.ServicePriority
+import ru.arc.paper.api.ArcDisplayPassengerOwner
+import ru.arc.paper.api.ArcDisplayPassengerService
+import ru.arc.paper.display.PaperDisplayPassengerServiceProvider
 import ru.arc.paper.api.ArcRedisDiagnostics
 import ru.arc.paper.api.ArcRedisLease
 import ru.arc.paper.api.ArcRedisService
@@ -34,6 +37,35 @@ import java.util.concurrent.atomic.AtomicInteger
 import javax.sql.DataSource
 
 class PaperSharedServicesClassLoaderTest : FreeSpec({
+    "separate display consumer classes share host passenger ownership through only the API" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val host = paper.createSimplePlugin("PassengerHost")
+            PaperDisplayPassengerServiceProvider(host).use { service ->
+                paper.server.servicesManager.load(ArcDisplayPassengerService::class.java) shouldBe service
+                consumerLoader().use { loaderA ->
+                    consumerLoader().use { loaderB ->
+                        val name = "ru.arc.paper.display.PacketDisplayPassengerState"
+                        val typeA = loaderA.loadClass(name)
+                        val typeB = loaderB.loadClass(name)
+                        (typeA !== typeB) shouldBe true
+                        (loaderA.loadClass(ArcDisplayPassengerOwner::class.java.name) === ArcDisplayPassengerOwner::class.java) shouldBe true
+                        (loaderB.loadClass(ArcDisplayPassengerService::class.java.name) === ArcDisplayPassengerService::class.java) shouldBe true
+                        val channel = Any()
+                        val a = typeA.getConstructor(ArcDisplayPassengerOwner::class.java).newInstance(service.open(channel)) as ArcDisplayPassengerOwner
+                        val b = typeB.getConstructor(ArcDisplayPassengerOwner::class.java).newInstance(service.open(channel)) as ArcDisplayPassengerOwner
+                        a.seedNative(77, listOf(11)); b.seedNative(77, listOf(11))
+                        a.setMounted(77, listOf(100)); b.setMounted(77, listOf(200))
+                        b.nativePassengers(77, emptyList()) shouldBe listOf(11, 100)
+                        a.setMounted(77, emptyList()); a.close()
+                        b.observeNative(77, intArrayOf(12)).toList() shouldBe listOf(12, 200)
+                        b.setMounted(77, emptyList()); b.close()
+                    }
+                }
+            }
+            paper.server.servicesManager.load(ArcDisplayPassengerService::class.java) shouldBe null
+        }
+    }
+
     "SQL consumer factories and runtime leases stay local to each plugin classloader" {
         MockBukkitTestRuntime.open().use { paper ->
             val host = paper.createSimplePlugin("ArcServiceHost")
@@ -162,7 +194,7 @@ private fun consumerLoader(): IsolatedConsumerClassLoader =
 private fun Class<*>.codeSourceUrl(): URL = requireNotNull(protectionDomain.codeSource?.location)
 
 private class IsolatedConsumerClassLoader(urls: Array<URL>, parent: ClassLoader) : URLClassLoader(urls, parent) {
-    private val childPackages = listOf("ru.arc.paper.sql.", "ru.arc.sql.", "ru.arc.paper.redis.", "ru.arc.redis.")
+    private val childPackages = listOf("ru.arc.paper.sql.", "ru.arc.sql.", "ru.arc.paper.redis.", "ru.arc.redis.", "ru.arc.paper.display.")
 
     override fun loadClass(name: String, resolve: Boolean): Class<*> {
         if (childPackages.none(name::startsWith)) return super.loadClass(name, resolve)
