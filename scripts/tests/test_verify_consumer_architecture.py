@@ -155,8 +155,9 @@ class ProviderHost {
             archive.writestr("ru/arc/paper/scene/PaperSceneObservationServiceProvider$Entry.class", b"fixture")
             archive.writestr("ru/arc/paper/scene/PaperSceneEntityInfoServiceProvider.class", b"fixture")
             archive.writestr("ru/arc/paper/scene/PaperSceneEntityInfoServiceProvider$Entry.class", b"fixture")
+            archive.writestr("ru/arc/paper/display/PaperDisplayPassengerServiceProvider.class", b"fixture")
         failures = verify_artifact(jar, provider_host=False)
-        self.assertEqual(6, len(failures))
+        self.assertEqual(7, len(failures))
         self.assertTrue(all(failure.rule == "artifact-owner" for failure in failures))
         output = StringIO()
         with redirect_stdout(output):
