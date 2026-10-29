@@ -21,6 +21,8 @@ internal data class PacketDisplayFrame(
     val attachmentVehicleId: Int? = null,
     /** Packet-carrier spawn generation, revalidated on the destination connection event loop. */
     val attachmentLease: PacketNpcLease? = null,
+    /** Opts into cosmetic AFK/rear-view pauses; never changes privacy or packet admission budgets. */
+    val pauseWhenNotObserved: Boolean = true,
 ) {
     val chunkKey: Long get() = (floor(x).toInt().shr(4).toLong() and 0xffffffffL) or
         (floor(z).toInt().shr(4).toLong() shl 32)

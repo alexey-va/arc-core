@@ -57,6 +57,7 @@ class PacketPaperNameplateDisplayFactoryTest : FreeSpec({
             display.isDefaultBackground shouldBe false
             display.backgroundColor shouldBe options.backgroundColor
             display.isVisibleByDefault shouldBe false
+            display.pauseWhenNotObserved shouldBe true
 
             val frame = requireNotNull(display.frame(nameplateViewer(target)))
             frame.metadata.brightness shouldBe 0xF000F0
@@ -95,6 +96,7 @@ class PacketPaperNameplateDisplayFactoryTest : FreeSpec({
             nameplate.isAttachedTo(target) shouldBe true
             display.billboard shouldBe Display.Billboard.CENTER
             display.teleportDuration shouldBe 1
+            display.pauseWhenNotObserved shouldBe false
             display.transformation.translation shouldBe Vector3f(0.0F, -0.25F, 0.0F)
             display.brightness shouldBe null
             frame.metadata.brightness shouldBe -1
@@ -104,6 +106,7 @@ class PacketPaperNameplateDisplayFactoryTest : FreeSpec({
             frame.attachmentVehicleId shouldBe null
             frame.metadata.transform.translation.y shouldBe -0.25F
             frame.metadata.teleportDuration shouldBe 1
+            frame.pauseWhenNotObserved shouldBe false
 
             val crouching = requireNotNull(display.frame(targetSnapshot.copy(height = 1.5)))
             crouching.y shouldBe targetSnapshot.y + 2.0

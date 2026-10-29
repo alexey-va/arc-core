@@ -31,7 +31,8 @@ class PacketPaperNameplateDisplayFactory(
          * Anchors at the 1.21.11 native name-tag point: current player head plus 0.5 world blocks.
          * [PaperNameplateOptions.verticalOffset] is then a local screen-plane row offset under
          * CENTER billboarding. Follows at the borrowed owner's cadence with one-tick position
-         * interpolation; no passenger prediction or server entity is involved.
+         * interpolation and stays current during AFK/rear-view pauses. Privacy and normal packet
+         * admission budgets remain in force; no passenger prediction or server entity is involved.
          */
         @JvmStatic
         fun atNativeNameTag(owner: PaperPacketDisplays, options: PaperNameplateOptions): PacketPaperNameplateDisplayFactory =
@@ -57,6 +58,7 @@ class PacketPaperNameplateDisplayFactory(
         display.backgroundColor = options.backgroundColor
         display.isVisibleByDefault = false
         if (nativeNameTagAnchor) {
+            display.pauseWhenNotObserved = false
             display.teleportDuration = 1
             display.followPlayerHead(target, Vector(0.0, 0.5, 0.0))
         } else {

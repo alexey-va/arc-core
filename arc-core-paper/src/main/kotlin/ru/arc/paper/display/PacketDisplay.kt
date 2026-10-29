@@ -52,6 +52,12 @@ sealed class PacketDisplay protected constructor(
     internal val attachmentNpc: PacketPlayerNpc? get() = attachedNpc?.get()
     var isVisibleByDefault: Boolean = true
         set(value) { owner.checkThread(); if (field != value) { field = value; owner.visibilityChanged() } }
+    /**
+     * Allows cosmetic AFK/rear-view pauses. Disable for identity surfaces that must follow even
+     * while the viewer is idle or uses a third-person camera. Privacy and packet budgets still apply.
+     */
+    var pauseWhenNotObserved: Boolean = true
+        set(value) { owner.checkThread(); field = value }
     /** Additional shared gate; never grants access denied by this handle's explicit audience. */
     var audienceGroup: PacketDisplayAudienceGroup? = null
         set(value) {
@@ -273,6 +279,7 @@ sealed class PacketDisplay protected constructor(
             worldId = worldId,
             attachmentVehicleId = npc?.entityId ?: entity?.entityId ?:
                 attachedPlayer?.entityId.takeIf { targetId != null && playerHeadWorldOffset == null },
+            pauseWhenNotObserved = pauseWhenNotObserved,
         )
     }
 

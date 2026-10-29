@@ -107,6 +107,45 @@ class PacketDisplayTransportTest : FreeSpec({
         backend.writes.size shouldBe 1
     }
 
+    "unpausable identity frames keep AFK and rear updates within normal packet admission and privacy cleanup" {
+        val backend = RecordingPacketBackend().apply { ordinaryTransactions = 0 }
+        val channel = Any()
+        val connection = PacketDisplayAttachment(channel, Logger.getAnonymousLogger(), backend)
+        val rear = PacketDisplayView(0.0, 64.0, 0.0, 0.0, 0.0, 1.0)
+        val afk = rear.copy(afk = true)
+        val initial = frame(content = PacketDisplayContent.Text(Component.text("Target"))).copy(
+            z = -8.0,
+            pauseWhenNotObserved = false,
+            metadata = PacketDisplayMetadata(PacketDisplayContent.Text(Component.text("Target")),
+                displayWidth = 1f, displayHeight = 0.5f, teleportDuration = 1),
+        )
+        rear.behind(initial, false) shouldBe true
+        connection.submitViewAsync(listOf(initial), afk)
+        backend.tasks.removeFirst().invoke() // Capture admission still cannot bypass the visual packet budget.
+        backend.tasks.removeFirst().invoke()
+        backend.writes shouldBe emptyList()
+        backend.ordinaryTransactions = Int.MAX_VALUE
+        backend.runAll()
+        backend.writes.filterIsInstance<WrapperPlayServerSpawnEntity>().single().entityId shouldBe initial.entityId
+        backend.clear()
+
+        val moved = initial.copy(x = 0.5, metadata = initial.metadata.copy(
+            content = PacketDisplayContent.Text(Component.text("Target 19/20"))))
+        connection.submitViewAsync(listOf(moved), afk); backend.runAll()
+        backend.writes.filterIsInstance<WrapperPlayServerEntityTeleport>().single().position.x shouldBe 0.5
+        backend.writes.filterIsInstance<WrapperPlayServerEntityMetadata>().single().metadataValue(23) shouldBe Component.text("Target 19/20")
+        backend.writes.filterIsInstance<WrapperPlayServerSpawnEntity>() shouldBe emptyList()
+        backend.clear()
+
+        connection.submitViewAsync(listOf(moved.copy(x = 1.0)), rear); backend.runAll()
+        backend.writes.filterIsInstance<WrapperPlayServerEntityTeleport>().single().position.x shouldBe 1.0
+        backend.clear()
+        backend.ordinaryTransactions = 0
+        connection.submitViewAsync(emptyList(), afk); backend.runAll()
+        backend.writes.filterIsInstance<WrapperPlayServerDestroyEntities>().single().entityIds.toList() shouldBe listOf(initial.entityId)
+        java.lang.ref.Reference.reachabilityFence(channel)
+    }
+
     "rear motion freezes admitted state and returns directly to the newest pose without entity churn" {
         val backend = RecordingPacketBackend()
         // The transport intentionally holds channels weakly. This test owns the connection

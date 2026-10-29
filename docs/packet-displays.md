@@ -219,6 +219,13 @@ An AFK chunk replay removes stale IDs immediately and defers their fresh spawn
 until the player returns. Providers register through Bukkit services using the
 host's API class and unregister at their own lifecycle boundary.
 
+Set `PacketDisplay.pauseWhenNotObserved = false` for identity surfaces that must
+remain current while the viewer is AFK or uses a third-person camera whose view
+differs from the server-reported look direction. This opts that handle out of
+both cosmetic pauses, including initial spawn suppression. World/tracking,
+explicit audience, received chunks and the ordinary visual packet budget still
+apply. The default is `true`; it is captured with each immutable frame.
+
 No visual is written to the world, so new scenes cannot leave native orphan
 entities. A migrating plugin may remove old native entities only through its
 existing exact owner tags, including in chunks loaded after startup. Core does

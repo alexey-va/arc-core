@@ -145,6 +145,9 @@ pitch, including front-facing third-person view. `options.brightness` is opt-in:
 
 The follower retains its entity ID and sends normal position deltas through the
 borrowed packet owner's usual tick capture, with one-tick teleport interpolation.
+This factory sets `pauseWhenNotObserved = false`: complete identity rows keep
+spawning and following during AFK and rear-view cosmetic pauses. They still use
+the ordinary packet budget and all tracking/privacy checks.
 Budgeted capture or transport can defer updates; it does not inherit the client's
 passenger movement prediction. The original two-argument constructor retains its
 passenger placement. Native-client motion and appearance are separate acceptance

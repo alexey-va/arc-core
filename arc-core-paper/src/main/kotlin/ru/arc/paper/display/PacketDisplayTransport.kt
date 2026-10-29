@@ -672,13 +672,15 @@ internal class PacketDisplayAttachment internal constructor(
                 val wasSuspended = id in suspended
                 // AFK pauses cosmetics, including initial spawns. Lifecycle removals above and
                 // attachment relation changes still reconcile so paused state cannot retain links.
-                if (work.view?.afk == true && (old == null || old.attachmentVehicleId == desired.attachmentVehicleId)) {
+                if (desired.pauseWhenNotObserved && work.view?.afk == true &&
+                    (old == null || old.attachmentVehicleId == desired.attachmentVehicleId)) {
                     if (old != null) suspended.add(id)
                     continue
                 }
                 // Retain the client's last admitted pose. If either pose intersects the view, send the
                 // change so a moving object cannot leave a stale visible copy at its previous position.
-                if (old != null && work.view?.let { it.behind(old, wasSuspended) && it.behind(desired, wasSuspended) } == true) {
+                if (desired.pauseWhenNotObserved && old != null &&
+                    work.view?.let { it.behind(old, wasSuspended) && it.behind(desired, wasSuspended) } == true) {
                     suspended.add(id)
                     continue
                 }
