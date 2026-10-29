@@ -32,6 +32,7 @@ class PacketPaperNameplateDisplayFactoryTest : FreeSpec({
                 verticalOffset = 0.25F,
                 shadowed = false,
                 backgroundColor = Color.fromARGB(96, 10, 20, 30),
+                brightness = Display.Brightness(15, 15),
             )
             val fixture = PacketNameplateFixture(options)
             val content = Component.text("Ready")
@@ -51,12 +52,14 @@ class PacketPaperNameplateDisplayFactoryTest : FreeSpec({
             display.transformation.leftRotation shouldBe Quaternionf()
             display.transformation.rightRotation shouldBe Quaternionf()
             display.isShadowed shouldBe false
+            display.brightness shouldBe options.brightness
             display.isSeeThrough shouldBe false
             display.isDefaultBackground shouldBe false
             display.backgroundColor shouldBe options.backgroundColor
             display.isVisibleByDefault shouldBe false
 
             val frame = requireNotNull(display.frame(nameplateViewer(target)))
+            frame.metadata.brightness shouldBe 0xF000F0
             frame.attachmentVehicleId shouldBe target.entityId
             display.visibleTo(nameplateViewer(target), frame) shouldBe false
             display.visibleTo(nameplateViewer(viewer), frame) shouldBe false
@@ -74,6 +77,40 @@ class PacketPaperNameplateDisplayFactoryTest : FreeSpec({
             nameplate.close()
             display.visibleTo(nameplateViewer(viewer), frame) shouldBe false
             fixture.owner.closed shouldBe false
+            verify(exactly = 0) { fixture.owner.close(); fixture.owner.closeAsync() }
+        }
+    }
+
+    "native name-tag factory anchors above the current head before local row placement" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val target = paper.addPlayer("Target")
+            val options = PaperNameplateOptions(verticalOffset = -0.25F)
+            val fixture = PacketNameplateFixture(options)
+            val factory = PacketPaperNameplateDisplayFactory.atNativeNameTag(fixture.owner, options)
+            val nameplate = factory.create(target, Component.text("Status"))
+            val display = fixture.display
+            val targetSnapshot = nameplateViewer(target)
+            val frame = requireNotNull(display.frame(targetSnapshot))
+
+            nameplate.isAttachedTo(target) shouldBe true
+            display.billboard shouldBe Display.Billboard.CENTER
+            display.teleportDuration shouldBe 1
+            display.transformation.translation shouldBe Vector3f(0.0F, -0.25F, 0.0F)
+            display.brightness shouldBe null
+            frame.metadata.brightness shouldBe -1
+            frame.x shouldBe targetSnapshot.x
+            frame.y shouldBe targetSnapshot.y + targetSnapshot.height + 0.5
+            frame.z shouldBe targetSnapshot.z
+            frame.attachmentVehicleId shouldBe null
+            frame.metadata.transform.translation.y shouldBe -0.25F
+            frame.metadata.teleportDuration shouldBe 1
+
+            val crouching = requireNotNull(display.frame(targetSnapshot.copy(height = 1.5)))
+            crouching.y shouldBe targetSnapshot.y + 2.0
+            crouching.entityId shouldBe frame.entityId
+            crouching.uuid shouldBe frame.uuid
+            nameplate.close()
+            display.attachmentPlayer shouldBe null
             verify(exactly = 0) { fixture.owner.close(); fixture.owner.closeAsync() }
         }
     }
@@ -135,6 +172,11 @@ class PacketPaperNameplateDisplayFactoryTest : FreeSpec({
     "public constructor uses explicit host types without Kotlin default argument markers" {
         PacketPaperNameplateDisplayFactory::class.java.constructors.map { it.parameterTypes.toList() } shouldBe
             listOf(listOf(PaperPacketDisplays::class.java, PaperNameplateOptions::class.java))
+        val factory = PacketPaperNameplateDisplayFactory::class.java.getDeclaredMethod(
+            "atNativeNameTag", PaperPacketDisplays::class.java, PaperNameplateOptions::class.java,
+        )
+        java.lang.reflect.Modifier.isStatic(factory.modifiers) shouldBe true
+        factory.returnType shouldBe PacketPaperNameplateDisplayFactory::class.java
     }
 })
 

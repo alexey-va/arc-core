@@ -35,6 +35,7 @@ sealed class PacketDisplay protected constructor(
     private var transform = DisplayTransform()
     private var attachedPlayerId: UUID? = null
     private var attachedPlayer: WeakReference<Player>? = null
+    private var playerHeadWorldOffset: Vector? = null
     private var attachedEntityId: UUID? = null
     private var attachedEntity: WeakReference<LivingEntity>? = null
     private var attachedEntityOrigin = Vector()
@@ -107,10 +108,32 @@ sealed class PacketDisplay protected constructor(
      */
     fun attachTo(player: Player) {
         owner.checkThread()
+        attachPlayer(player, null)
+    }
+
+    /**
+     * Follows [player]'s feet plus their current pose/scale-aware native height and the copied,
+     * finite [worldOffset]. The offset is in world axes, before any billboard rotation; the
+     * [transformation] remains display-local. Uses the same tracking/visibility and cleanup as
+     * [attachTo], but sends ordinary world-position deltas without a passenger link. Following
+     * runs at the owner's capture cadence and does not inherit client passenger prediction.
+     * Call on the server thread; [detach] restores the last [teleport] position.
+     */
+    fun followPlayerHead(player: Player, worldOffset: Vector) {
+        owner.checkThread()
+        require(worldOffset.x.isFinite() && worldOffset.y.isFinite() && worldOffset.z.isFinite()) {
+            "Player head world offset must be finite"
+        }
+        attachPlayer(player, worldOffset.clone())
+    }
+
+    private fun attachPlayer(player: Player, worldOffset: Vector?) {
         check(isValid) { "A removed packet display cannot be attached" }
-        if (attachedPlayerId != player.uniqueId || attachedEntityId != null || attachedNpc != null) owner.visibilityChanged()
+        if (attachedPlayerId != player.uniqueId || playerHeadWorldOffset != worldOffset ||
+            attachedEntityId != null || attachedNpc != null) owner.visibilityChanged()
         attachedPlayerId = player.uniqueId
         attachedPlayer = WeakReference(player)
+        playerHeadWorldOffset = worldOffset
         attachedEntityId = null
         attachedEntity = null
         attachedNpc = null
@@ -137,6 +160,7 @@ sealed class PacketDisplay protected constructor(
         attachedEntityOrigin = passengerOrigin.clone()
         attachedPlayerId = null
         attachedPlayer = null
+        playerHeadWorldOffset = null
         attachedNpc = null
     }
 
@@ -151,6 +175,7 @@ sealed class PacketDisplay protected constructor(
         if (attachmentNpc !== npc || attachedPlayerId != null || attachedEntityId != null) owner.visibilityChanged()
         attachedPlayerId = null
         attachedPlayer = null
+        playerHeadWorldOffset = null
         attachedEntityId = null
         attachedEntity = null
         attachedNpc = WeakReference(npc)
@@ -162,6 +187,7 @@ sealed class PacketDisplay protected constructor(
         if (attachedPlayerId != null || attachedEntityId != null || attachedNpc != null) owner.visibilityChanged()
         attachedPlayerId = null
         attachedPlayer = null
+        playerHeadWorldOffset = null
         attachedEntityId = null
         attachedEntity = null
         attachedNpc = null
@@ -196,6 +222,7 @@ sealed class PacketDisplay protected constructor(
         owner.visibilityChanged()
         attachedPlayerId = null
         attachedPlayer = null
+        playerHeadWorldOffset = null
         attachedEntityId = null
         attachedEntity = null
         attachedNpc = null
@@ -227,9 +254,9 @@ sealed class PacketDisplay protected constructor(
         return PacketDisplayFrame(
             entityId = entityId,
             uuid = uniqueId,
-            x = npcLocation?.x ?: entity?.let { it.x + attachedEntityOrigin.x } ?: attachedPlayer?.x ?: position.x,
-            y = npcLocation?.let { it.y + requireNotNull(npc).height } ?: entity?.let { it.y + attachedEntityOrigin.y } ?: attachedPlayer?.let { it.y + it.height } ?: position.y,
-            z = npcLocation?.z ?: entity?.let { it.z + attachedEntityOrigin.z } ?: attachedPlayer?.z ?: position.z,
+            x = npcLocation?.x ?: entity?.let { it.x + attachedEntityOrigin.x } ?: attachedPlayer?.let { it.x + (playerHeadWorldOffset?.x ?: 0.0) } ?: position.x,
+            y = npcLocation?.let { it.y + requireNotNull(npc).height } ?: entity?.let { it.y + attachedEntityOrigin.y } ?: attachedPlayer?.let { it.y + it.height + (playerHeadWorldOffset?.y ?: 0.0) } ?: position.y,
+            z = npcLocation?.z ?: entity?.let { it.z + attachedEntityOrigin.z } ?: attachedPlayer?.let { it.z + (playerHeadWorldOffset?.z ?: 0.0) } ?: position.z,
             yaw = position.yaw,
             pitch = position.pitch,
             metadata = PacketDisplayMetadata(
@@ -244,7 +271,8 @@ sealed class PacketDisplay protected constructor(
             glowRgb = glowColorOverride?.asRGB() ?: -1, glowing = isGlowing,
         ),
             worldId = worldId,
-            attachmentVehicleId = npc?.entityId ?: entity?.entityId ?: attachedPlayer?.entityId.takeIf { targetId != null },
+            attachmentVehicleId = npc?.entityId ?: entity?.entityId ?:
+                attachedPlayer?.entityId.takeIf { targetId != null && playerHeadWorldOffset == null },
         )
     }
 

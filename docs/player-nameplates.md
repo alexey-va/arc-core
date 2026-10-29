@@ -9,7 +9,7 @@ transient display lifecycle.
 
 - `arc-core` owns stable row keys, deterministic priority, capacity bounds,
   typed rejections, snapshots, and owner cleanup.
-- `arc-core-paper` owns one `TextDisplay` per target, passenger attachment,
+- `arc-core-paper` owns one `TextDisplay` per target, passenger attachment or head following,
   per-viewer visibility, line of sight, update/recreate, events, tasks, and
   shutdown cleanup.
 - The consuming plugin owns wording, colors, data refresh, permissions, and
@@ -84,10 +84,11 @@ camera center. The server does not know the client's exact FOV or aspect ratio,
 so consumers should keep this value configurable and validate it visually for
 their surface.
 
-`PaperNameplateOptions.scale` and `verticalOffset` control the complete
-display transformation. Keep their defaults for an additive row at the normal
-passenger anchor; set explicit values only after checking the composed plate
-against the server-owned vanilla/TAB name tag.
+`PaperNameplateOptions.scale` and `verticalOffset` control the local display
+transformation. Their defaults describe an additive row at the normal passenger
+anchor. The packet factory's `atNativeNameTag` alternative below gives
+`verticalOffset` a screen-plane row origin at the native name tag. Check explicit
+values against the server-owned vanilla/TAB name tag.
 
 Displays are hidden by default and shown per viewer. They are non-persistent,
 removed on close, removed immediately when the target quits, dies, or changes
@@ -132,6 +133,22 @@ existing display owner's shared visual budget, latest-frame coalescing and
 attachment cleanup. The normal nameplate visibility policy still decides which
 viewers may see each row. Invalid players and changed world/entity generations
 invalidate the handle so reconciliation can recreate it.
+
+Use `PacketPaperNameplateDisplayFactory.atNativeNameTag(displays, options)` for
+rows aligned with the native 1.21.11 name tag. It follows the player's feet plus
+their current pose/scale-aware height plus `0.5` blocks on the world's Y axis,
+using the same player capture and visibility lifecycle without a passenger link.
+The display remains `CENTER` billboarded. `options.verticalOffset` then moves
+the row in the local screen plane; the world anchor is not rotated by camera
+pitch, including front-facing third-person view. `options.brightness` is opt-in:
+`null` preserves sampled world light, while an explicit value overrides it.
+
+The follower retains its entity ID and sends normal position deltas through the
+borrowed packet owner's usual tick capture, with one-tick teleport interpolation.
+Budgeted capture or transport can defer updates; it does not inherit the client's
+passenger movement prediction. The original two-argument constructor retains its
+passenger placement. Native-client motion and appearance are separate acceptance
+checks; frame and factory tests do not establish them.
 
 The display owner is borrowed. Close `PaperPlayerNameplates` first to remove its
 handles; closing a nameplate never closes the shared owner. When the consuming

@@ -5,6 +5,7 @@ import org.bukkit.entity.Display
 import org.bukkit.entity.Player
 import org.bukkit.entity.TextDisplay
 import org.bukkit.util.Transformation
+import org.bukkit.util.Vector
 import org.joml.Quaternionf
 import org.joml.Vector3f
 import ru.arc.paper.display.PacketTextDisplay
@@ -23,6 +24,20 @@ class PacketPaperNameplateDisplayFactory(
     private val owner: PaperPacketDisplays,
     private val options: PaperNameplateOptions,
 ) : PaperNameplateDisplayFactory {
+    private var nativeNameTagAnchor = false
+
+    companion object {
+        /**
+         * Anchors at the 1.21.11 native name-tag point: current player head plus 0.5 world blocks.
+         * [PaperNameplateOptions.verticalOffset] is then a local screen-plane row offset under
+         * CENTER billboarding. Follows at the borrowed owner's cadence with one-tick position
+         * interpolation; no passenger prediction or server entity is involved.
+         */
+        @JvmStatic
+        fun atNativeNameTag(owner: PaperPacketDisplays, options: PaperNameplateOptions): PacketPaperNameplateDisplayFactory =
+            PacketPaperNameplateDisplayFactory(owner, options).also { it.nativeNameTagAnchor = true }
+    }
+
     override fun create(target: Player, content: Component): PaperNameplateDisplay {
         val display = owner.spawnText(target.location, content)
         display.billboard = Display.Billboard.CENTER
@@ -36,11 +51,17 @@ class PacketPaperNameplateDisplayFactory(
             Quaternionf(),
         )
         display.isShadowed = options.shadowed
+        display.brightness = options.brightness
         display.isSeeThrough = false
         display.isDefaultBackground = false
         display.backgroundColor = options.backgroundColor
         display.isVisibleByDefault = false
-        display.attachTo(target)
+        if (nativeNameTagAnchor) {
+            display.teleportDuration = 1
+            display.followPlayerHead(target, Vector(0.0, 0.5, 0.0))
+        } else {
+            display.attachTo(target)
+        }
         return PacketPaperNameplateDisplay(target.uniqueId, target.world.uid, target.entityId, display)
     }
 }

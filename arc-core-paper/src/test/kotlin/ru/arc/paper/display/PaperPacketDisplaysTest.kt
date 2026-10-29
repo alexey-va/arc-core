@@ -346,6 +346,94 @@ class PaperPacketDisplaysTest : FreeSpec({
         }
     }
 
+    "head followers keep copied world offsets and stable IDs through movement pose and attachment changes" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val plugin = paper.loadPlugin<TestPaperPlugin>()
+            val world = paper.addSimpleWorld("head-follow-audience")
+            val carrier = paper.addPlayer("Carrier")
+            val observer = paper.addPlayer("Observer")
+            val initialCarrier = viewer(carrier, world.uid, trackedBy = setOf(observer.uniqueId))
+            val audience = MutableAudience().apply {
+                values = listOf(initialCarrier, viewer(observer, world.uid))
+            }
+            val transport = RecordingTransport()
+            testPacketDisplays(plugin, transport, LifecycleTaskScope(TestTaskScheduler()), audience).use { displays ->
+                val display = displays.spawnText(Location(world, 8.0, 68.0, 8.0), Component.text("Head"))
+                val offset = Vector(0.25, 0.5, 0.75)
+                display.followPlayerHead(carrier, offset)
+                offset.y = 100.0
+                displays.refreshFully()
+
+                val first = transport.forPlayer(observer).last()
+                val initial = first.frames.single()
+                initial.x shouldBe 1.25
+                initial.y shouldBe 66.3
+                initial.z shouldBe 1.75
+                initial.attachmentVehicleId shouldBe null
+                first.passengers shouldBe emptyMap()
+                display.attachmentPlayer shouldBe carrier
+                display.frame() shouldBe null
+
+                // Neither the carrier's look nor the observer's camera-facing snapshot rotates the world offset.
+                listOf(-1.0, 0.0, 1.0).forEach { pitchDirection ->
+                    val camera = PacketDisplayView(1.0, 65.62, 1.0, 0.0, pitchDirection, 1.0)
+                    audience.values = listOf(initialCarrier.copy(view = camera), viewer(observer, world.uid).copy(view = camera))
+                    displays.refreshFully()
+                    transport.forPlayer(observer).last().frames.single() shouldBe initial
+                }
+
+                val movedCarrier = initialCarrier.copy(x = 3.0, y = 65.0, z = 2.0, height = 1.5)
+                audience.values = listOf(movedCarrier, viewer(observer, world.uid))
+                displays.refreshFully()
+                val moving = transport.forPlayer(observer).last().frames.single()
+                moving.entityId shouldBe initial.entityId
+                moving.uuid shouldBe initial.uuid
+                moving.x shouldBe 3.25
+                moving.y shouldBe 67.0
+                moving.z shouldBe 2.75
+                moving.attachmentVehicleId shouldBe null
+
+                audience.values = listOf(movedCarrier.copy(trackedBy = emptySet()), viewer(observer, world.uid))
+                displays.refreshFully()
+                transport.forPlayer(observer).last().frames shouldBe emptyList()
+                audience.values = listOf(movedCarrier, viewer(observer, world.uid))
+
+                val followingRevision = displays.visibilityRevision
+                display.attachTo(carrier)
+                displays.visibilityRevision shouldBe followingRevision + 1
+                displays.refreshFully()
+                val mounted = transport.forPlayer(observer).last()
+                mounted.passengers shouldBe mapOf(carrier.entityId to listOf(display.entityId))
+                mounted.frames.single().entityId shouldBe initial.entityId
+                mounted.frames.single().y shouldBe 66.5
+
+                display.followPlayerHead(carrier, Vector(0.0, 0.5, 0.0))
+                displays.refreshFully()
+                transport.forPlayer(observer).last().passengers shouldBe emptyMap()
+                transport.forPlayer(observer).last().frames.single().y shouldBe 67.0
+                shouldThrow<IllegalArgumentException> {
+                    display.followPlayerHead(carrier, Vector(0.0, Double.NaN, 0.0))
+                }
+
+                display.detach()
+                displays.refreshFully()
+                val detached = transport.forPlayer(observer).last().frames.single()
+                detached.entityId shouldBe initial.entityId
+                detached.x shouldBe 8.0
+                detached.y shouldBe 68.0
+                detached.z shouldBe 8.0
+                detached.attachmentVehicleId shouldBe null
+                display.attachmentPlayer shouldBe null
+                display.followPlayerHead(carrier, Vector())
+                display.remove()
+                displays.refreshFully()
+                display.attachmentPlayer shouldBe null
+                transport.forPlayer(observer).last().frames shouldBe emptyList()
+                shouldThrow<IllegalStateException> { display.followPlayerHead(carrier, Vector()) }
+            }
+        }
+    }
+
     "mounted Citizens player carriers are tracked without becoming online viewers or reading chunk loaders" {
         failOnUnsupportedMockBukkitOperation {
             MockBukkitTestRuntime.open().use { paper ->

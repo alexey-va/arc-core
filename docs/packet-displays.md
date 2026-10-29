@@ -99,6 +99,23 @@ passenger link is admitted; it does not choose or alter the consumer's local pos
 Paper describes display passengers as appearing above the vehicle's head
 ([Paper display entity docs](https://docs.papermc.io/paper/dev/display-entities/)).
 
+`PacketDisplay.followPlayerHead(player, worldOffset)` is the opt-in world-anchor
+alternative for camera-facing rows such as nameplates. Each frame uses player
+feet plus the captured pose/scale-aware native height plus a copied finite
+world-axis offset. This anchor is applied before billboard rotation; the existing
+`transformation` remains display-local. Tracking, player validity, visibility,
+chunk/connection replay and cleanup use the same attached-player lifecycle.
+There is no passenger link: movement sends normal world-position deltas with the
+same entity ID. `attachTo(player)` switches back to passenger placement, and
+`detach()` returns to the last `teleport` position in either mode.
+
+Following uses the owner's normal tick capture and shared packet budget, not
+client passenger prediction. Set `teleportDuration = 1` for one-tick position
+interpolation; the nameplate factory's `atNativeNameTag` method does this and
+supplies `Vector(0.0, 0.5, 0.0)`. Capture or admission pressure can delay a frame.
+Source/frame checks prove the world-anchor contract, not native-client motion
+smoothness or appearance.
+
 `attachTo(carrier: LivingEntity, passengerOrigin: Vector)` extends the same queue to
 tracked native mobs. Supply the current world-axis passenger-origin offset from
 carrier feet; the copied value places initial spawn correctly before a budgeted

@@ -24,6 +24,8 @@ data class PaperNameplateOptions(
     val hideInvisibleTargets: Boolean = true,
     val hideSpectatorTargets: Boolean = true,
     val requireLineOfSight: Boolean = true,
+    /** Explicit text lighting; null retains the world's light map. */
+    val brightness: Display.Brightness? = null,
 ) {
     init {
         require(reconcilePeriodTicks in 1L..20L) {
@@ -96,6 +98,7 @@ class NativePaperNameplateDisplayFactory(
                 Quaternionf(),
             )
             entity.isShadowed = options.shadowed
+            entity.brightness = options.brightness
             entity.isSeeThrough = false
             entity.isDefaultBackground = false
             entity.backgroundColor = options.backgroundColor
