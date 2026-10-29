@@ -985,7 +985,7 @@ class PacketDisplayTransportTest : FreeSpec({
 
 })
 
-private class RecordingPacketBackend(
+internal class RecordingPacketBackend(
     var failOnWrite: Int? = null,
 ) : PacketDisplayChannelBackend {
     val tasks = ArrayDeque<() -> Unit>()

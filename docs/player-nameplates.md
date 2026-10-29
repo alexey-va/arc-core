@@ -134,6 +134,15 @@ attachment cleanup. The normal nameplate visibility policy still decides which
 viewers may see each row. Invalid players and changed world/entity generations
 invalidate the handle so reconciliation can recreate it.
 
+Use `PacketPaperNameplateDisplayFactory.attachedIdentity(displays, options)` for
+a complete replacement identity plate. It retains the native passenger anchor
+and stays current during AFK/rear-view cosmetic pauses. The client moves the
+plate with the player's rendered movement and stance, without independent
+world-position packets that can lead or trail the player. `verticalOffset` is
+camera-up from the player's head, so a positive offset keeps the complete
+billboard above the projected head at oblique viewing angles. Native passengers
+and other display owners retain their links through the shared passenger service.
+
 Use `PacketPaperNameplateDisplayFactory.atNativeNameTag(displays, options)` for
 rows aligned with the native 1.21.11 name tag. It follows the player's feet plus
 their current pose/scale-aware height plus `0.5` blocks on the world's Y axis,

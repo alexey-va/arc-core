@@ -25,8 +25,20 @@ class PacketPaperNameplateDisplayFactory(
     private val options: PaperNameplateOptions,
 ) : PaperNameplateDisplayFactory {
     private var nativeNameTagAnchor = false
+    private var pauseWhenNotObserved = true
 
     companion object {
+        /**
+         * Keeps a complete identity plate on the player's native passenger anchor. Movement and
+         * pose changes follow the client-side player without independent world-position updates.
+         * [PaperNameplateOptions.verticalOffset] is camera-up from the current head under CENTER
+         * billboarding. Identity content stays current during AFK/rear-view cosmetic pauses;
+         * ordinary privacy, tracking, packet admission and passenger cleanup still apply.
+         */
+        @JvmStatic
+        fun attachedIdentity(owner: PaperPacketDisplays, options: PaperNameplateOptions): PacketPaperNameplateDisplayFactory =
+            PacketPaperNameplateDisplayFactory(owner, options).also { it.pauseWhenNotObserved = false }
+
         /**
          * Anchors at the 1.21.11 native name-tag point: current player head plus 0.5 world blocks.
          * [PaperNameplateOptions.verticalOffset] is then a local screen-plane row offset under
@@ -36,7 +48,10 @@ class PacketPaperNameplateDisplayFactory(
          */
         @JvmStatic
         fun atNativeNameTag(owner: PaperPacketDisplays, options: PaperNameplateOptions): PacketPaperNameplateDisplayFactory =
-            PacketPaperNameplateDisplayFactory(owner, options).also { it.nativeNameTagAnchor = true }
+            PacketPaperNameplateDisplayFactory(owner, options).also {
+                it.nativeNameTagAnchor = true
+                it.pauseWhenNotObserved = false
+            }
     }
 
     override fun create(target: Player, content: Component): PaperNameplateDisplay {
@@ -57,8 +72,8 @@ class PacketPaperNameplateDisplayFactory(
         display.isDefaultBackground = false
         display.backgroundColor = options.backgroundColor
         display.isVisibleByDefault = false
+        display.pauseWhenNotObserved = pauseWhenNotObserved
         if (nativeNameTagAnchor) {
-            display.pauseWhenNotObserved = false
             display.teleportDuration = 1
             display.followPlayerHead(target, Vector(0.0, 0.5, 0.0))
         } else {
