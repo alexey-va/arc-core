@@ -738,6 +738,172 @@ class PacketDisplayTransportTest : FreeSpec({
         backend.writes.filterIsInstance<WrapperPlayServerSetPassengers>().single().passengers.toList() shouldBe listOf(11)
     }
 
+    "same-generation detach admits passenger removal and pose together without respawning" {
+        SharedDisplayPassengers().use { service ->
+            val channel = Any()
+            val state = PacketDisplayPassengerState(service.open(channel))
+            PacketDisplayPassengerState(service.open(channel)).setMounted(77, listOf(200))
+            val backend = RecordingPacketBackend()
+            val connection = PacketDisplayAttachment(channel, Logger.getAnonymousLogger(), backend, state)
+            val detached = frame(x = 4.0)
+            val mounted = detached.copy(x = 1.0, y = 65.8, attachmentVehicleId = 77,
+                metadata = detached.metadata.copy(transform = DisplayTransform(translation = DisplayVector(0f, .35f, 0f))))
+            connection.submit(listOf(mounted), desiredPassengers = mapOf(77 to listOf(mounted.entityId)),
+                nativePassengerSnapshots = mapOf(77 to listOf(11)))
+            backend.runAll()
+            backend.clear()
+
+            backend.ordinaryTransactions = 0
+            connection.submit(listOf(detached), nativePassengerSnapshots = mapOf(77 to listOf(11)))
+            backend.tasks.removeFirst().invoke()
+            backend.writes shouldBe emptyList()
+            backend.flushes shouldBe 0
+            state.observeNative(77, intArrayOf(11)).toList() shouldBe listOf(11, mounted.entityId, 200)
+            backend.tasks.size shouldBe 1
+
+            backend.ordinaryTransactions = 1
+            backend.tasks.removeFirst().invoke()
+            backend.writes.map { it::class.java.simpleName } shouldBe listOf(
+                "WrapperPlayServerSetPassengers", "WrapperPlayServerEntityMetadata", "WrapperPlayServerEntityTeleport",
+            )
+            backend.writes.filterIsInstance<WrapperPlayServerSetPassengers>().single().passengers.toList() shouldBe listOf(11, 200)
+            backend.writes.filterIsInstance<WrapperPlayServerEntityMetadata>().single().let {
+                it.entityId shouldBe detached.entityId
+                (it.metadataValue(11) as com.github.retrooper.packetevents.util.Vector3f).y shouldBe 0f
+            }
+            backend.writes.filterIsInstance<WrapperPlayServerEntityTeleport>().single().let {
+                it.entityId shouldBe detached.entityId
+                it.position.x shouldBe detached.x
+                it.position.y shouldBe detached.y
+            }
+            backend.ordinaryTransactions shouldBe 0
+            backend.flushes shouldBe 1
+            backend.tasks.size shouldBe 0
+            state.observeNative(77, intArrayOf(11)).toList() shouldBe listOf(11, 200)
+            java.lang.ref.Reference.reachabilityFence(channel)
+        }
+    }
+
+    "same-generation mount admits pose and passenger addition together without respawning" {
+        SharedDisplayPassengers().use { service ->
+            val channel = Any()
+            val state = PacketDisplayPassengerState(service.open(channel))
+            PacketDisplayPassengerState(service.open(channel)).setMounted(77, listOf(200))
+            val backend = RecordingPacketBackend()
+            val connection = PacketDisplayAttachment(channel, Logger.getAnonymousLogger(), backend, state)
+            val detached = frame(x = 4.0)
+            val mounted = detached.copy(x = 1.0, y = 65.8, attachmentVehicleId = 77,
+                metadata = detached.metadata.copy(transform = DisplayTransform(translation = DisplayVector(0f, .35f, 0f))))
+            connection.submit(listOf(detached), nativePassengerSnapshots = mapOf(77 to listOf(11)))
+            backend.runAll()
+            backend.clear()
+
+            backend.ordinaryTransactions = 0
+            connection.submit(listOf(mounted), desiredPassengers = mapOf(77 to listOf(mounted.entityId)),
+                nativePassengerSnapshots = mapOf(77 to listOf(11)))
+            backend.tasks.removeFirst().invoke()
+            backend.writes shouldBe emptyList()
+            backend.flushes shouldBe 0
+            state.observeNative(77, intArrayOf(11)).toList() shouldBe listOf(11, 200)
+            backend.tasks.size shouldBe 1
+
+            backend.ordinaryTransactions = 1
+            backend.tasks.removeFirst().invoke()
+            backend.writes.map { it::class.java.simpleName } shouldBe listOf(
+                "WrapperPlayServerEntityMetadata", "WrapperPlayServerEntityTeleport", "WrapperPlayServerSetPassengers",
+            )
+            backend.writes.filterIsInstance<WrapperPlayServerEntityMetadata>().single().let {
+                it.entityId shouldBe mounted.entityId
+                (it.metadataValue(11) as com.github.retrooper.packetevents.util.Vector3f).y shouldBe .35f
+            }
+            backend.writes.filterIsInstance<WrapperPlayServerEntityTeleport>().single().let {
+                it.entityId shouldBe mounted.entityId
+                it.position.x shouldBe mounted.x
+                it.position.y shouldBe mounted.y
+            }
+            backend.writes.filterIsInstance<WrapperPlayServerSetPassengers>().single().passengers.toList() shouldBe
+                listOf(11, 200, mounted.entityId)
+            backend.ordinaryTransactions shouldBe 0
+            backend.flushes shouldBe 1
+            backend.tasks.size shouldBe 0
+            state.observeNative(77, intArrayOf(11)).toList() shouldBe listOf(11, mounted.entityId, 200)
+            java.lang.ref.Reference.reachabilityFence(channel)
+        }
+    }
+
+    "a failed handoff flush retains possible links until cleanup without erasing another owner" {
+        SharedDisplayPassengers().use { service ->
+            val channel = Any()
+            val state = PacketDisplayPassengerState(service.open(channel))
+            val otherState = PacketDisplayPassengerState(service.open(channel)).apply { setMounted(77, listOf(200)) }
+            val backend = RecordingPacketBackend()
+            val connection = PacketDisplayAttachment(channel, CapturedLogs().logger, backend, state)
+            val detached = frame(x = 4.0)
+            connection.submit(listOf(detached), nativePassengerSnapshots = mapOf(77 to listOf(11)))
+            backend.runAll()
+            backend.clear()
+
+            val mounted = detached.copy(x = 1.0, attachmentVehicleId = 77,
+                metadata = detached.metadata.copy(transform = DisplayTransform(translation = DisplayVector(0f, .35f, 0f))))
+            backend.failOnFlush = 1 // Mount buffers may have reached the channel before the flush failed.
+            connection.submit(listOf(mounted), desiredPassengers = mapOf(77 to listOf(mounted.entityId)))
+            backend.runAll()
+            backend.writes.filterIsInstance<WrapperPlayServerSetPassengers>().single().passengers.toList() shouldBe
+                listOf(11, 200, mounted.entityId)
+            state.observeNative(77, intArrayOf(12)).toList() shouldBe listOf(12, mounted.entityId, 200)
+
+            backend.clear()
+            backend.failOnFlush = null
+            connection.deferReplacementUntilCleanup(channel) shouldBe true
+            backend.runAll()
+            backend.writes.filterIsInstance<WrapperPlayServerSetPassengers>().single().passengers.toList() shouldBe listOf(12, 200)
+            backend.writes.filterIsInstance<WrapperPlayServerDestroyEntities>().single().entityIds.toList() shouldBe listOf(mounted.entityId)
+            otherState.observeNative(77, intArrayOf(12)).toList() shouldBe listOf(12, 200)
+            java.lang.ref.Reference.reachabilityFence(channel)
+        }
+    }
+
+    "a denied handoff preserves its pose and relation while unrelated privacy removal still drains" {
+        SharedDisplayPassengers().use { service ->
+            val channel = Any()
+            val state = PacketDisplayPassengerState(service.open(channel))
+            PacketDisplayPassengerState(service.open(channel)).setMounted(77, listOf(200))
+            val backend = RecordingPacketBackend()
+            val connection = PacketDisplayAttachment(channel, Logger.getAnonymousLogger(), backend, state)
+            val detached = frame(x = 4.0)
+            val mounted = detached.copy(x = 1.0, attachmentVehicleId = 77,
+                metadata = detached.metadata.copy(transform = DisplayTransform(translation = DisplayVector(0f, .35f, 0f))))
+            val privateDisplay = frame(101).copy(attachmentVehicleId = 77)
+            connection.submit(listOf(mounted, privateDisplay),
+                desiredPassengers = mapOf(77 to listOf(mounted.entityId, privateDisplay.entityId)),
+                nativePassengerSnapshots = mapOf(77 to listOf(11)))
+            backend.runAll()
+            backend.clear()
+
+            backend.ordinaryTransactions = 0
+            connection.submit(listOf(detached))
+            backend.tasks.removeFirst().invoke()
+            backend.writes.map { it::class.java.simpleName } shouldBe listOf(
+                "WrapperPlayServerSetPassengers", "WrapperPlayServerDestroyEntities",
+            )
+            backend.writes.filterIsInstance<WrapperPlayServerSetPassengers>().single().passengers.toList() shouldBe
+                listOf(11, 200, mounted.entityId)
+            backend.writes.filterIsInstance<WrapperPlayServerDestroyEntities>().single().entityIds.toList() shouldBe
+                listOf(privateDisplay.entityId)
+            state.observeNative(77, intArrayOf(11)).toList() shouldBe listOf(11, mounted.entityId, 200)
+            backend.tasks.size shouldBe 1
+
+            backend.ordinaryTransactions = 1
+            backend.tasks.removeFirst().invoke()
+            backend.writes.filterIsInstance<WrapperPlayServerDestroyEntities>().size shouldBe 1
+            backend.writes.filterIsInstance<WrapperPlayServerSpawnEntity>().size shouldBe 0
+            backend.writes.filterIsInstance<WrapperPlayServerEntityTeleport>().single().entityId shouldBe detached.entityId
+            state.observeNative(77, intArrayOf(11)).toList() shouldBe listOf(11, 200)
+            backend.tasks.size shouldBe 0
+            java.lang.ref.Reference.reachabilityFence(channel)
+        }
+    }
+
     "delayed mount admission keeps the initial display at its captured passenger origin" {
         val backend = RecordingPacketBackend().apply { ordinaryTransactions = 1 }
         val connection = PacketDisplayAttachment(Any(), Logger.getAnonymousLogger(), backend)

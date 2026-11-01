@@ -527,6 +527,12 @@ internal class PacketDisplayAttachment internal constructor(
             }
             if (replaced || reset) destroys += id
         }
+        val handoffFrames = desiredFrames.values.filter { current ->
+            val old = batch.previous[current.entityId]
+            old != null && current.entityId !in destroys && sameGeneration(old, current) &&
+                old.attachmentVehicleId != current.attachmentVehicleId
+        }
+        val handoffIds = handoffFrames.mapTo(hashSetOf(), PacketDisplayFrame::entityId)
         var wrote = false
         var failed = false
         try {
@@ -534,7 +540,9 @@ internal class PacketDisplayAttachment internal constructor(
             (submittedPassengers.keys + forceDetachVehicles).forEach { vehicleId ->
                 val oldPassengers = submittedPassengers[vehicleId].orEmpty()
                 val wanted = work.desiredPassengers[vehicleId].orEmpty()
-                val retained = if (vehicleId in resetVehicles) emptyList() else oldPassengers.filter(wanted::contains)
+                val retained = oldPassengers.filter { id ->
+                    id in handoffIds || vehicleId !in resetVehicles && id in wanted
+                }
                 if (oldPassengers != retained && (oldPassengers.isNotEmpty() || retained.isNotEmpty())) {
                     detachUpdates[vehicleId] = retained
                 }
@@ -553,9 +561,34 @@ internal class PacketDisplayAttachment internal constructor(
                 destroys.forEach { id -> batch.previous[id]?.attachmentLease?.forgetChild(id) }
                 suspended.removeAll(destroys)
             }
+            handoffFrames.forEach { current ->
+                val id = current.entityId
+                val old = acknowledged.getValue(id)
+                val passengerUpdates = linkedMapOf<Int, List<Int>>()
+                old.attachmentVehicleId?.let { vehicleId ->
+                    val passengers = submittedPassengers[vehicleId].orEmpty()
+                    if (id in passengers) passengerUpdates[vehicleId] = passengers - id
+                }
+                current.attachmentVehicleId?.let { vehicleId ->
+                    if (id in work.desiredPassengers[vehicleId].orEmpty()) {
+                        passengerUpdates[vehicleId] = (submittedPassengers[vehicleId].orEmpty() + id).distinct().sorted()
+                    }
+                }
+                val posePackets = buildList {
+                    val values = metadataDelta(old, current)
+                    if (values.isNotEmpty()) add(metadataPacket(current, values))
+                    if (positionChanged(old, current)) add(teleportPacket(current))
+                }
+                // A retained entity changes relation and pose in one budget admission.
+                // Privacy cleanup above preserves its old link until the whole handoff is admitted.
+                if (!writePassengerSets(channel, passengerUpdates, work.nativePassengerSnapshots, cleanup = false,
+                    posePackets = posePackets, detachVehicles = setOfNotNull(old.attachmentVehicleId))) return work
+                acknowledged[id] = current
+                suspended.remove(id)
+            }
             // Admit each entity's spawn+metadata/update atomically. Large scenes
             // can progressively appear even when their total size exceeds a burst.
-            val frames = desiredFrames.values.toList()
+            val frames = desiredFrames.values.filterNot { it.entityId in handoffIds }
             val start = frames.indexOfFirst { it.entityId == resumeEntityId }.coerceAtLeast(0)
             for (offset in frames.indices) {
                 val desired = frames[(start + offset) % frames.size]
@@ -656,21 +689,24 @@ internal class PacketDisplayAttachment internal constructor(
         desired: Map<Int, List<Int>>,
         fallbackNative: Map<Int, List<Int>>,
         cleanup: Boolean,
+        posePackets: List<PacketWrapper<*>> = emptyList(),
+        detachVehicles: Set<Int> = emptySet(),
     ): Boolean {
-        if (desired.isEmpty()) return true
-        if (passengerState.isDisconnected()) {
-            desired.keys.forEach { vehicleId -> submittedPassengers = submittedPassengers - vehicleId }
-            return true
-        }
-        val liveDesired = desired.filterKeys { !passengerState.isDead(it) }
+        if (desired.isEmpty() && posePackets.isEmpty()) return true
+        val liveDesired = desired.filterKeys { !passengerState.isDisconnected() && !passengerState.isDead(it) }
         val deadDesired = desired.keys - liveDesired.keys
         deadDesired.forEach { vehicleId ->
             submittedPassengers = submittedPassengers - vehicleId
         }
-        if (liveDesired.isEmpty()) return true
-        val packets = liveDesired.map { (vehicleId, fakePassengers) ->
+        if (liveDesired.isEmpty() && posePackets.isEmpty()) return true
+        val passengerPackets = liveDesired.map { (vehicleId, fakePassengers) ->
             val native = passengerState.nativePassengers(vehicleId, fallbackNative[vehicleId].orEmpty())
             WrapperPlayServerSetPassengers(vehicleId, (native + fakePassengers).distinct().toIntArray())
+        }
+        val packets = buildList {
+            addAll(passengerPackets.filter { it.entityId in detachVehicles })
+            addAll(posePackets)
+            addAll(passengerPackets.filterNot { it.entityId in detachVehicles })
         }
         val priorPassengers = liveDesired.keys.associateWith { submittedPassengers[it].orEmpty() }
         liveDesired.keys.forEach { vehicleId ->

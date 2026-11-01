@@ -112,6 +112,14 @@ passenger link is admitted; it does not choose or alter the consumer's local pos
 Paper describes display passengers as appearing above the vehicle's head
 ([Paper display entity docs](https://docs.papermc.io/paper/dev/display-entities/)).
 
+For an existing entity, an attachment change and its new pose share one ordinary
+budget admission: detach, metadata/teleport, then mount. A denied admission keeps
+the previous relation and pose together; unrelated privacy removals still use
+cleanup. The handoff is flushed once after all its packets have been written.
+Initial spawn and rate-limited first mounting retain their existing behavior.
+This orders the server's admitted batch; it does not establish client-tick
+atomicity, acknowledgement or visual acceptance.
+
 `PacketDisplay.followPlayerHead(player, worldOffset)` is the opt-in world-anchor
 alternative for camera-facing rows such as nameplates. Each frame uses player
 feet plus the captured pose/scale-aware native height plus a copied finite
