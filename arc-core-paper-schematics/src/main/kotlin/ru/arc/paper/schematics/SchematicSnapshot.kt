@@ -1,8 +1,6 @@
 package ru.arc.paper.schematics
 
-import com.sk89q.worldedit.world.block.BlockState
-import org.enginehub.linbus.tree.LinCompoundTag
-import org.enginehub.linbus.tree.LinRootEntry
+import net.kyori.adventure.nbt.CompoundBinaryTag
 import ru.arc.paper.api.ArcSchematicBlock
 import ru.arc.paper.api.ArcSchematicPoint
 import ru.arc.paper.api.ArcSchematicSnapshot
@@ -14,7 +12,7 @@ import java.util.Collections
 import java.util.HexFormat
 import java.util.function.BiConsumer
 
-internal data class SchematicPaletteEntry(val text: String, val air: Boolean, val barrier: Boolean, val native: BlockState)
+internal data class SchematicPaletteEntry(val text: String, val air: Boolean, val barrier: Boolean)
 
 /** Arrays and NBT are exclusively owned by this instance and never exposed to consumers. */
 internal class SchematicSnapshot(
@@ -27,7 +25,8 @@ internal class SchematicSnapshot(
     override val entityCount: Int,
     val palette: List<SchematicPaletteEntry>,
     private val indices: IntArray,
-    private val blockEntities: Map<Int, LinCompoundTag>,
+    private val blockEntities: Map<Int, CompoundBinaryTag>,
+    val dataVersion: Int = -1,
 ) : ArcSchematicSnapshot {
     override val sizeX = Math.addExact(Math.subtractExact(maximum.x, minimum.x), 1)
     override val sizeY = Math.addExact(Math.subtractExact(maximum.y, minimum.y), 1)
@@ -52,7 +51,7 @@ internal class SchematicSnapshot(
         contentSha256 = HexFormat.of().formatHex(digest.digest())
         // Conservative retained-data weight, not a claim of exact JVM heap usage.
         retainedBytes = 256L + indices.size * 4L + palette.sumOf { 128L + it.text.length * 2L } +
-            blockEntities.values.sumOf { 256L + LinRootEntry("", it).writeToArray().size * 8L }
+            blockEntities.values.sumOf { 256L + schematicNbtBytes(it) * 8L }
     }
 
     private val view: List<ArcSchematicBlock> = Collections.unmodifiableList(object : AbstractList<ArcSchematicBlock>() {
@@ -72,7 +71,11 @@ internal class SchematicSnapshot(
 
     fun index(x: Int, y: Int, z: Int): Int = ((y - minimum.y) * sizeX + x - minimum.x) * sizeZ + z - minimum.z
     fun paletteIndex(index: Int): Int = indices[index]
-    fun nbt(index: Int): LinCompoundTag? = blockEntities[index]
+    fun nbt(index: Int): CompoundBinaryTag? = blockEntities[index]
+    fun prepareBlockEntities(): Map<Int, PreparedSchematicBlockEntity> = blockEntities.mapValues { (_, tag) ->
+        if (Thread.currentThread().isInterrupted) failure(ru.arc.paper.api.ArcSchematicFailure.CLOSED, "Schematic preparation interrupted")
+        schematicBlockEntityPayload(dataVersion, tag)
+    }
     fun entry(index: Int): SchematicPaletteEntry = palette[indices[index]]
 
     fun position(index: Int): ArcSchematicPoint = ArcSchematicPoint(
@@ -96,7 +99,7 @@ internal class SchematicSnapshot(
         val height = maximum.y - minimum.y + 1
         val length = maximum.z - minimum.z + 1
         val cells = IntArray(Math.multiplyExact(Math.multiplyExact(width, height), length))
-        val nbt = HashMap<Int, LinCompoundTag>()
+        val nbt = HashMap<Int, CompoundBinaryTag>()
         var target = 0
         for (y in minimum.y..maximum.y) for (x in minimum.x..maximum.x) for (z in minimum.z..maximum.z) {
             if (target % 16_384 == 0) checkCurrent()
@@ -106,13 +109,13 @@ internal class SchematicSnapshot(
             target++
         }
         checkCurrent()
-        return SchematicSnapshot(producer, minimum, maximum, origin, fileSha256, hasBiomes, entityCount, palette, cells, nbt)
+        return SchematicSnapshot(producer, minimum, maximum, origin, fileSha256, hasBiomes, entityCount, palette, cells, nbt, dataVersion)
     }
 
     fun inspectBlockEntityNbt(visitor: BiConsumer<ArcSchematicPoint, String>, checkCurrent: () -> Unit) {
         blockEntities.forEach { (index, tag) ->
             checkCurrent()
-            visitor.accept(position(index), tag.toString())
+            visitor.accept(position(index), schematicNbtInspection(tag))
         }
         checkCurrent()
     }
@@ -125,7 +128,7 @@ internal class SchematicSnapshot(
         val width = max.x - min.x + 1
         val length = max.z - min.z + 1
         val cells = IntArray(indices.size)
-        val nbt = HashMap<Int, LinCompoundTag>(blockEntities.size)
+        val nbt = HashMap<Int, CompoundBinaryTag>(blockEntities.size)
         for (index in indices.indices) {
             if (index % 16_384 == 0 && Thread.currentThread().isInterrupted) failure(ru.arc.paper.api.ArcSchematicFailure.CLOSED, "Schematic transform interrupted")
             val position = transformPoint(subtract(position(index), origin), transform)
@@ -133,7 +136,7 @@ internal class SchematicSnapshot(
             cells[target] = indices[index]
             blockEntities[index]?.let { nbt[target] = it }
         }
-        return SchematicSnapshot(producer, min, max, ArcSchematicPoint(0, 0, 0), fileSha256, hasBiomes, entityCount, transformedPalette, cells, nbt)
+        return SchematicSnapshot(producer, min, max, ArcSchematicPoint(0, 0, 0), fileSha256, hasBiomes, entityCount, transformedPalette, cells, nbt, dataVersion)
     }
 }
 

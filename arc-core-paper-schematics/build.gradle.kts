@@ -6,24 +6,15 @@ plugins {
 description = "ARC Core Paper Schematics — bounded async schematic loading, transforms and native block paste"
 val paperApiVersion: String by project
 
-repositories { maven("https://maven.enginehub.org/repo/") }
-
 dependencies {
     api(project(":arc-core-paper"))
     compileOnlyApi(project(":arc-core-paper-api"))
     compileOnly("io.papermc.paper:paper-api:$paperApiVersion")
-    compileOnly("com.sk89q.worldedit:worldedit-bukkit:7.3.18")
+    // Reuse the NBT library already shipped by arc-core-paper.
+    implementation("net.kyori:adventure-nbt:4.26.1")
     testImplementation(project(":arc-core-paper-api"))
     testImplementation(project(":arc-core-paper-testing"))
-    testImplementation("com.sk89q.worldedit:worldedit-bukkit:7.3.18")
     testImplementation("io.mockk:mockk:1.14.7")
-}
-
-// Run the same format regression against a descriptor-resolved live WE/FAWE JAR.
-providers.gradleProperty("worldEditTestJar").orNull?.let { runtimeJar ->
-    tasks.test {
-        classpath = files(runtimeJar) + classpath.filter { !it.name.startsWith("worldedit-") }
-    }
 }
 
 publishing {

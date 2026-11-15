@@ -1,11 +1,10 @@
 package ru.arc.paper.schematics
 
-import com.sk89q.worldedit.world.block.BlockState
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FreeSpec
 import io.kotest.matchers.shouldBe
 import io.mockk.mockk
-import org.enginehub.linbus.tree.LinCompoundTag
+import net.kyori.adventure.nbt.CompoundBinaryTag
 import ru.arc.core.TestTaskScheduler
 import ru.arc.paper.api.ArcSchematicCacheSettings
 import ru.arc.paper.api.ArcSchematicException
@@ -110,16 +109,15 @@ class SchematicRuntimeTest : FreeSpec({
     }
 
     "snapshot retains air, barriers, exact historical digest and immutable indexed access" {
-        val native = mockk<BlockState>()
         val snapshot = SchematicSnapshot(
             Any(), ArcSchematicPoint(10, 20, 30), ArcSchematicPoint(11, 20, 31), ArcSchematicPoint(11, 20, 30),
             "a".repeat(64), false, 0,
             listOf(
-                SchematicPaletteEntry("minecraft:stone", false, false, native),
-                SchematicPaletteEntry("minecraft:air", true, false, native),
-                SchematicPaletteEntry("minecraft:barrier", false, true, native),
+                SchematicPaletteEntry("minecraft:stone", false, false),
+                SchematicPaletteEntry("minecraft:air", true, false),
+                SchematicPaletteEntry("minecraft:barrier", false, true),
             ),
-            intArrayOf(0, 1, 2, 0), mapOf(0 to LinCompoundTag.builder().putString("id", "minecraft:chest").putString("CustomName", "retained").build()),
+            intArrayOf(0, 1, 2, 0), mapOf(0 to CompoundBinaryTag.builder().putString("id", "minecraft:chest").putString("CustomName", "retained").build()),
         )
         snapshot.volume shouldBe 4
         snapshot.nonBarrierCount shouldBe 3
@@ -135,17 +133,16 @@ class SchematicRuntimeTest : FreeSpec({
     }
 
     "crop keeps absolute coordinates origin air and only the exact retained block entities" {
-        val native = mockk<BlockState>()
         val minimum = ArcSchematicPoint(-2, 5, 10)
         val maximum = ArcSchematicPoint(1, 6, 12)
         val origin = ArcSchematicPoint(-4, 7, 9)
-        val retained = LinCompoundTag.builder().putString("id", "minecraft:chest").putString("CustomName", "retained").build()
-        val discarded = LinCompoundTag.builder().putString("Command", "say excluded").build()
+        val retained = CompoundBinaryTag.builder().putString("id", "minecraft:chest").putString("CustomName", "retained").build()
+        val discarded = CompoundBinaryTag.builder().putString("Command", "say excluded").build()
         val source = SchematicSnapshot(Any(), minimum, maximum, origin, "a".repeat(64), true, 3,
             listOf(
-                SchematicPaletteEntry("minecraft:stone", false, false, native),
-                SchematicPaletteEntry("minecraft:air", true, false, native),
-                SchematicPaletteEntry("minecraft:barrier", false, true, native),
+                SchematicPaletteEntry("minecraft:stone", false, false),
+                SchematicPaletteEntry("minecraft:air", true, false),
+                SchematicPaletteEntry("minecraft:barrier", false, true),
             ), IntArray(24) { it % 3 }, mapOf(0 to discarded, 4 to retained, 23 to retained))
         var checks = 0
         val crop = source.cropped(ArcSchematicPoint(-1, 5, 11), ArcSchematicPoint(1, 6, 12)) { checks++ }
@@ -165,7 +162,7 @@ class SchematicRuntimeTest : FreeSpec({
         crop.nbt(11) shouldBe retained
         val inspected = linkedMapOf<ArcSchematicPoint, String>()
         crop.inspectBlockEntityNbt(java.util.function.BiConsumer { point, text -> inspected[point] = text }) {}
-        inspected shouldBe mapOf(ArcSchematicPoint(-1, 5, 11) to retained.toString(), maximum to retained.toString())
+        inspected shouldBe mapOf(ArcSchematicPoint(-1, 5, 11) to schematicNbtInspection(retained), maximum to schematicNbtInspection(retained))
         (checks > 0) shouldBe true
         source.nbt(0) shouldBe discarded
         (crop.contentSha256 != source.contentSha256) shouldBe true
@@ -178,9 +175,9 @@ class SchematicRuntimeTest : FreeSpec({
         }
     }
 
-    "NBT inspection exposes the exact detached WorldEdit tag text on worker and rejects before dependent mutation" {
+    "NBT inspection exposes the historical detached tag spelling on worker and rejects before dependent mutation" {
         fixture(settings()) { root, scheduler, codec, service ->
-            val tag = LinCompoundTag.builder().putString("id", "minecraft:chest")
+            val tag = CompoundBinaryTag.builder().putString("id", "minecraft:chest")
                 .putString("CustomName", "safe").putString("Command", "say denied").build()
             codec.blockEntities = mapOf(0 to tag)
             val library = service.open("inspection", root)
@@ -197,7 +194,7 @@ class SchematicRuntimeTest : FreeSpec({
             }.thenRun { writes.incrementAndGet() }
             val failure = shouldThrow<java.util.concurrent.ExecutionException> { inspection.get(5, TimeUnit.SECONDS) }
             (failure.cause is IllegalArgumentException) shouldBe true
-            capturedText shouldBe tag.toString()
+            capturedText shouldBe schematicNbtInspection(tag)
             writes.get() shouldBe 0
             val crop = library.crop(load.join(), ArcSchematicPoint(0, 0, 0), ArcSchematicPoint(0, 0, 0)).get(5, TimeUnit.SECONDS)
             (crop as SchematicSnapshot).nbt(0) shouldBe tag
@@ -207,7 +204,7 @@ class SchematicRuntimeTest : FreeSpec({
 
     "crop and inspection reject foreign snapshots and lease close prevents late successful inspection" {
         fixture(settings()) { root, scheduler, codec, service ->
-            codec.blockEntities = mapOf(0 to LinCompoundTag.builder().putString("CustomName", "test").build())
+            codec.blockEntities = mapOf(0 to CompoundBinaryTag.builder().putString("CustomName", "test").build())
             val library = service.open("inspection-close", root)
             val load = library.load("one")
             pumpUntil(scheduler) { load.isDone }
@@ -480,14 +477,14 @@ private fun fixture(
 private class FakeCodec : SchematicCodec {
     val decodes = AtomicInteger()
     val threads = java.util.concurrent.CopyOnWriteArrayList<String>()
-    private val state = mockk<BlockState>()
-    var blockEntities: Map<Int, LinCompoundTag> = emptyMap()
+    private val state = SchematicState("minecraft:stone")
+    var blockEntities: Map<Int, CompoundBinaryTag> = emptyMap()
     override fun decode(bytes: SchematicBytes): DecodedSchematic {
         threads += Thread.currentThread().name
         decodes.incrementAndGet()
         return DecodedSchematic(ArcSchematicPoint(0, 0, 0), ArcSchematicPoint(0, 0, 0), ArcSchematicPoint(0, 0, 0), listOf(state), intArrayOf(0), blockEntities, false, 0)
     }
-    override fun canonicalize(state: BlockState) = SchematicPaletteEntry("minecraft:stone", false, false, state)
+    override fun canonicalize(state: SchematicState) = SchematicPaletteEntry("minecraft:stone", false, false)
     override fun transform(entry: SchematicPaletteEntry, transform: ArcSchematicTransform) = entry
 }
 

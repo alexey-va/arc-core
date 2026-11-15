@@ -1,12 +1,5 @@
 package ru.arc.paper.schematics
 
-import com.sk89q.worldedit.bukkit.BukkitAdapter
-import com.sk89q.worldedit.WorldEdit
-import com.sk89q.worldedit.extension.platform.Capability
-import com.sk89q.worldedit.math.BlockVector3
-import com.sk89q.worldedit.util.SideEffect
-import com.sk89q.worldedit.util.SideEffectSet
-import com.sk89q.worldedit.util.concurrency.LazyReference
 import org.bukkit.Bukkit
 import org.bukkit.World
 import org.bukkit.block.data.type.Fence
@@ -38,6 +31,7 @@ internal class NativeSchematicMutation private constructor(
     private var acceptedBlock: Consumer<ArcSchematicBlock>?,
     private val placementReady: BooleanSupplier?,
     private val intervalTicks: Int,
+    private val native: PaperSchematicBlocks,
 ) : SchematicMainThread.Work {
     val completion = CompletableFuture<ArcSchematicMutationResult>()
     private val lock = Any()
@@ -48,6 +42,8 @@ internal class NativeSchematicMutation private constructor(
     private var repairing = source == null
     private val pairStates = source?.palette?.map { SchematicBlockPairPolicy.describe(it.text) }
     private val placedCompanions = BitSet()
+    // Encode only detached NBT on the preparation worker; native binding is charged to writes.
+    private val blockEntities = source?.prepareBlockEntities().orEmpty()
     private val chunks: List<Pair<Int, Int>>
     private var chunkIndex = 0
     private val minimumY: Int
@@ -111,9 +107,8 @@ internal class NativeSchematicMutation private constructor(
             if (cells.isNotEmpty() && (minimumY < world.minHeight || maximumY >= world.maxHeight)) {
                 failure(ArcSchematicFailure.LIMIT_EXCEEDED, "Schematic target exceeds the world's build height")
             }
-            requireNativeSchematicMutationAdapter(
-                WorldEdit.getInstance().platformManager.queryCapability(Capability.WORLD_EDITING).supportedSideEffects,
-            )
+            if (source == null || options.repairConnections) native.requireRepair()
+            if (blockEntities.isNotEmpty()) native.requireBlockEntities()
             var consumed = 0
             // Validate all target chunks before the first write; never cause sync chunk generation.
             while (chunkIndex < chunks.size && consumed < budget) {
@@ -122,7 +117,6 @@ internal class NativeSchematicMutation private constructor(
                 consumed++
             }
             if (chunkIndex < chunks.size) return@synchronized consumed
-            val nativeWorld = BukkitAdapter.adapt(world)
             var acceptedUnit = false
             while (index < cells.size && consumed < budget) {
                 if (!repairing && placedCompanions[index]) {
@@ -146,7 +140,7 @@ internal class NativeSchematicMutation private constructor(
                     if (completion.isDone || cancelled) break
                 }
                 if (repairing) {
-                    repair(world, nativeWorld, cell)
+                    repair(world, cell)
                 } else if (ignored) {
                     skipped++
                 } else {
@@ -154,7 +148,7 @@ internal class NativeSchematicMutation private constructor(
                     val companion = companionIndex(snapshot, index)
                     if (companion == null) {
                         requirePermission(pos)
-                        write(nativeWorld, snapshot, index, accepted)
+                        write(world, snapshot, index, accepted)
                     } else {
                         val primary = if (checkNotNull(pairStates)[snapshot.paletteIndex(index)]!!.primary) index else companion
                         val secondary = if (primary == index) companion else index
@@ -165,8 +159,8 @@ internal class NativeSchematicMutation private constructor(
                             requirePermission(position)
                         }
                         // One native pair is indivisible: at most one block may exceed the remaining tick budget.
-                        write(nativeWorld, snapshot, primary, accepted)
-                        write(nativeWorld, snapshot, secondary, accepted)
+                        write(world, snapshot, primary, accepted)
+                        write(world, snapshot, secondary, accepted)
                         placedCompanions.set(companion)
                         consumed++
                     }
@@ -213,12 +207,8 @@ internal class NativeSchematicMutation private constructor(
             !(options.ignoreAir && cell.isAir) && !(options.ignoreBarriers && cell.isBarrier) }
     }
 
-    private fun write(nativeWorld: com.sk89q.worldedit.world.World, snapshot: SchematicSnapshot, index: Int, accepted: MutableList<ArcSchematicBlock>?) {
-        val pos = cells[index].position
-        val state = snapshot.entry(index).native
-        val nbt = snapshot.nbt(index)
-        val full = if (nbt == null) state.toBaseBlock() else state.toBaseBlock(LazyReference.computed(nbt))
-        if (nativeWorld.setBlock(BlockVector3.at(pos.x, pos.y, pos.z), full, WRITE_EFFECTS)) {
+    private fun write(world: World, snapshot: SchematicSnapshot, index: Int, accepted: MutableList<ArcSchematicBlock>?) {
+        if (native.write(world, cells[index].position, snapshot.entry(index).text, blockEntities[index])) {
             changed++
             accepted?.add(cells[index])
         } else skipped++
@@ -238,7 +228,7 @@ internal class NativeSchematicMutation private constructor(
         }
     }
 
-    private fun repair(world: World, nativeWorld: com.sk89q.worldedit.world.World, cell: ArcSchematicBlock) {
+    private fun repair(world: World, cell: ArcSchematicBlock) {
         if ((options.ignoreAir && cell.isAir) || (options.ignoreBarriers && cell.isBarrier)) return
         val pos = cell.position
         val block = world.getBlockAt(pos.x, pos.y, pos.z)
@@ -249,9 +239,8 @@ internal class NativeSchematicMutation private constructor(
             if (!world.isChunkLoaded(x, z)) failure(ArcSchematicFailure.WORLD_UNAVAILABLE, "Schematic repair neighbor chunk must already be loaded")
         }
         requirePermission(pos)
-        // VALIDATION calls native Block.updateFromNeighbourShapes at this position.
-        // NEIGHBORS/UPDATE stay off: no recursive physics outside the supplied scope.
-        if (nativeWorld.setBlock(BlockVector3.at(pos.x, pos.y, pos.z), BukkitAdapter.adapt(current), REPAIR_EFFECTS)) changed++ else skipped++
+        // Calculate only this cell, then write without recursive neighbour physics.
+        if (native.repair(block)) changed++ else skipped++
     }
 
     private fun requirePermission(position: ArcSchematicPoint) {
@@ -261,12 +250,6 @@ internal class NativeSchematicMutation private constructor(
     }
 
     companion object {
-        private val WRITE_EFFECTS = SideEffectSet.none()
-            .with(SideEffect.NETWORK, SideEffect.State.ON)
-            .with(SideEffect.LIGHTING, SideEffect.State.ON)
-            .with(SideEffect.POI_UPDATE, SideEffect.State.ON)
-        private val REPAIR_EFFECTS = WRITE_EFFECTS.with(SideEffect.VALIDATION, SideEffect.State.ON)
-
         fun paste(
             owner: String,
             snapshot: SchematicSnapshot,
@@ -275,6 +258,7 @@ internal class NativeSchematicMutation private constructor(
             acceptedBlock: Consumer<ArcSchematicBlock>? = null,
             ready: BooleanSupplier? = null,
             intervalTicks: Int = 0,
+            native: PaperSchematicBlocks = PaperSchematicBlocks(),
         ): NativeSchematicMutation {
             require(ready == null && intervalTicks == 0 || ready != null && intervalTicks >= 1) {
                 "Paced schematic paste requires readiness and an interval of at least one tick"
@@ -291,11 +275,11 @@ internal class NativeSchematicMutation private constructor(
                     ))
                 }
             }
-            return NativeSchematicMutation(owner, target.worldId, cells, snapshot, options, acceptedBlock, ready, intervalTicks)
+            return NativeSchematicMutation(owner, target.worldId, cells, snapshot, options, acceptedBlock, ready, intervalTicks, native)
         }
 
-        fun repair(owner: String, worldId: UUID, cells: List<ArcSchematicBlock>): NativeSchematicMutation =
-            NativeSchematicMutation(owner, worldId, cells, null, ArcSchematicPasteOptions(false, false, false), null, null, 0)
+        fun repair(owner: String, worldId: UUID, cells: List<ArcSchematicBlock>, native: PaperSchematicBlocks = PaperSchematicBlocks()): NativeSchematicMutation =
+            NativeSchematicMutation(owner, worldId, cells, null, ArcSchematicPasteOptions(false, false, false), null, null, 0, native)
     }
 }
 
@@ -309,12 +293,4 @@ internal inline fun forEachSchematicMutationChunk(position: ArcSchematicPoint, r
     if (position.x and 15 == 15) action(x + 1, z)
     if (position.z and 15 == 0) action(x, z - 1)
     if (position.z and 15 == 15) action(x, z + 1)
-}
-
-internal fun requireNativeSchematicMutationAdapter(supportedSideEffects: Set<SideEffect>) {
-    // Bukkit's no-adapter fallback advertises only NEIGHBORS. Native FAWE adapters advertise
-    // LIGHTING but omit VALIDATION even though WorldNativeAccess implements shape validation.
-    if (SideEffect.LIGHTING !in supportedSideEffects) {
-        failure(ArcSchematicFailure.UNSUPPORTED_FORMAT, "WorldEdit's native Paper adapter is unavailable")
-    }
 }

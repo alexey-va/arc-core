@@ -91,7 +91,7 @@ internal class SchematicFiles(private val settings: ArcSchematicCacheSettings) {
 }
 
 /**
- * Streaming, allocation-bounded NBT validation before WorldEdit allocates a clipboard.
+ * Streaming, allocation-bounded NBT validation before the schematic decoder allocates a tag tree.
  * Array/list declarations are checked before reading/skipping their contents.
  */
 internal class NbtPreflight(private val maximumBytes: Int, private val maximumVolume: Int) {
@@ -101,7 +101,7 @@ internal class NbtPreflight(private val maximumBytes: Int, private val maximumVo
     fun check(compressed: ByteArray) {
         nestedDimensions = null
         // Empty list/compound elements cost little on disk but become Java
-        // objects in WorldEdit. Bound their aggregate overhead before decoding.
+        // objects in the tag tree. Bound their aggregate overhead before decoding.
         remainingNodes = maxOf(1L, maximumBytes.toLong() / 64L)
         try {
             DataInputStream(LimitedInput(GZIPInputStream(ByteArrayInputStream(compressed)), maximumBytes.toLong())).use { input ->

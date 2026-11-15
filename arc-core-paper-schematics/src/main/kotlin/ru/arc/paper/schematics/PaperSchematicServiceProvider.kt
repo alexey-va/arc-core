@@ -37,7 +37,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.function.BooleanSupplier
 import java.util.function.Consumer
 
-/** Optional WorldEdit integration, installed and closed once by the ArcCore host. */
+/** Native schematic service, installed and closed once by the ArcCore host. */
 class PaperSchematicServiceProvider(
     plugin: Plugin,
     settings: CompletableFuture<ArcSchematicCacheSettings>,
@@ -59,7 +59,7 @@ class PaperSchematicServiceProvider(
                     val attach = Runnable {
                         if (!closed.get()) {
                             try {
-                                service.attach(SharedSchematicService(prepared, scheduler, WorldEditSchematicCodec(prepared), System::nanoTime))
+                                service.attach(SharedSchematicService(prepared, scheduler, PaperSchematicCodec(prepared), System::nanoTime))
                             } catch (problem: Throwable) { service.fail(problem) }
                         }
                     }
@@ -261,7 +261,7 @@ internal class SharedSchematicService(
             main.palette(decoded.palette, codec::canonicalize).thenApplyAsync({ palette ->
                 SchematicSnapshot(
                     producer, decoded.minimum, decoded.maximum, decoded.origin, bytes.sha256,
-                    decoded.hasBiomes, decoded.entityCount, palette, decoded.indices, decoded.blockEntities,
+                    decoded.hasBiomes, decoded.entityCount, palette, decoded.indices, decoded.blockEntities, decoded.dataVersion,
                 )
             }, workers)
         } catch (problem: Throwable) { CompletableFuture.failedFuture(problem) }

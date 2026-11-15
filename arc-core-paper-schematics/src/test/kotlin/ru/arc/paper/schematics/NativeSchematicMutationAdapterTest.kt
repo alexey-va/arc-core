@@ -1,6 +1,5 @@
 package ru.arc.paper.schematics
 
-import com.sk89q.worldedit.util.SideEffect
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FreeSpec
 import io.kotest.matchers.shouldBe
@@ -9,20 +8,11 @@ import ru.arc.paper.api.ArcSchematicFailure
 import ru.arc.paper.api.ArcSchematicPoint
 
 class NativeSchematicMutationAdapterTest : FreeSpec({
-    "WorldEdit native adapter capabilities permit bounded mutation" {
-        requireNativeSchematicMutationAdapter(SideEffect.values().toSet())
-    }
-
-    "FAWE native adapter does not need to advertise its implemented validation effect" {
-        // The shared flags in FAWE's native inventory; its extra flags are absent from upstream WE.
-        requireNativeSchematicMutationAdapter(setOf(SideEffect.NEIGHBORS, SideEffect.LIGHTING))
-    }
-
-    "generic Bukkit fallback and missing capabilities fail before any mutation" {
-        for (supported in listOf(emptySet(), setOf(SideEffect.NEIGHBORS))) {
-            shouldThrow<ArcSchematicException> {
-                requireNativeSchematicMutationAdapter(supported)
-            }.reason shouldBe ArcSchematicFailure.UNSUPPORTED_FORMAT
+    "native NBT and repair are explicit about the verified Paper version" {
+        requireNativeSchematicVersion("1.21.11")
+        for (version in listOf("1.21.10", "26.1", "")) {
+            shouldThrow<ArcSchematicException> { requireNativeSchematicVersion(version) }
+                .reason shouldBe ArcSchematicFailure.UNSUPPORTED_FORMAT
         }
     }
 

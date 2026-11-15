@@ -90,9 +90,11 @@ interface ArcSchematicLibrary : AutoCloseable {
 
     /**
      * Visits each retained block entity on a bounded provider worker, never on Paper's thread.
-     * [visitor] receives its absolute snapshot position and detached LinCompoundTag.toString text,
-     * with the same representation as WorldEdit BaseBlock.nbtReference.value.toString(). No native
-     * object or mutable map escapes. The visitor must not access Bukkit/world/player state.
+     * [visitor] receives its absolute snapshot position and detached text with the historical
+     * LinCompoundTag/LinStringTag spelling. All nested keys and values are retained without escaping
+     * or truncation; compound ordering is not significant. This is source-version NBT: native
+     * DataVersion upgrades happen during placement. No native object or mutable map escapes.
+     * The visitor must not access Bukkit/world/player state.
      * Throwing rejects this future; await success before any consumer mutation. Inspection itself
      * supplies no security policy and never changes the snapshot. Completion has no thread affinity.
      */
