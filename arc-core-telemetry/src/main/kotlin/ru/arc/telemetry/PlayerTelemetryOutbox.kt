@@ -119,7 +119,8 @@ internal class FilePlayerTelemetryOutbox(
     private val coverage =
         AtomicFileStore(
             root = root,
-            relativePath = Path.of("player-telemetry", "coverage.json"),
+            // Start coverage for the new table independently. The shared journal still replays v1 records.
+            relativePath = Path.of("player-telemetry", "coverage-v2.json"),
             maxBytes = 4_096,
             encode = { gson.toJson(it).toByteArray(StandardCharsets.UTF_8) },
             decode = { gson.fromJson(String(it, StandardCharsets.UTF_8), PlayerTelemetryCoverageState::class.java) },

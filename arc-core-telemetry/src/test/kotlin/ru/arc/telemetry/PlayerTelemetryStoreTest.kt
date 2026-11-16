@@ -111,6 +111,28 @@ class PlayerTelemetryStoreTest : FunSpec({
         store.closeAsync().get(3, TimeUnit.SECONDS)
     }
 
+    test("coverage cannot pass an action still buffered by the producer") {
+        val root = Files.createTempDirectory("arc-player-telemetry-buffered-watermark-")
+        val clock = java.util.concurrent.atomic.AtomicLong(1_800_000_000_000L)
+        val configured = settings()
+        val sql = FakeTelemetrySql()
+        val store = PlayerTelemetryStore(root, "spawn", configured, Gson(), clock::get,
+            { FilePlayerTelemetryOutbox(root, configured, PlayerTelemetryJsonCodec(Gson()), Gson()) }, { sql })
+        store.use {
+            it.start().get(3, TimeUnit.SECONDS)
+            await { sql.watermarks.isNotEmpty() }
+            val firstPending = clock.addAndGet(5_000L)
+            it.setBufferedCaptureSince(firstPending)
+            clock.addAndGet(5_000L)
+            it.offer(event().copy(occurredAt = clock.get())) shouldBe true
+            await { sql.watermarks.last() == firstPending }
+
+            it.offer(event().copy(occurredAt = firstPending)) shouldBe true
+            it.setBufferedCaptureSince(null)
+            await { sql.watermarks.last() > firstPending && it.health().deliveredEventsSinceStart == 2L }
+        }
+    }
+
     test("query admission rejects excess outstanding work and releases capacity on completion") {
         val root = Files.createTempDirectory("arc-player-telemetry-query-cap-")
         val queryGates = CopyOnWriteArrayList<CompletableFuture<PlayerTelemetryPage>>()
@@ -357,14 +379,17 @@ private class FakeTelemetrySql(
     },
 ) : PlayerTelemetrySql {
     private val inserted = CopyOnWriteArrayList<List<PlayerTelemetryEvent>>()
+    val watermarks = CopyOnWriteArrayList<Long>()
 
     override fun migrate() = CompletableFuture.completedFuture(Unit)
 
     override fun registerServer(server: String, coverageFrom: Long, coverageGapFrom: Long?, knownDrops: Long) =
         CompletableFuture.completedFuture(Unit)
 
-    override fun advanceCoverage(server: String, through: Long, coverageGapFrom: Long?, knownDrops: Long) =
-        CompletableFuture.completedFuture(Unit)
+    override fun advanceCoverage(server: String, through: Long, coverageGapFrom: Long?, knownDrops: Long): CompletableFuture<Unit> {
+        watermarks += through
+        return CompletableFuture.completedFuture(Unit)
+    }
 
     override fun insertBatch(events: List<PlayerTelemetryEvent>): CompletableFuture<Unit> {
         inserted += events

@@ -8,6 +8,7 @@ import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
 import ru.arc.sql.MySqlMigrator
 import ru.arc.sql.SqlConnectionConfig
+import ru.arc.sql.SqlMigration
 import ru.arc.sql.SqlSslMode
 import ru.arc.testing.containers.MySqlTestService
 import ru.arc.testing.containers.MySqlTestSettings
@@ -20,6 +21,7 @@ class PlayerTelemetrySqlIntegrationTest : FreeSpec({
     lateinit var mysql: MySqlTestService
     lateinit var repository: PlayerTelemetrySqlRepository
     lateinit var legacyUi: PlayerTelemetryEvent
+    lateinit var legacyMenu: PlayerTelemetryEvent
     var mysqlStarted = false
     var repositoryCreated = false
 
@@ -47,10 +49,22 @@ class PlayerTelemetrySqlIntegrationTest : FreeSpec({
             runtimeName = "telemetry-integration-test",
         )
         repositoryCreated = true
+        val menuOnlyMigration = SqlMigration(
+            version = 2,
+            description = "create empty menu telemetry events table",
+            statements = listOf("CREATE TABLE IF NOT EXISTS `arc_menu_events` LIKE `arc_player_events`"),
+        )
         MySqlMigrator(repository.runtime.dataSource, "arc_player_telemetry")
-            .migrate(listOf(PlayerTelemetrySqlRepository.LEGACY_MIGRATION))
-        legacyUi = telemetryEvent(serverId("menu"), System.currentTimeMillis() - 2_000, source = "ui", event = "ui.open")
-        repository.insertBatch(listOf(legacyUi)).join()
+            .migrate(listOf(PlayerTelemetrySqlRepository.LEGACY_MIGRATION, menuOnlyMigration))
+        legacyUi = telemetryEvent(
+            serverId("menu"), System.currentTimeMillis() - 2_000, source = "ui", event = "ui.open",
+            schemaVersion = PlayerTelemetryEvent.LEGACY_SCHEMA_VERSION,
+        )
+        legacyMenu = legacyUi.copy(
+            eventId = UUID.randomUUID().toString(), occurredAt = legacyUi.occurredAt + 1,
+            source = "menu", event = "menu.view", attributes = mapOf("buttons" to "legacy custom"),
+        )
+        repository.insertBatch(listOf(legacyUi, legacyMenu)).join()
         repository.migrate().join()
     }
 
@@ -66,43 +80,49 @@ class PlayerTelemetrySqlIntegrationTest : FreeSpec({
         repository.migrate().join() shouldBe Unit
         MySqlMigrator(repository.runtime.dataSource, "arc_player_telemetry")
             .migrate(listOf(PlayerTelemetrySqlRepository.LEGACY_MIGRATION))
-            .existingVersions shouldBe listOf(1, 2)
+            .existingVersions shouldBe listOf(1, 2, 3)
     }
 
-    "menu writes route separately from legacy UI and mixed retries remain atomic" {
-        fun idsIn(table: String) = repository.runtime.executor.read { connection ->
-            connection.prepareStatement("SELECT `event_id` FROM `$table` WHERE `server` = ?").use { statement ->
+    "current menu and proxy events share compact storage and mixed retries preserve the archive" {
+        fun rowsIn(table: String) = repository.runtime.executor.read { connection ->
+            connection.prepareStatement("SELECT COUNT(*) FROM `$table` WHERE `server` = ?").use { statement ->
                 statement.setString(1, legacyUi.server)
-                statement.executeQuery().use { result -> buildList { while (result.next()) add(result.getString(1)) } }
+                statement.executeQuery().use { result ->
+                    check(result.next())
+                    result.getInt(1)
+                }
             }
         }.join()
 
-        idsIn("arc_menu_events") shouldBe emptyList()
-        idsIn("arc_player_events") shouldBe listOf(legacyUi.eventId)
+        rowsIn("arc_player_events_v2") shouldBe 0
+        rowsIn("arc_player_events") shouldBe 2
         val view = telemetryEvent(
             legacyUi.server,
-            legacyUi.occurredAt + 1,
+            legacyMenu.occurredAt + 1,
             source = "menu",
             event = "menu.view",
             attributes = mapOf("buttons" to (0..127).joinToString(",") { "_pages/actions:button_$it=$it" }, "disabledSlots" to "0,127"),
         )
-        val pair = listOf(legacyUi, view)
-        repository.insertBatch(pair).join()
-        repository.insertBatch(pair).join()
-        idsIn("arc_player_events") shouldBe listOf(legacyUi.eventId)
-        idsIn("arc_menu_events") shouldBe listOf(view.eventId)
+        val proxy = telemetryEvent(legacyUi.server, view.occurredAt + 1, source = "proxy", event = "connection.login")
+        val batch = listOf(legacyUi, legacyMenu, view, proxy)
+        repository.insertBatch(batch).join()
+        repository.insertBatch(batch).join()
+        rowsIn("arc_player_events") shouldBe 2
+        rowsIn("arc_player_events_v2") shouldBe 2
+        rowsIn("arc_menu_events") shouldBe 0
 
         shouldThrow<CompletionException> {
             repository.insertBatch(listOf(legacyUi.copy(eventId = UUID.randomUUID().toString()), view.copy(subject = "different"))).join()
         }
-        idsIn("arc_player_events") shouldBe listOf(legacyUi.eventId)
+        rowsIn("arc_player_events") shouldBe 2
         val query = PlayerTelemetryQuery(
             fromInclusive = legacyUi.occurredAt,
-            untilExclusive = view.occurredAt + 1,
+            untilExclusive = proxy.occurredAt + 1,
             server = legacyUi.server,
         )
-        repository.query(query).join().events shouldBe listOf(legacyUi)
-        repository.query(query.copy(source = "ui")).join().events shouldBe listOf(legacyUi)
+        repository.query(query).join().events shouldBe listOf(view, proxy)
+        repository.query(query.copy(legacy = true)).join().events shouldBe listOf(legacyUi, legacyMenu)
+        repository.query(query.copy(legacy = true, source = "menu", event = "menu.view")).join().events shouldBe listOf(legacyMenu)
         repository.query(query.copy(event = "menu.view")).join().events shouldBe listOf(view)
         repository.query(query.copy(source = "menu")).join().also {
             it.events shouldBe listOf(view)
@@ -129,12 +149,12 @@ class PlayerTelemetrySqlIntegrationTest : FreeSpec({
             sessionId = UUID.randomUUID(),
             subject = "quest:alpha",
             attributes = mapOf("result" to "complete"),
-        )
+        ).copy(world = "spawn_world", x = 12.25, y = 64.5, z = -42.125, operationId = "quest:alpha:07")
 
         repository.insertBatch(listOf(original)).join()
         repository.insertBatch(listOf(original.copy(attributes = original.attributes.toMap()))).join()
 
-        val wouldBeRolledBack = telemetryEvent(server = server, occurredAt = timestamp + 1)
+        val wouldBeRolledBack = original.copy(eventId = UUID.randomUUID().toString(), occurredAt = timestamp + 1)
         val conflictingRetry = original.copy(subject = "quest:beta")
         shouldThrow<CompletionException> {
             repository.insertBatch(listOf(wouldBeRolledBack, conflictingRetry)).join()
@@ -145,12 +165,13 @@ class PlayerTelemetrySqlIntegrationTest : FreeSpec({
                 fromInclusive = timestamp,
                 untilExclusive = timestamp + 10,
                 server = server,
+                playerName = "TelemetryOne",
+                subject = "quest:alpha",
                 limit = 10,
             ),
         ).join()
         page.events shouldHaveSize 1
-        page.events.map(PlayerTelemetryEvent::eventId) shouldBe listOf(original.eventId)
-        page.events.single().attributes shouldBe mapOf("result" to "complete")
+        page.events.single() shouldBe original
         page.events.map(PlayerTelemetryEvent::eventId) shouldNotContain wouldBeRolledBack.eventId
     }
 
@@ -162,12 +183,12 @@ class PlayerTelemetrySqlIntegrationTest : FreeSpec({
         val otherPlayerId = UUID.fromString("22222222-2222-2222-2222-222222222222")
         val sessionId = UUID.fromString("33333333-3333-3333-3333-333333333333")
         val otherSessionId = UUID.fromString("44444444-4444-4444-4444-444444444444")
-        val ids = (1..6).map { UUID.fromString("00000000-0000-0000-0000-${it.toString().padStart(12, '0')}").toString() }
+        val ids = (7..12).map { "${it.toString(16)}0000000-0000-0000-0000-000000000000" }
 
         repository.insertBatch(
             listOf(
-                telemetryEvent(server, from, playerId = playerId, sessionId = sessionId, eventId = ids[0]),
                 telemetryEvent(server, from, playerId = playerId, sessionId = sessionId, eventId = ids[1]),
+                telemetryEvent(server, from, playerId = playerId, sessionId = sessionId, eventId = ids[0]),
                 telemetryEvent(server, from + 500, playerId = playerId, sessionId = sessionId, qa = true, eventId = ids[2]),
                 telemetryEvent(server, from + 500, playerId = playerId, sessionId = otherSessionId, eventId = ids[3]),
                 telemetryEvent(server, until, playerId = playerId, sessionId = sessionId, eventId = ids[4]),
@@ -220,42 +241,56 @@ class PlayerTelemetrySqlIntegrationTest : FreeSpec({
         includeQa.events.map(PlayerTelemetryEvent::eventId) shouldNotContain ids[5]
     }
 
-    "summary groups by UTC day and reports counts and unique players" {
+    "summary counts action occurrences and distinct players in the compact table" {
         val server = serverId("summary")
         val timestamp = System.currentTimeMillis() - 5_000
+        val player = UUID.randomUUID()
+        val action = telemetryEvent(server, timestamp, playerId = player, source = "player", event = "interact",
+            attributes = mapOf("count" to "3"))
         repository.insertBatch(
             listOf(
-                telemetryEvent(server, timestamp, playerId = UUID.randomUUID(), source = "quest", event = "complete"),
-                telemetryEvent(server, timestamp + 1, playerId = UUID.randomUUID(), source = "quest", event = "complete"),
-                telemetryEvent(server, timestamp + 2, playerId = UUID.randomUUID(), source = "quest", event = "start"),
+                action,
+                action.copy(eventId = UUID.randomUUID().toString(), attributes = mapOf("count" to "2")),
+                action.copy(eventId = UUID.randomUUID().toString(), playerId = UUID.randomUUID().toString(), attributes = emptyMap()),
+                action.copy(eventId = UUID.randomUUID().toString(), source = "quest", event = "start"),
+                action.copy(eventId = UUID.randomUUID().toString(), schemaVersion = PlayerTelemetryEvent.LEGACY_SCHEMA_VERSION),
             ),
         ).join()
 
-        val result = repository.summary(
-            PlayerTelemetrySummaryQuery(
-                fromInclusive = timestamp,
-                untilExclusive = timestamp + 10,
-                server = server,
-                limit = 10,
-            ),
-        ).join()
+        val query = PlayerTelemetrySummaryQuery(fromInclusive = timestamp, untilExclusive = timestamp + 10, server = server)
+        val result = repository.summary(query).join()
 
         result.rows shouldHaveSize 2
-        val complete = result.rows.single { it.event == "complete" }
-        complete.utcDay shouldBe Instant.ofEpochMilli(timestamp).atZone(ZoneOffset.UTC).toLocalDate().toString()
-        complete.count shouldBe 2L
-        complete.uniquePlayers shouldBe 2L
+        val interactions = result.rows.single { it.event == "interact" }
+        interactions.utcDay shouldBe Instant.ofEpochMilli(timestamp).atZone(ZoneOffset.UTC).toLocalDate().toString()
+        interactions.count shouldBe 6L
+        interactions.uniquePlayers shouldBe 2L
         result.rows.single { it.event == "start" }.count shouldBe 1L
         result.hasMore shouldBe false
+        repository.summary(query.copy(legacy = true)).join().rows.single().count shouldBe 1L
     }
 
-    "coverage metadata requires every registered node watermark and honors gaps" {
+    "compact coverage requires known legacy nodes to switch and honors gaps" {
         val serverA = serverId("coverage-a")
         val serverB = serverId("coverage-b")
         val from = System.currentTimeMillis() - 30_000
         val until = from + 10_000
         repository.registerServer(serverA, from, null, 0).join()
-        repository.registerServer(serverB, from, null, 0).join()
+
+        fun legacyHeartbeat(at: Long) = repository.runtime.executor.write { connection ->
+            connection.prepareStatement(
+                "INSERT INTO `arc_player_event_nodes` (`server`, `coverage_from_ms`, `last_seen_at_ms`, `coverage_through_ms`) " +
+                    "VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE `last_seen_at_ms` = ?",
+            ).use { statement ->
+                statement.setString(1, serverB)
+                statement.setLong(2, from - 2)
+                statement.setLong(3, at)
+                statement.setLong(4, at)
+                statement.setLong(5, at)
+                statement.executeUpdate()
+            }
+        }.join()
+        legacyHeartbeat(from - 1)
 
         fun coveragePage() = repository.query(
             PlayerTelemetryQuery(fromInclusive = from, untilExclusive = until, limit = 10),
@@ -269,6 +304,7 @@ class PlayerTelemetrySqlIntegrationTest : FreeSpec({
         repository.advanceCoverage(serverA, until, null, 0).join()
         coveragePage().historyCovered shouldBe false
 
+        repository.registerServer(serverB, from, null, 0).join()
         repository.advanceCoverage(serverB, until - 1, null, 0).join()
         coveragePage().also {
             it.oldestNodeCoverageThrough shouldBe until - 1
@@ -282,6 +318,12 @@ class PlayerTelemetrySqlIntegrationTest : FreeSpec({
             it.historyCovered shouldBe true
         }
 
+        val archived = PlayerTelemetryQuery(from - 2, from - 1, server = serverB, legacy = true)
+        repository.query(archived).join().historyCovered shouldBe true
+
+        legacyHeartbeat(until + 1)
+        coveragePage().historyCovered shouldBe false
+
         val gap = from + 5_000
         repository.advanceCoverage(serverA, until, gap, 1).join()
         coveragePage().also {
@@ -290,7 +332,7 @@ class PlayerTelemetrySqlIntegrationTest : FreeSpec({
         }
     }
 
-    "retention pruning is bounded and keeps the cutoff timestamp" {
+    "retention pruning is bounded, keeps the cutoff and leaves the archive" {
         val server = serverId("prune")
         val base = System.currentTimeMillis() - 60_000
         val cutoff = base + 200
@@ -299,19 +341,16 @@ class PlayerTelemetrySqlIntegrationTest : FreeSpec({
             telemetryEvent(server, base + 100),
             telemetryEvent(server, cutoff),
         )
-        val menuEvents = listOf(
-            telemetryEvent(server, base, source = "menu", event = "menu.view"),
-            telemetryEvent(server, cutoff, source = "menu", event = "menu.end"),
-        )
-        repository.insertBatch(events + menuEvents).join()
+        val archived = telemetryEvent(server, base - 1, schemaVersion = PlayerTelemetryEvent.LEGACY_SCHEMA_VERSION)
+        repository.insertBatch(events + archived).join()
 
-        repository.prune(cutoff).join() shouldBe 2
+        repository.prune(cutoff).join() shouldBe 1
         repository.prune(cutoff).join() shouldBe 1
         repository.prune(cutoff).join() shouldBe 0
 
-        val query = PlayerTelemetryQuery(fromInclusive = base, untilExclusive = cutoff + 1, server = server, limit = 10)
+        val query = PlayerTelemetryQuery(fromInclusive = base - 1, untilExclusive = cutoff + 1, server = server, limit = 10)
         repository.query(query).join().events shouldBe listOf(events.last())
-        repository.query(query.copy(source = "menu")).join().events shouldBe listOf(menuEvents.last())
+        repository.query(query.copy(legacy = true)).join().events shouldBe listOf(archived)
     }
 })
 
@@ -327,6 +366,7 @@ private fun telemetryEvent(
     subject: String? = null,
     qa: Boolean = false,
     attributes: Map<String, String> = emptyMap(),
+    schemaVersion: Int = PlayerTelemetryEvent.CURRENT_SCHEMA_VERSION,
 ) = PlayerTelemetryEvent(
     eventId = eventId,
     occurredAt = occurredAt,
@@ -339,6 +379,7 @@ private fun telemetryEvent(
     subject = subject,
     qa = qa,
     attributes = attributes,
+    schemaVersion = schemaVersion,
 )
 
 private fun serverId(label: String): String = "it-${label}-${UUID.randomUUID().toString().take(8)}"

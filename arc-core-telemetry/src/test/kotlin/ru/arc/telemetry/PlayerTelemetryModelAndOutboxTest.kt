@@ -60,6 +60,48 @@ class PlayerTelemetryModelAndOutboxTest : FunSpec({
         }
     }
 
+    test("compact attributes round-trip small action fields and a compressed menu render") {
+        val action = mapOf("cancelled" to "false", "count" to "7")
+        val buttons = (0 until 128).joinToString(",") { "inventory_region_button_$it=$it" }
+        val render = mapOf("buttons" to buttons, "revision" to "0123456789ab")
+
+        PlayerTelemetryCompactAttributes.encode(emptyMap()) shouldBe null
+        PlayerTelemetryCompactAttributes.decode(null) shouldBe emptyMap()
+        PlayerTelemetryCompactAttributes.decode(PlayerTelemetryCompactAttributes.encode(action)) shouldBe action
+        val packed = requireNotNull(PlayerTelemetryCompactAttributes.encode(render))
+        PlayerTelemetryCompactAttributes.decode(packed) shouldBe render
+        (packed.size < buttons.length / 2) shouldBe true
+
+        val counted = event().copy(source = "player", event = "interact", attributes = action)
+        counted.occurrences shouldBe 7
+        counted.copy(schemaVersion = PlayerTelemetryEvent.LEGACY_SCHEMA_VERSION).occurrences shouldBe 1
+        counted.copy(source = "proxy").occurrences shouldBe 1
+    }
+
+    test("v1 journal records remain readable without reusing old coverage") {
+        val root = Files.createTempDirectory("arc-player-telemetry-cutover-")
+        val folder = root.resolve("player-telemetry")
+        val previousCoverage = """{"schemaVersion":1,"coverageFrom":1,"currentRunStartedAt":1,"coverageGapFrom":1,"knownDropCount":5,"cleanShutdown":false}"""
+        Files.createDirectories(folder)
+        Files.writeString(folder.resolve("coverage.json"), previousCoverage)
+        val now = 1_800_000_001_000L
+        val legacy = event(at = now - 10).copy(schemaVersion = PlayerTelemetryEvent.LEGACY_SCHEMA_VERSION)
+        val current = event(at = now + 10)
+        outbox(root).also {
+            val initial = it.recover(now)
+            initial.coverageFrom shouldBe now
+            initial.coverageGapFrom shouldBe null
+            it.commit("mixed", listOf(legacy, current))
+            it.markCleanShutdown(now + 20)
+        }
+
+        outbox(root).also {
+            it.recover(now + 30).coverageFrom shouldBe now
+            it.next(now + 31)?.events shouldBe listOf(legacy, current)
+        }
+        Files.readString(folder.resolve("coverage.json")) shouldBe previousCoverage
+    }
+
     test("outbox recovery preserves known drops, stable event IDs and exact acknowledgement") {
         val root = Files.createTempDirectory("arc-player-telemetry-outbox-")
         val first = outbox(root)

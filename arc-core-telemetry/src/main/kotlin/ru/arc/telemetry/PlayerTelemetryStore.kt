@@ -128,6 +128,7 @@ class PlayerTelemetryStore private constructor(
     private var retentionAt = 0L
     private var registrationAt = 0L
     private val coverageAdvancedAt = AtomicLong(0L)
+    private val bufferedCaptureSince = AtomicLong(Long.MAX_VALUE)
     private val runtimeGap = AtomicLong(0L)
     private val shutdownTimedOut = AtomicBoolean(false)
     private val journalFinished = AtomicBoolean(false)
@@ -242,6 +243,12 @@ class PlayerTelemetryStore private constructor(
             if (!started.get() || closing.get()) return
             lose(clockMillis())
         }
+    }
+
+    /** Oldest time a producer may still offer. Clear only after its last buffered row is offered. */
+    fun setBufferedCaptureSince(at: Long?) {
+        require(at == null || at > 0L) { "Buffered capture timestamp must be positive" }
+        bufferedCaptureSince.set(at ?: Long.MAX_VALUE)
     }
 
     fun query(request: PlayerTelemetryQuery): CompletableFuture<PlayerTelemetryPage> {
@@ -599,7 +606,10 @@ class PlayerTelemetryStore private constructor(
                     coverageAdvanceInFlight.set(false)
                     return@execute
                 }
-                val through = (clockMillis() - COVERAGE_WATERMARK_LAG_MILLIS).coerceAtLeast(snapshot.coverageFrom)
+                val through = minOf(
+                    clockMillis() - COVERAGE_WATERMARK_LAG_MILLIS,
+                    bufferedCaptureSince.get(),
+                ).coerceAtLeast(snapshot.coverageFrom)
                 val gap = listOfNotNull(
                     coverageGapFrom.get().takeIf { it > 0L },
                     runtimeGap.get().takeIf { it > 0L },

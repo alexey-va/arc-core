@@ -23,6 +23,12 @@ data class PlayerTelemetryEvent(
     val attributes: Map<String, String> = emptyMap(),
     val schemaVersion: Int = CURRENT_SCHEMA_VERSION,
 ) {
+    /** Logical observations represented by this row. Only native action counters use this field. */
+    val occurrences: Int
+        get() = if (schemaVersion == CURRENT_SCHEMA_VERSION && source == "player" && event in COUNTED_ACTIONS)
+            attributes["count"]?.toInt() ?: 1
+        else 1
+
     init {
         validate()
     }
@@ -50,7 +56,7 @@ data class PlayerTelemetryEvent(
         }
 
     private fun validate() {
-        require(schemaVersion == CURRENT_SCHEMA_VERSION) { "Unsupported player telemetry schema version" }
+        require(schemaVersion in LEGACY_SCHEMA_VERSION..CURRENT_SCHEMA_VERSION) { "Unsupported player telemetry schema version" }
         canonicalUuid(eventId, "eventId")
         playerId?.let { canonicalUuid(it, "playerId") }
         sessionId?.let { canonicalUuid(it, "sessionId") }
@@ -74,7 +80,7 @@ data class PlayerTelemetryEvent(
         require(attributes.size <= MAX_ATTRIBUTES) { "Too many player telemetry attributes" }
         attributes.forEach { (key, value) ->
             require(ATTRIBUTE_KEY.matches(key)) { "Invalid player telemetry attribute key" }
-            val valid = if (source == MENU_SOURCE && event == MENU_VIEW) when (key) {
+            val valid = if (schemaVersion == CURRENT_SCHEMA_VERSION && source == MENU_SOURCE && event == MENU_VIEW) when (key) {
                 "buttons" -> validMenuList(value, MAX_MENU_BUTTONS_LENGTH) {
                     MENU_BUTTON.matches(it) && isMenuSlot(it.substringAfter('='))
                 }
@@ -85,10 +91,17 @@ data class PlayerTelemetryEvent(
                 "Invalid player telemetry attribute value"
             }
         }
+        if (schemaVersion == CURRENT_SCHEMA_VERSION && source == "player" && event in COUNTED_ACTIONS) {
+            attributes["count"]?.let { require(it.toIntOrNull()?.let { count -> count > 0 } == true) { "Invalid action count" } }
+            attributes["lastAtMs"]?.let {
+                require(it.toLongOrNull()?.let { last -> last in occurredAt..MAX_EPOCH_MILLIS } == true) { "Invalid action end" }
+            }
+        }
     }
 
     companion object {
-        const val CURRENT_SCHEMA_VERSION = 1
+        const val LEGACY_SCHEMA_VERSION = 1
+        const val CURRENT_SCHEMA_VERSION = 2
         const val MAX_ATTRIBUTES = 32
         const val MAX_ATTRIBUTE_VALUE_LENGTH = 160
         const val MENU_SOURCE = "menu"
@@ -111,6 +124,7 @@ data class PlayerTelemetryEvent(
         private val ATTRIBUTE_KEY = Regex("[a-z][A-Za-z0-9_.-]{0,31}")
         private val ATTRIBUTE_VALUE = Regex("[A-Za-z0-9_ .,:+=/#@-]*")
         private val MENU_BUTTON = Regex("[a-z0-9_.:/-]{1,96}=[0-9]{1,3}")
+        private val COUNTED_ACTIONS = setOf("interact", "block.break", "block.place", "inventory.click")
 
         private fun validAttributeValue(value: String): Boolean =
             value.length <= MAX_ATTRIBUTE_VALUE_LENGTH && ATTRIBUTE_VALUE.matches(value)
@@ -159,6 +173,7 @@ data class PlayerTelemetryQuery(
     val includeQa: Boolean = false,
     val limit: Int = 100,
     val cursor: PlayerTelemetryCursor? = null,
+    val legacy: Boolean = false,
 ) {
     init {
         validateBounds(fromInclusive, untilExclusive)
@@ -180,6 +195,7 @@ data class PlayerTelemetrySummaryQuery(
     val subject: String? = null,
     val includeQa: Boolean = false,
     val limit: Int = 5_000,
+    val legacy: Boolean = false,
 ) {
     init {
         validateBounds(fromInclusive, untilExclusive)
