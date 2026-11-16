@@ -165,7 +165,7 @@ class PaperDialogRuntime internal constructor(
                 } while (handlers.containsKey(footerId))
             }
             val footer = historyFooter(player, screen, requireNotNull(footerId), closeOnEscape)
-            handlers[footer.id] = actionHandler(player, footer)
+            handlers[footer.id] = actionHandler(player, footer, footer = true)
             actions[footer.id.value] = actions.size
             revisionPart("|b:${footer.id.value}")
             val nativeFooter = if (presenter == null) createButton(footer, registration) else null
@@ -230,14 +230,17 @@ class PaperDialogRuntime internal constructor(
     }
 
     /** Return after a completed child action without adding the parent to history again. */
-    fun back(player: Player): Boolean {
+    fun back(player: Player): Boolean = back(player, "censored")
+
+    private fun back(player: Player, closeReason: String): Boolean {
         requirePrimaryThread()
         cancelPreparation(player.uniqueId)
         if (closed || !player.isOnline) return false
         val history = history(player, create = false) ?: return false
         if (history.owner != owner) return false
+        val observation = observations[player.uniqueId]
         val restored = history.back()
-        if (!restored) player.closeDialog()
+        if (!restored) closeNative(player, observation, closeReason)
         return restored
     }
 
@@ -246,14 +249,22 @@ class PaperDialogRuntime internal constructor(
      * An inactive owner only discards its own ancestors and cannot close a
      * different plugin's screen. Main thread only; safe to call repeatedly.
      */
-    fun close(player: Player) {
+    fun close(player: Player) = close(player, "censored")
+
+    private fun close(player: Player, reason: String) {
         requirePrimaryThread()
         cancelPreparation(player.uniqueId)
         val history = history(player, create = false) ?: return
         if (history.entryOwner == owner) {
+            val observation = observations[player.uniqueId]
             history.clear()
-            player.closeDialog()
+            closeNative(player, observation, reason)
         } else history.removeOwner(owner)
+    }
+
+    private fun closeNative(player: Player, observation: DialogObservation?, reason: String) {
+        player.closeDialog()
+        observation?.let { observe(player, "close", it, reason) }
     }
 
     @Suppress("UNCHECKED_CAST")
@@ -297,15 +308,17 @@ class PaperDialogRuntime internal constructor(
             exitButton = historyFooter(player, original, footerId, currentVisits[player.uniqueId]?.closeOnEscape == true),
         )
 
-        val actions = (screen.buttons + listOfNotNull(screen.exitButton)).associate { it.id to actionHandler(player, it) }
+        val actions = (screen.buttons + listOfNotNull(screen.exitButton)).associate {
+            it.id to actionHandler(player, it, footer = it === screen.exitButton)
+        }
         val registration = sessions.replace(player.uniqueId, actions)
-        val visitId = UUID.randomUUID().toString()
-        observations[player.uniqueId] = DialogObservation(visitId, screen)
+        val observation = DialogObservation(UUID.randomUUID().toString(), screen)
+        observations[player.uniqueId] = observation
 
         try {
             if (presenter != null) presenter.invoke(player, screen, registration)
             else player.showDialog(createDialog(screen, registration))
-            observe(player, "open", observations.getValue(player.uniqueId))
+            observe(player, "open", observation)
         } catch (failure: Throwable) {
             sessions.remove(player.uniqueId)
             observations.remove(player.uniqueId)
@@ -324,9 +337,12 @@ class PaperDialogRuntime internal constructor(
         if (history.owner != owner) return
         val handler = sessions.consume(player.uniqueId, event.identifier.asString()) ?: return
         cancelPreparation(player.uniqueId)
-        val observation = observations.remove(player.uniqueId)
-        val action = event.identifier.asString().substringAfterLast('/')
-        observation?.let { observe(player, "click", it, button = action) }
+        val attempt = observations[player.uniqueId]?.let { observation ->
+            PaperMenuObservationPublisher.attempt(plugin) {
+                observationPayload(player, observation) + ("button" to event.identifier.asString().substringAfterLast('/'))
+            }
+        }
+        attempt?.start()
 
         val response = event.dialogResponseView
         currentVisits[player.uniqueId]?.let { visit ->
@@ -338,7 +354,7 @@ class PaperDialogRuntime internal constructor(
         // The generated handler reads through this event-owned view immediately.
         val previousResponse = currentResponse.get()
         currentResponse.set(response)
-        try { history.dispatch(handler) }
+        try { PaperMenuObservationPublisher.dispatch(attempt) { history.dispatch(handler) } }
         finally {
             if (previousResponse == null) currentResponse.remove() else currentResponse.set(previousResponse)
         }
@@ -373,7 +389,7 @@ class PaperDialogRuntime internal constructor(
         preparations.values.forEach { it.completeExceptionally(CancellationException("Dialog runtime closed")) }
         preparations.clear()
         players.values.toList().forEach { player ->
-            close(player)
+            close(player, "shutdown")
             player.removeMetadata(HISTORY_METADATA_KEY, plugin)
         }
         players.clear()
@@ -422,11 +438,13 @@ class PaperDialogRuntime internal constructor(
         factory.empty().base(base).type(type)
     }
 
-    private fun actionHandler(player: Player, button: PaperDialogButton): () -> Unit = {
-        if (button.closeDialogBeforeAction) close(player)
-        button.onClick.handle(PaperDialogClickContext(player,
+    private fun actionHandler(player: Player, button: PaperDialogButton, footer: Boolean = false): () -> Unit = {
+        if (button.closeDialogBeforeAction) close(player, if (footer) "footer_close" else "action_close")
+        val context = PaperDialogClickContext(player,
             { input -> currentResponse.get()?.getText(input.value) },
-            { input -> currentResponse.get()?.getFloat(input.value) }))
+            { input -> currentResponse.get()?.getFloat(input.value) })
+        context.attempt = PaperMenuObservationPublisher.currentAttempt()
+        button.onClick.handle(context)
     }
 
     private fun historyFooter(player: Player, screen: PaperDialogScreen, id: PaperDialogActionId, closeOnEscape: Boolean): PaperDialogButton {
@@ -439,19 +457,21 @@ class PaperDialogRuntime internal constructor(
             label = exit?.label ?: label,
             tooltip = exit?.tooltip ?: caption, width = exit?.width ?: 200,
             closeDialogBeforeAction = closeOnEscape,
-            onClick = { if (!closeOnEscape) back(player) })
+            onClick = { if (!closeOnEscape) back(player, "footer_close") })
     }
 
-    private fun observe(player: Player, phase: String, observation: DialogObservation, button: String? = null) {
-        val payload = linkedMapOf<String, Any>(
-            "protocol" to 1, "owner" to plugin.name, "surface" to observation.screen.id,
-            "revision" to observation.revision, "visitId" to observation.visitId,
-            "playerId" to player.uniqueId.toString(), "phase" to phase,
-            "buttons" to observation.actions,
-        )
-        button?.let { payload["button"] = it }
-        PaperMenuObservationPublisher.publish(plugin, payload)
+    private fun observe(player: Player, phase: String, observation: DialogObservation, reason: String? = null) {
+        PaperMenuObservationPublisher.publish(plugin) {
+            val payload = observationPayload(player, observation) + ("phase" to phase)
+            if (reason == null) payload else payload + ("reason" to reason)
+        }
     }
+
+    private fun observationPayload(player: Player, observation: DialogObservation): Map<String, Any> = mapOf(
+        "protocol" to 1, "owner" to plugin.name, "surface" to observation.screen.id,
+        "revision" to observation.revision, "visitId" to observation.visitId,
+        "playerId" to player.uniqueId.toString(), "buttons" to observation.actions,
+    )
 
     private data class DialogObservation(
         val visitId: String,
@@ -465,8 +485,8 @@ class PaperDialogRuntime internal constructor(
             MessageDigest.getInstance("SHA-256").digest(canonical.toByteArray(StandardCharsets.UTF_8))
                 .take(6).joinToString("") { "%02x".format(it.toInt() and 0xff) }
         },
-        val actions: Map<String, Int> = (screen.buttons + listOfNotNull(screen.exitButton))
-            .mapIndexed { index, item -> item.id.value to index }.toMap(),
+        val actions: Map<String, Int> = Collections.unmodifiableMap((screen.buttons + listOfNotNull(screen.exitButton))
+            .mapIndexed { index, item -> item.id.value to index }.toMap()),
     )
 
     private fun createInput(input: PaperDialogTextInput): DialogInput =

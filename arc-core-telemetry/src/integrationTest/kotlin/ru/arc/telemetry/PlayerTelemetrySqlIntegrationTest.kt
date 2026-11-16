@@ -6,6 +6,7 @@ import io.kotest.core.spec.style.FreeSpec
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
+import ru.arc.sql.MySqlMigrator
 import ru.arc.sql.SqlConnectionConfig
 import ru.arc.sql.SqlSslMode
 import ru.arc.testing.containers.MySqlTestService
@@ -18,6 +19,7 @@ import java.util.concurrent.CompletionException
 class PlayerTelemetrySqlIntegrationTest : FreeSpec({
     lateinit var mysql: MySqlTestService
     lateinit var repository: PlayerTelemetrySqlRepository
+    lateinit var legacyUi: PlayerTelemetryEvent
     var mysqlStarted = false
     var repositoryCreated = false
 
@@ -45,6 +47,10 @@ class PlayerTelemetrySqlIntegrationTest : FreeSpec({
             runtimeName = "telemetry-integration-test",
         )
         repositoryCreated = true
+        MySqlMigrator(repository.runtime.dataSource, "arc_player_telemetry")
+            .migrate(listOf(PlayerTelemetrySqlRepository.LEGACY_MIGRATION))
+        legacyUi = telemetryEvent(serverId("menu"), System.currentTimeMillis() - 2_000, source = "ui", event = "ui.open")
+        repository.insertBatch(listOf(legacyUi)).join()
         repository.migrate().join()
     }
 
@@ -58,6 +64,58 @@ class PlayerTelemetrySqlIntegrationTest : FreeSpec({
 
     "migration is repeatable" {
         repository.migrate().join() shouldBe Unit
+        MySqlMigrator(repository.runtime.dataSource, "arc_player_telemetry")
+            .migrate(listOf(PlayerTelemetrySqlRepository.LEGACY_MIGRATION))
+            .existingVersions shouldBe listOf(1, 2)
+    }
+
+    "menu writes route separately from legacy UI and mixed retries remain atomic" {
+        fun idsIn(table: String) = repository.runtime.executor.read { connection ->
+            connection.prepareStatement("SELECT `event_id` FROM `$table` WHERE `server` = ?").use { statement ->
+                statement.setString(1, legacyUi.server)
+                statement.executeQuery().use { result -> buildList { while (result.next()) add(result.getString(1)) } }
+            }
+        }.join()
+
+        idsIn("arc_menu_events") shouldBe emptyList()
+        idsIn("arc_player_events") shouldBe listOf(legacyUi.eventId)
+        val view = telemetryEvent(
+            legacyUi.server,
+            legacyUi.occurredAt + 1,
+            source = "menu",
+            event = "menu.view",
+            attributes = mapOf("buttons" to (0..127).joinToString(",") { "_pages/actions:button_$it=$it" }, "disabledSlots" to "0,127"),
+        )
+        val pair = listOf(legacyUi, view)
+        repository.insertBatch(pair).join()
+        repository.insertBatch(pair).join()
+        idsIn("arc_player_events") shouldBe listOf(legacyUi.eventId)
+        idsIn("arc_menu_events") shouldBe listOf(view.eventId)
+
+        shouldThrow<CompletionException> {
+            repository.insertBatch(listOf(legacyUi.copy(eventId = UUID.randomUUID().toString()), view.copy(subject = "different"))).join()
+        }
+        idsIn("arc_player_events") shouldBe listOf(legacyUi.eventId)
+        val query = PlayerTelemetryQuery(
+            fromInclusive = legacyUi.occurredAt,
+            untilExclusive = view.occurredAt + 1,
+            server = legacyUi.server,
+        )
+        repository.query(query).join().events shouldBe listOf(legacyUi)
+        repository.query(query.copy(source = "ui")).join().events shouldBe listOf(legacyUi)
+        repository.query(query.copy(event = "menu.view")).join().events shouldBe listOf(view)
+        repository.query(query.copy(source = "menu")).join().also {
+            it.events shouldBe listOf(view)
+            it.historyCovered shouldBe false
+            it.coverageFrom shouldBe null
+        }
+
+        repository.summary(PlayerTelemetrySummaryQuery(query.fromInclusive, query.untilExclusive, server = query.server, source = "menu"))
+            .join().also {
+                it.rows.single().event shouldBe "menu.view"
+                it.rows.single().count shouldBe 1L
+                it.historyCovered shouldBe false
+            }
     }
 
     "identical event retries are idempotent and conflicting content rolls back the batch" {
@@ -241,21 +299,19 @@ class PlayerTelemetrySqlIntegrationTest : FreeSpec({
             telemetryEvent(server, base + 100),
             telemetryEvent(server, cutoff),
         )
-        repository.insertBatch(events).join()
+        val menuEvents = listOf(
+            telemetryEvent(server, base, source = "menu", event = "menu.view"),
+            telemetryEvent(server, cutoff, source = "menu", event = "menu.end"),
+        )
+        repository.insertBatch(events + menuEvents).join()
 
-        repository.prune(cutoff).join() shouldBe 1
+        repository.prune(cutoff).join() shouldBe 2
         repository.prune(cutoff).join() shouldBe 1
         repository.prune(cutoff).join() shouldBe 0
 
-        val remaining = repository.query(
-            PlayerTelemetryQuery(
-                fromInclusive = base,
-                untilExclusive = cutoff + 1,
-                server = server,
-                limit = 10,
-            ),
-        ).join()
-        remaining.events.map(PlayerTelemetryEvent::eventId) shouldBe listOf(events.last().eventId)
+        val query = PlayerTelemetryQuery(fromInclusive = base, untilExclusive = cutoff + 1, server = server, limit = 10)
+        repository.query(query).join().events shouldBe listOf(events.last())
+        repository.query(query.copy(source = "menu")).join().events shouldBe listOf(menuEvents.last())
     }
 })
 

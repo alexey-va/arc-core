@@ -6,6 +6,7 @@ import ru.arc.sql.MySqlMigrator
 import ru.arc.sql.SqlConnectionConfig
 import ru.arc.sql.SqlMigration
 import ru.arc.sql.SqlRuntime
+import java.sql.Connection
 import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.Statement
@@ -40,7 +41,7 @@ internal class PlayerTelemetrySqlRepository(
 
     override fun migrate(): CompletableFuture<Unit> =
         runtime.executor.submit {
-            MySqlMigrator(runtime.dataSource, MIGRATION_NAMESPACE).migrate(listOf(MIGRATION))
+            MySqlMigrator(runtime.dataSource, MIGRATION_NAMESPACE).migrate(listOf(LEGACY_MIGRATION, MENU_MIGRATION))
             Unit
         }
 
@@ -80,7 +81,7 @@ internal class PlayerTelemetrySqlRepository(
         Unit
     }
 
-    /** INSERT IGNORE is followed by a hash readback, so only an identical event ID is treated as a replay. */
+    /** Write both source partitions atomically and verify the content of replays in their original table. */
     override fun insertBatch(events: List<PlayerTelemetryEvent>): CompletableFuture<Unit> {
         require(events.isNotEmpty() && events.size <= settings.batchSize) { "SQL telemetry batch size is invalid" }
         val snapshots = events.map(PlayerTelemetryEvent::validatedCopy)
@@ -88,33 +89,40 @@ internal class PlayerTelemetrySqlRepository(
             "SQL telemetry batch contains duplicate event ids"
         }
         val hashes = snapshots.associate { it.eventId to codec.hash(it) }
+        val batches = snapshots.groupBy { eventsTable(it.source) }
         return runtime.executor.transaction { connection ->
-            connection.prepareStatement(INSERT_EVENT).use { statement ->
-                snapshots.forEach { event ->
-                    bind(statement, event, hashes.getValue(event.eventId), clockMillis())
-                    statement.addBatch()
+            for (table in EVENT_TABLES) {
+                val batch = batches[table] ?: continue
+                connection.prepareStatement("INSERT IGNORE INTO `$table` $INSERT_COLUMNS VALUES ($INSERT_VALUES)").use { statement ->
+                    batch.forEach { event ->
+                        bind(statement, event, hashes.getValue(event.eventId), clockMillis())
+                        statement.addBatch()
+                    }
+                    statement.executeBatch().forEach { changed ->
+                        check(changed != Statement.EXECUTE_FAILED) { "SQL telemetry batch insert failed" }
+                    }
                 }
-                statement.executeBatch().forEach { changed ->
-                    check(changed != Statement.EXECUTE_FAILED) { "SQL telemetry batch insert failed" }
-                }
+                val batchHashes = batch.associate { it.eventId to hashes.getValue(it.eventId) }
+                val placeholders = batch.joinToString(",", "(", ")") { "?" }
+                val hashesSql = "SELECT `event_id`, `event_hash` FROM `$table` WHERE `event_id` IN $placeholders"
+                verifyHashes(connection.prepareStatement(hashesSql).use { statement ->
+                    batch.forEachIndexed { index, event -> statement.setString(index + 1, event.eventId) }
+                    statement.executeQuery().use { result ->
+                        buildMap { while (result.next()) put(result.getString("event_id"), result.getString("event_hash")) }
+                    }
+                }, batchHashes)
             }
-            val hashesSql = SELECT_HASHES + snapshots.joinToString(",", "(", ")") { "?" }
-            verifyHashes(connection.prepareStatement(hashesSql).use { statement ->
-                snapshots.map(PlayerTelemetryEvent::eventId).forEachIndexed { index, id -> statement.setString(index + 1, id) }
-                statement.executeQuery().use { result ->
-                    buildMap { while (result.next()) put(result.getString("event_id"), result.getString("event_hash")) }
-                }
-            }, hashes)
         }
     }
 
     override fun query(request: PlayerTelemetryQuery): CompletableFuture<PlayerTelemetryPage> =
         runtime.executor.read { connection ->
-            val coverage = coverage(connection, request.server)
+            val table = eventsTable(request.source, request.event)
+            val coverage = coverage(connection, request.server, table)
             val where = where(request)
             val cursorSql = if (request.cursor == null) "" else
                 " AND (`occurred_at_ms` > ? OR (`occurred_at_ms` = ? AND `event_id` > ?))"
-            val sql = "SELECT $EVENT_COLUMNS FROM `$EVENTS_TABLE` WHERE $where$cursorSql " +
+            val sql = "SELECT $EVENT_COLUMNS FROM `$table` WHERE $where$cursorSql " +
                 "ORDER BY `occurred_at_ms` ASC, `event_id` ASC LIMIT ?"
             val rows = connection.prepareStatement(sql).use { statement ->
                 statement.queryTimeout = QUERY_TIMEOUT_SECONDS
@@ -148,12 +156,13 @@ internal class PlayerTelemetrySqlRepository(
 
     override fun summary(request: PlayerTelemetrySummaryQuery): CompletableFuture<PlayerTelemetrySummary> =
         runtime.executor.read { connection ->
-            val coverage = coverage(connection, request.server)
+            val table = eventsTable(request.source, request.event)
+            val coverage = coverage(connection, request.server, table)
             val where = where(request)
             val sql =
                 "SELECT DATE_FORMAT(FROM_UNIXTIME(`occurred_at_ms` / 1000), '%Y-%m-%d') AS `utc_day`, " +
                     "`server`, `source`, `event`, COUNT(*) AS `event_count`, " +
-                    "COUNT(DISTINCT `player_id`) AS `unique_players` FROM `$EVENTS_TABLE` WHERE $where " +
+                    "COUNT(DISTINCT `player_id`) AS `unique_players` FROM `$table` WHERE $where " +
                     "GROUP BY `utc_day`, `server`, `source`, `event` " +
                     "ORDER BY `utc_day`, `server`, `source`, `event` LIMIT ?"
             val rows = connection.prepareStatement(sql).use { statement ->
@@ -193,16 +202,31 @@ internal class PlayerTelemetrySqlRepository(
         }
 
     override fun prune(cutoff: Long): CompletableFuture<Int> = runtime.executor.write { connection ->
-        connection.prepareStatement("DELETE FROM `$EVENTS_TABLE` WHERE `occurred_at_ms` < ? ORDER BY `occurred_at_ms` LIMIT ?").use { statement ->
-            statement.setLong(1, cutoff)
-            statement.setInt(2, settings.retentionBatchSize)
-            statement.executeUpdate()
+        EVENT_TABLES.sumOf { table ->
+            connection.prepareStatement("DELETE FROM `$table` WHERE `occurred_at_ms` < ? ORDER BY `occurred_at_ms` LIMIT ?").use { statement ->
+                statement.setLong(1, cutoff)
+                statement.setInt(2, settings.retentionBatchSize)
+                statement.executeUpdate()
+            }
         }
     }
 
-    private fun coverage(connection: java.sql.Connection, server: String?): PlayerTelemetryCoverage {
-        val predicate = if (server == null) "" else " WHERE `server` = ?"
+    private fun eventsTable(source: String?, event: String? = null): String =
+        if (source == PlayerTelemetryEvent.MENU_SOURCE || (source == null && event in MENU_EVENTS)) MENU_EVENTS_TABLE else EVENTS_TABLE
+
+    private fun coverage(connection: Connection, server: String?, table: String): PlayerTelemetryCoverage {
         val retainedFrom = clockMillis() - settings.retentionDays * MILLIS_PER_DAY
+        // The legacy node ledger does not track when each Paper server starts capturing menu events.
+        if (table == MENU_EVENTS_TABLE) return PlayerTelemetryCoverage(
+            coverageFrom = null,
+            coverageGapFrom = null,
+            retainedFrom = retainedFrom,
+            nodesObserved = 0,
+            oldestNodeLastSeenAt = null,
+            nodesWithCoverageThrough = 0,
+            oldestNodeCoverageThrough = null,
+        )
+        val predicate = if (server == null) "" else " WHERE `server` = ?"
         return connection.prepareStatement(
             "SELECT MAX(`coverage_from_ms`) AS `coverage_from`, MIN(`coverage_gap_from_ms`) AS `coverage_gap_from`, " +
                 "COUNT(*) AS `nodes_observed`, MIN(`last_seen_at_ms`) AS `oldest_node_last_seen_at`, " +
@@ -344,19 +368,20 @@ internal class PlayerTelemetrySqlRepository(
     companion object {
         private const val MIGRATION_NAMESPACE = "arc_player_telemetry"
         private const val EVENTS_TABLE = "arc_player_events"
+        private const val MENU_EVENTS_TABLE = "arc_menu_events"
+        private val EVENT_TABLES = listOf(EVENTS_TABLE, MENU_EVENTS_TABLE)
+        private val MENU_EVENTS = setOf("menu.view", "menu.action", "menu.result", "menu.end")
         private const val NODES_TABLE = "arc_player_event_nodes"
         private const val MILLIS_PER_DAY = 86_400_000L
         private const val QUERY_TIMEOUT_SECONDS = 3
         private const val EVENT_COLUMNS =
             "`event_id`, `schema_version`, `occurred_at_ms`, `server`, `player_id`, `player_name`, `session_id`, " +
                 "`source`, `event`, `subject`, `operation_id`, `world`, `x`, `y`, `z`, `qa`, `attributes_json`"
-        private const val INSERT_EVENT =
-            "INSERT IGNORE INTO `$EVENTS_TABLE` (`event_id`, `schema_version`, `occurred_at_ms`, `ingested_at_ms`, " +
+        private const val INSERT_COLUMNS =
+            "(`event_id`, `schema_version`, `occurred_at_ms`, `ingested_at_ms`, " +
                 "`server`, `player_id`, `player_name`, `session_id`, `source`, `event`, `subject`, `operation_id`, " +
-                "`world`, `x`, `y`, `z`, `qa`, `attributes_json`, `event_hash`) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-        private const val SELECT_HASHES =
-            "SELECT `event_id`, `event_hash` FROM `$EVENTS_TABLE` WHERE `event_id` IN "
+                "`world`, `x`, `y`, `z`, `qa`, `attributes_json`, `event_hash`)"
+        private const val INSERT_VALUES = "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?"
         private const val UPSERT_NODE =
             "INSERT INTO `$NODES_TABLE` (`server`, `coverage_from_ms`, `last_seen_at_ms`, `coverage_gap_from_ms`, `known_drops`) " +
                 "VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE `coverage_from_ms` = LEAST(`coverage_from_ms`, VALUES(`coverage_from_ms`)), " +
@@ -371,7 +396,7 @@ internal class PlayerTelemetrySqlRepository(
                 "`coverage_gap_from_ms` = CASE WHEN ? IS NULL THEN `coverage_gap_from_ms` " +
                 "WHEN `coverage_gap_from_ms` IS NULL THEN ? ELSE LEAST(`coverage_gap_from_ms`, ?) END, " +
                 "`known_drops` = GREATEST(`known_drops`, ?) WHERE `server` = ?"
-        private val MIGRATION = SqlMigration(
+        internal val LEGACY_MIGRATION = SqlMigration(
             version = 1,
             description = "create durable player telemetry events and node coverage",
             statements = listOf(
@@ -418,6 +443,11 @@ internal class PlayerTelemetrySqlRepository(
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """.trimIndent(),
             ),
+        )
+        private val MENU_MIGRATION = SqlMigration(
+            version = 2,
+            description = "create empty menu telemetry events table",
+            statements = listOf("CREATE TABLE IF NOT EXISTS `$MENU_EVENTS_TABLE` LIKE `$EVENTS_TABLE`"),
         )
 
         fun open(

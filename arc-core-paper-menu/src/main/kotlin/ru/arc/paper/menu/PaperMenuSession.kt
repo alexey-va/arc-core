@@ -163,7 +163,10 @@ class PaperMenuSession internal constructor(
             feedback.state.invalidateForGeneration(catalogs.current().generation)
             return
         }
-        if (event.rawSlot !in 0 until inventory.size) return
+        val index = event.rawSlot
+        if (index !in 0 until inventory.size) return
+        // IF has no domain callback for a disabled entry. Observe its rejection without changing that binding.
+        if (renderedSlots[index]?.entry?.enabled == false) dispatch(index, event)
         gui.click(event)
     }
 
@@ -324,23 +327,29 @@ class PaperMenuSession internal constructor(
         val entry = slot.entry ?: return
         val target = slot.target ?: return
         if (!open || event.whoClicked.uniqueId != player.uniqueId || !isCurrent() || !processedEvents.add(event)) return
-        val button = targetKey(target)
-        val clickDetails = clickObservation(button, target, event)
-        if (!entry.enabled || event.click !in entry.acceptedClicks) {
-            observe("blocked", clickDetails)
+        val attempt = PaperMenuObservationPublisher.attempt(plugin) {
+            observation() + clickObservation(target, event)
+        }
+        val transfer = entry.transfer
+        val blockedReason = when {
+            !entry.enabled -> "disabled"
+            event.click !in entry.acceptedClicks -> "unsupported_click"
+            transfer != null && event.action !in SAFE_MENU_TRANSFER_ACTIONS -> "unsafe_transfer_action"
+            else -> null
+        }
+        if (blockedReason != null) {
+            attempt?.reject(blockedReason)
             return
         }
-        val context = PaperMenuClickContext(this, player, target, event)
-        val transfer = entry.transfer
+        val context = PaperMenuClickContext(this, player, target, event).also { it.attempt = attempt }
         if (transfer == null) {
-            observe("click", clickDetails)
-            entry.onClick.handle(context)
-        } else if (event.action in SAFE_MENU_TRANSFER_ACTIONS &&
-            transfer.handle(context) == PaperMenuTransferDecision.ALLOW
-        ) {
-            observe("click", clickDetails)
+            attempt?.start()
+            PaperMenuObservationPublisher.dispatch(attempt) { entry.onClick.handle(context) }
+        } else if (PaperMenuObservationPublisher.dispatch(attempt) { transfer.handle(context) } == PaperMenuTransferDecision.ALLOW) {
+            attempt?.start()
             event.isCancelled = false
-        } else observe("blocked", clickDetails)
+            attempt?.reportOutcome("requested", "transfer_allowed", null)
+        } else attempt?.reject("transfer_denied")
     }
 
     private fun restoreFeedback(token: MenuFeedbackToken) {
@@ -363,23 +372,37 @@ class PaperMenuSession internal constructor(
     private fun isCurrent(): Boolean = catalogs.current().generation == generation
 
     private fun observe(phase: String, extra: Map<String, Any> = emptyMap()) {
-        val payload = linkedMapOf<String, Any>(
-            "protocol" to 1,
-            "owner" to plugin.name,
-            "surface" to menuId.value,
-            "visitId" to visitId,
-            "playerId" to player.uniqueId.toString(),
-            "revision" to lastRevision,
-            "phase" to phase,
-        )
-        val buttons = linkedMapOf<String, Int>()
-        renderedSlots.entries.sortedBy { it.key }.forEach { (slot, rendered) ->
-            if (rendered.entry?.enabled != true || rendered.target == null) return@forEach
-            buttons.putIfAbsent(targetKey(rendered.target), slot)
+        PaperMenuObservationPublisher.publish(plugin) {
+            // IF discards the native open result. A cancelled/replaced open does not prove a destination.
+            if (phase == "open" && player.openInventory.topInventory !== inventory) null
+            else observation() + extra + ("phase" to phase)
         }
-        payload["buttons"] = buttons
-        payload.putAll(extra)
-        PaperMenuObservationPublisher.publish(plugin, payload)
+    }
+
+    private fun observation(): Map<String, Any> = buildMap {
+        put("protocol", 1)
+        put("owner", plugin.name)
+        put("surface", menuId.value)
+        put("visitId", visitId)
+        put("playerId", player.uniqueId.toString())
+        put("revision", lastRevision)
+        renderedPageState?.let { state ->
+            put("pageIndex", state.pageIndex)
+            put("pageCount", state.pageCount)
+        }
+        val buttons = linkedMapOf<String, Int>()
+        val visible = linkedMapOf<Int, String>()
+        val disabled = mutableListOf<Int>()
+        renderedSlots.entries.sortedBy { it.key }.forEach { (slot, rendered) ->
+            val entry = rendered.entry ?: return@forEach
+            val target = rendered.target ?: return@forEach
+            val key = targetKey(target)
+            visible[slot] = key
+            if (entry.enabled) buttons.putIfAbsent(key, slot) else disabled += slot
+        }
+        put("buttons", Collections.unmodifiableMap(buttons))
+        put("visibleSlotButtons", Collections.unmodifiableMap(visible))
+        if (disabled.isNotEmpty()) put("disabledSlots", Collections.unmodifiableList(disabled))
     }
 
     private fun revision(): String {
@@ -404,19 +427,14 @@ class PaperMenuSession internal constructor(
     }
 
     private fun clickObservation(
-        button: String,
         target: PaperMenuClickTarget,
         event: InventoryClickEvent,
     ): Map<String, Any> = buildMap {
-        put("button", button)
+        put("button", targetKey(target))
         put("rawSlot", event.rawSlot)
         put("clickType", event.click.name)
         put("action", event.action.name)
         if (target is PaperMenuClickTarget.RegionEntry) put("regionIndex", target.index)
-        renderedPageState?.let { state ->
-            put("pageIndex", state.pageIndex)
-            put("pageCount", state.pageCount)
-        }
         event.currentItem?.let { item ->
             put("material", item.type.key.toString())
             put("amount", item.amount)

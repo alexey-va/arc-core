@@ -13,6 +13,7 @@ import ru.arc.paper.api.ArcTelemetryProvider
 import ru.arc.core.BukkitTaskScheduler
 import ru.arc.menu.MenuCatalog
 import ru.arc.paper.testing.MockBukkitTestRuntime
+import java.util.UUID
 
 class PaperMenuObservationTest : FreeSpec({
     lateinit var paper: MockBukkitTestRuntime
@@ -59,7 +60,14 @@ class PaperMenuObservationTest : FreeSpec({
             )
         }
 
-        observed.filter { it["phase"] == "render" }.single()["buttons"] shouldBe emptyMap<String, Int>()
+        val rendered = observed.single { it["phase"] == "render" }
+        rendered["buttons"] shouldBe emptyMap<String, Int>()
+        rendered["visibleSlotButtons"] shouldBe mapOf(4 to BUTTON.value)
+        rendered["disabledSlots"] shouldBe listOf(4)
+        val event = click(player, 4, ClickType.LEFT, InventoryAction.PICKUP_ALL)
+        paper.callEvent(event)
+        event.isCancelled shouldBe true
+        observed.single { it["phase"] == "blocked" }["reason"] shouldBe "disabled"
         service.close()
     }
 
@@ -90,8 +98,15 @@ class PaperMenuObservationTest : FreeSpec({
         paper.callEvent(decoration)
 
         calls shouldBe 1
-        observed.count { it["phase"] == "click" } shouldBe 1
-        observed.count { it["phase"] == "blocked" } shouldBe 1
+        val acceptedObservation = observed.single { it["phase"] == "click" }
+        val blockedObservation = observed.single { it["phase"] == "blocked" }
+        val rejected = observed.single { it["phase"] == "result" }
+        val attempt = acceptedObservation["attemptId"] as String
+        UUID.fromString(attempt).toString() shouldBe attempt
+        blockedObservation["attemptId"] shouldNotBe attempt
+        rejected["attemptId"] shouldBe blockedObservation["attemptId"]
+        rejected["outcome"] shouldBe "rejected"
+        rejected["reason"] shouldBe "unsupported_click"
         service.close()
     }
 
@@ -100,15 +115,21 @@ class PaperMenuObservationTest : FreeSpec({
         val player = paper.addPlayer("Viewer")
         val observed = paper.observations(plugin)
         val service = PaperMenuService(plugin, repository(paginated = true), BukkitTaskScheduler(plugin))
+        lateinit var clicked: PaperMenuClickContext
         val entries = listOf(
             PaperMenuEntry(org.bukkit.inventory.ItemStack.of(Material.STONE)),
             PaperMenuEntry(org.bukkit.inventory.ItemStack.of(Material.DIRT)),
             PaperMenuEntry(org.bukkit.inventory.ItemStack.of(Material.COPPER_INGOT)),
-            PaperMenuEntry(org.bukkit.inventory.ItemStack.of(Material.EMERALD, 7)),
+            PaperMenuEntry(org.bukkit.inventory.ItemStack.of(Material.EMERALD, 7), onClick = { clicked = it }),
         )
         val session = service.open(player, MENU) {
             content(Material.DIAMOND).copy(regions = mapOf(CONTENT to entries))
         }
+        val firstPage = observed.last()
+        firstPage["buttons"] shouldBe mapOf(BUTTON.value to 4, "region:content" to 10)
+        firstPage["visibleSlotButtons"] shouldBe mapOf(
+            4 to BUTTON.value, 10 to "region:content", 11 to "region:content", 12 to "region:content",
+        )
         session.setPage(1)
 
         paper.callEvent(click(player, 10, ClickType.LEFT, InventoryAction.PICKUP_ALL))
@@ -124,6 +145,11 @@ class PaperMenuObservationTest : FreeSpec({
         click["material"] shouldBe "minecraft:emerald"
         click["amount"] shouldBe 7
         (click.keys intersect setOf("lore", "nbt", "displayText")) shouldBe emptySet()
+        session.setPage(0)
+        clicked.reportOutcome("succeeded", "entry_selected", "catalog")
+        observed.last() shouldBe click + mapOf(
+            "phase" to "result", "outcome" to "succeeded", "reason" to "entry_selected", "target" to "catalog",
+        )
         service.close()
     }
 
@@ -148,10 +174,12 @@ class PaperMenuObservationTest : FreeSpec({
         observed.last()["reason"] shouldBe "shutdown"
     }
 
-    "reports denied transfer as blocked without a click action" {
+    "reports denied and failed transfers without accepting the click" {
         val plugin = paper.createSimplePlugin("ObservationTransfer")
         val player = paper.addPlayer("Viewer")
         val observed = paper.observations(plugin)
+        val failure = IllegalStateException("private transfer details")
+        var failTransfer = false
         val service = PaperMenuService(plugin, repository(), BukkitTaskScheduler(plugin))
         service.open(player, MENU) {
             PaperMenuContent(
@@ -161,7 +189,10 @@ class PaperMenuObservationTest : FreeSpec({
                         PaperMenuEntry(
                             org.bukkit.inventory.ItemStack.of(Material.DIAMOND),
                             acceptedClicks = setOf(ClickType.LEFT),
-                            transfer = PaperMenuTransferHandler { PaperMenuTransferDecision.DENY },
+                            transfer = PaperMenuTransferHandler {
+                                if (failTransfer) throw failure
+                                PaperMenuTransferDecision.DENY
+                            },
                         ),
                     ),
                 ),
@@ -170,7 +201,18 @@ class PaperMenuObservationTest : FreeSpec({
         paper.callEvent(click(player, 10, ClickType.LEFT, InventoryAction.PICKUP_ALL))
 
         observed.count { it["phase"] == "click" } shouldBe 0
-        observed.count { it["phase"] == "blocked" } shouldBe 1
+        val denied = observed.single { it["phase"] == "blocked" }
+        denied["reason"] shouldBe "transfer_denied"
+        observed.single { it["phase"] == "result" }["attemptId"] shouldBe denied["attemptId"]
+
+        failTransfer = true
+        val failing = click(player, 10, ClickType.LEFT, InventoryAction.PICKUP_ALL)
+        // Inventory Framework logs the propagated exception at its callback boundary.
+        service.onClick(failing)
+        failing.isCancelled shouldBe true
+        observed.takeLast(2).map { it["phase"] } shouldBe listOf("blocked", "result")
+        observed.last()["outcome"] shouldBe "failed"
+        observed.last()["reason"] shouldBe "handler_exception"
         service.close()
     }
 
@@ -204,7 +246,7 @@ private class ObservationCollector : ArcTelemetryProvider {
     }
 }
 
-private fun MockBukkitTestRuntime.observations(plugin: org.bukkit.plugin.Plugin): MutableList<Map<String, Any>> {
+internal fun MockBukkitTestRuntime.observations(plugin: org.bukkit.plugin.Plugin): MutableList<Map<String, Any>> {
     val collector = ObservationCollector()
     plugin.server.servicesManager.register(ArcTelemetryProvider::class.java, collector, plugin, ServicePriority.Normal)
     return collector.events

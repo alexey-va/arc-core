@@ -1,5 +1,6 @@
 package ru.arc.paper.menu
 
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FreeSpec
 import io.kotest.matchers.shouldBe
 import io.mockk.every
@@ -25,7 +26,10 @@ class PaperDialogRuntimeTest : FreeSpec({
             val quantity = PaperDialogInputId.of("quantity")
             lateinit var registration: PaperDialogSessionRegistration
             var submitted: Float? = null
-            PaperDialogRuntime(paper.createSimplePlugin("DialogSlider")) { _, _, registered ->
+            val failure = IllegalStateException("private handler details")
+            val plugin = paper.createSimplePlugin("DialogSlider")
+            val observed = paper.observations(plugin)
+            PaperDialogRuntime(plugin) { _, _, registered ->
                 registration = registered
             }.use { runtime ->
                 runtime.beginFlow(player)
@@ -36,18 +40,27 @@ class PaperDialogRuntimeTest : FreeSpec({
                     )),
                     buttons = listOf(PaperDialogButton(
                         PaperDialogActionId.of("submit"), Component.text("Submit"),
-                    ) { submitted = it.number(quantity) }),
+                    ) {
+                        submitted = it.number(quantity)
+                        throw failure
+                    }),
                 ))
                 val response = mockk<DialogResponseView> {
                     every { getFloat("quantity") } returns 17f
                 }
-                runtime.onCustomClick(mockk {
-                    every { commonConnection } returns connection
-                    every { identifier } returns Key.key(registration.key(PaperDialogActionId.of("submit")))
-                    every { dialogResponseView } returns response
-                })
+                shouldThrow<IllegalStateException> {
+                    runtime.onCustomClick(mockk {
+                        every { commonConnection } returns connection
+                        every { identifier } returns Key.key(registration.key(PaperDialogActionId.of("submit")))
+                        every { dialogResponseView } returns response
+                    })
+                } shouldBe failure
 
                 submitted shouldBe 17f
+                val attempt = observed.single { it["phase"] == "click" }
+                observed.single { it["phase"] == "result" } shouldBe attempt + mapOf(
+                    "phase" to "result", "outcome" to "failed", "reason" to "handler_exception",
+                )
             }
         }
     }
@@ -59,7 +72,9 @@ class PaperDialogRuntimeTest : FreeSpec({
             val connection = mockk<PlayerGameConnection> { every { this@mockk.player } returns player }
             lateinit var screen: PaperDialogScreen
             lateinit var registration: PaperDialogSessionRegistration
-            PaperDialogRuntime(paper.createSimplePlugin("RepeatShop")) { _, shown, registered ->
+            val plugin = paper.createSimplePlugin("RepeatShop")
+            val observed = paper.observations(plugin)
+            PaperDialogRuntime(plugin) { _, shown, registered ->
                 screen = shown
                 registration = registered
             }.use { runtime ->
@@ -88,6 +103,9 @@ class PaperDialogRuntimeTest : FreeSpec({
                 screen.exitButton?.tooltip shouldBe screen.exitButton?.label
                 screen.exitButton?.width shouldBe 200
                 click(PaperDialogActionId.of("shop"))
+                val shopAttempt = observed.single { it["phase"] == "click" }
+                observed.last()["surface"] shouldBe "shop"
+                observed.last()["triggerAttemptId"] shouldBe shopAttempt["attemptId"]
                 screen.exitButton?.label shouldBe Component.text("‹ ", NamedTextColor.WHITE)
                     .append(Component.translatable("gui.back", NamedTextColor.WHITE))
                 screen.exitButton?.tooltip shouldBe Component.translatable("gui.back", NamedTextColor.WHITE)
@@ -101,6 +119,8 @@ class PaperDialogRuntimeTest : FreeSpec({
                 verify(exactly = 0) { player.closeDialog() }
                 click(requireNotNull(screen.exitButton).id)
                 verify(exactly = 1) { player.closeDialog() }
+                observed.last()["phase"] shouldBe "close"
+                observed.last()["reason"] shouldBe "footer_close"
             }
         }
     }

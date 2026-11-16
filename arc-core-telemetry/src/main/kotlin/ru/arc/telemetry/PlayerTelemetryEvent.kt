@@ -44,7 +44,9 @@ data class PlayerTelemetryEvent(
             eventId, server, playerId, playerName, sessionId, source, event,
             subject, operationId, world,
         ).sumOf { it.length.toLong() * 2L } + attributes.entries.sumOf {
-            (it.key.length.toLong() + it.value.length.toLong()) * 2L + 16L
+            // Count Gson's default Unicode escaping of '=' in the menu lists before choosing a journal batch.
+            val escaping = if (source == MENU_SOURCE) 5L * it.value.count { char -> char == '=' } else 0L
+            (it.key.length.toLong() + it.value.length.toLong()) * 2L + 16L + escaping
         }
 
     private fun validate() {
@@ -72,7 +74,14 @@ data class PlayerTelemetryEvent(
         require(attributes.size <= MAX_ATTRIBUTES) { "Too many player telemetry attributes" }
         attributes.forEach { (key, value) ->
             require(ATTRIBUTE_KEY.matches(key)) { "Invalid player telemetry attribute key" }
-            require(value.length <= MAX_ATTRIBUTE_VALUE_LENGTH && ATTRIBUTE_VALUE.matches(value)) {
+            val valid = if (source == MENU_SOURCE && event == MENU_VIEW) when (key) {
+                "buttons" -> validMenuList(value, MAX_MENU_BUTTONS_LENGTH) {
+                    MENU_BUTTON.matches(it) && isMenuSlot(it.substringAfter('='))
+                }
+                "disabledSlots" -> validMenuList(value, MAX_DISABLED_SLOTS_LENGTH, ::isMenuSlot)
+                else -> validAttributeValue(value)
+            } else validAttributeValue(value)
+            require(valid) {
                 "Invalid player telemetry attribute value"
             }
         }
@@ -82,6 +91,11 @@ data class PlayerTelemetryEvent(
         const val CURRENT_SCHEMA_VERSION = 1
         const val MAX_ATTRIBUTES = 32
         const val MAX_ATTRIBUTE_VALUE_LENGTH = 160
+        const val MENU_SOURCE = "menu"
+        const val MAX_MENU_BUTTONS_LENGTH = 16_384
+        private const val MENU_VIEW = "menu.view"
+        private const val MAX_MENU_SLOTS = 128
+        private const val MAX_DISABLED_SLOTS_LENGTH = 512
         private const val MAX_SERVER_LENGTH = 32
         private const val MAX_SOURCE_LENGTH = 48
         private const val MAX_EVENT_LENGTH = 64
@@ -96,6 +110,20 @@ data class PlayerTelemetryEvent(
         private val PLAYER_NAME = Regex("[A-Za-z0-9_]{3,16}")
         private val ATTRIBUTE_KEY = Regex("[a-z][A-Za-z0-9_.-]{0,31}")
         private val ATTRIBUTE_VALUE = Regex("[A-Za-z0-9_ .,:+=/#@-]*")
+        private val MENU_BUTTON = Regex("[a-z0-9_.:/-]{1,96}=[0-9]{1,3}")
+
+        private fun validAttributeValue(value: String): Boolean =
+            value.length <= MAX_ATTRIBUTE_VALUE_LENGTH && ATTRIBUTE_VALUE.matches(value)
+
+        private fun validMenuList(value: String, maxLength: Int, validEntry: (String) -> Boolean): Boolean {
+            if (value.length > maxLength) return false
+            if (value.isEmpty()) return true
+            val entries = value.split(',', limit = MAX_MENU_SLOTS + 1)
+            return entries.size <= MAX_MENU_SLOTS && entries.all(validEntry)
+        }
+
+        private fun isMenuSlot(value: String): Boolean =
+            value.length in 1..3 && value.all { it in '0'..'9' } && value.toInt() < MAX_MENU_SLOTS
 
         private fun requireIdentifier(value: String, maximumLength: Int, field: String) {
             require(value.length <= maximumLength && IDENTIFIER.matches(value)) { "$field is not a bounded safe identifier" }
