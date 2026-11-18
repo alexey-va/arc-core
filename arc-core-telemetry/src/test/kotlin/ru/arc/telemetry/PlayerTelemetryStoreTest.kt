@@ -133,6 +133,45 @@ class PlayerTelemetryStoreTest : FunSpec({
         }
     }
 
+    test("coverage waits for an action flushed as the producer clears its watermark") {
+        val root = Files.createTempDirectory("arc-player-telemetry-flush-watermark-")
+        val configured = settings()
+        val start = 1_800_000_000_000L
+        val action = event().copy(occurredAt = start + 1_000L)
+        val journalClockCalls = AtomicInteger()
+        val insertStarted = CountDownLatch(1)
+        val pendingInsert = CompletableFuture<Unit>()
+        val sql = FakeTelemetrySql(insertResult = {
+            insertStarted.countDown()
+            pendingInsert
+        })
+        lateinit var store: PlayerTelemetryStore
+        store = PlayerTelemetryStore(
+            dataDirectory = root,
+            server = "spawn",
+            settings = configured,
+            gson = Gson(),
+            clockMillis = {
+                if (Thread.currentThread().name == "player-telemetry-journal" && journalClockCalls.incrementAndGet() == 2) {
+                    // First idle watermark attempt, after the initial recovery clock read.
+                    check(store.offer(action))
+                    store.setBufferedCaptureSince(null)
+                }
+                if (journalClockCalls.get() < 2) start else start + 10_000L
+            },
+            outboxFactory = { FilePlayerTelemetryOutbox(root, configured, PlayerTelemetryJsonCodec(Gson()), Gson()) },
+            sqlFactory = { sql },
+        )
+        store.use {
+            it.setBufferedCaptureSince(action.occurredAt)
+            it.start().get(3, TimeUnit.SECONDS)
+            insertStarted.await(3, TimeUnit.SECONDS) shouldBe true
+            sql.watermarks.none { through -> through > action.occurredAt } shouldBe true
+            pendingInsert.complete(Unit)
+            await { sql.watermarks.lastOrNull()?.let { through -> through > action.occurredAt } == true }
+        }
+    }
+
     test("query admission rejects excess outstanding work and releases capacity on completion") {
         val root = Files.createTempDirectory("arc-player-telemetry-query-cap-")
         val queryGates = CopyOnWriteArrayList<CompletableFuture<PlayerTelemetryPage>>()
@@ -254,6 +293,38 @@ class PlayerTelemetryStoreTest : FunSpec({
         }
         (store.health().coverageGapFrom != null) shouldBe true
         store.closeAsync().get(3, TimeUnit.SECONDS)
+    }
+
+    test("a rejected valid row marks its observation time as the coverage gap") {
+        val root = Files.createTempDirectory("arc-player-telemetry-rejected-row-")
+        val clock = java.util.concurrent.atomic.AtomicLong(1_800_000_000_000L)
+        val configured = settings().copy(maxRecordBytes = 1_024L)
+        val outbox = FilePlayerTelemetryOutbox(root, configured, PlayerTelemetryJsonCodec(Gson()), Gson())
+        val store = PlayerTelemetryStore(
+            dataDirectory = root,
+            server = "spawn",
+            settings = configured,
+            gson = Gson(),
+            clockMillis = clock::get,
+            outboxFactory = { outbox },
+            sqlFactory = { FakeTelemetrySql() },
+        )
+        store.use {
+            it.start().get(3, TimeUnit.SECONDS)
+            val capturedAt = clock.addAndGet(1_000L)
+            val flushAt = clock.addAndGet(5_000L)
+            val attributes = mutableMapOf("field" to "valid")
+            val invalid = event(attributes).copy(occurredAt = capturedAt)
+            attributes["field"] = "invalid?"
+            it.offer(invalid) shouldBe false
+            await { outbox.stats().knownDropCount == 1L }
+            outbox.stats().coverageGapFrom shouldBe flushAt
+
+            val valid = event(mapOf("first" to "A".repeat(160), "second" to "B".repeat(160))).copy(occurredAt = capturedAt)
+            it.offer(valid) shouldBe false
+            await { outbox.stats().knownDropCount == 2L }
+            outbox.stats().coverageGapFrom shouldBe capturedAt
+        }
     }
 
     test("an acknowledgement snapshot cannot overwrite a later journal commit") {

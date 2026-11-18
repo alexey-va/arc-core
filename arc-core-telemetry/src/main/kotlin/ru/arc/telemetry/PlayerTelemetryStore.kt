@@ -204,7 +204,8 @@ class PlayerTelemetryStore private constructor(
         synchronized(stateLock) {
             if (!started.get() || closing.get()) return false
             if (!accepting.get()) {
-                lose(clockMillis())
+                val now = clockMillis()
+                lose(event.occurredAt.takeIf { it in 1..now } ?: now)
                 return false
             }
             val snapshot = try {
@@ -215,19 +216,19 @@ class PlayerTelemetryStore private constructor(
             }
             val estimate = snapshot.estimatedBytes()
             if (estimate + 96L > settings.maxRecordBytes) {
-                lose(clockMillis())
+                lose(snapshot.occurredAt)
                 return false
             }
             val eventTotal = reservedEvents.get()
             val byteTotal = reservedBytes.get()
             if (eventTotal >= settings.maxOutboxEvents || estimate > settings.maxOutboxBytes - byteTotal) {
                 saturated.set(true)
-                lose(clockMillis())
+                lose(snapshot.occurredAt)
                 return false
             }
             if (!queue.offer(Capture(snapshot, estimate))) {
                 saturated.set(true)
-                lose(clockMillis())
+                lose(snapshot.occurredAt)
                 return false
             }
             reservedEvents.incrementAndGet()
@@ -408,7 +409,7 @@ class PlayerTelemetryStore private constructor(
             pendingJournalEvents.decrementAndGet()
             reservedEvents.decrementAndGet()
             reservedBytes.addAndGet(-first.reservationBytes)
-            markGap(clockMillis())
+            markGap(first.event.occurredAt)
         }
         val chosen = ArrayList<QueuedTelemetryEvent>(settings.batchSize)
         var reservation = 96L
@@ -598,6 +599,11 @@ class PlayerTelemetryStore private constructor(
                     setFailure(failure, "COVERAGE_SNAPSHOT_FAILED")
                     null
                 }
+                // Clearing the producer watermark happens after offer. Check intake after sampling it.
+                val candidateThrough = minOf(
+                    clockMillis() - COVERAGE_WATERMARK_LAG_MILLIS,
+                    bufferedCaptureSince.get(),
+                )
                 val stillIdle = snapshot != null && snapshot.eventCount == 0L && synchronized(stateLock) {
                     reservedEvents.get() == 0L && queue.isEmpty() && pendingJournalEvents.get() == 0 &&
                         pendingPersistedDrops.get() == 0L && !closing.get()
@@ -606,10 +612,7 @@ class PlayerTelemetryStore private constructor(
                     coverageAdvanceInFlight.set(false)
                     return@execute
                 }
-                val through = minOf(
-                    clockMillis() - COVERAGE_WATERMARK_LAG_MILLIS,
-                    bufferedCaptureSince.get(),
-                ).coerceAtLeast(snapshot.coverageFrom)
+                val through = candidateThrough.coerceAtLeast(snapshot.coverageFrom)
                 val gap = listOfNotNull(
                     coverageGapFrom.get().takeIf { it > 0L },
                     runtimeGap.get().takeIf { it > 0L },
