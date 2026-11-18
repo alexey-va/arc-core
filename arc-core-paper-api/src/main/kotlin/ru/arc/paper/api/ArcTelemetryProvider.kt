@@ -49,5 +49,12 @@ interface ArcTelemetryProvider {
         rewardId: String?,
     ): String? = null
     fun cancelAudit(playerId: UUID, token: String?) = Unit
+
+    /**
+     * Publishes a bounded UI observation from Paper's primary thread.
+     * Balanced `dispatch_start` and `dispatch_end` phases scope a synchronous click callback.
+     * They carry the click identity and its `started` flag. An inner `historyFooter=true`
+     * scope identifies the ancestor resume callback. These phases are for correlation only.
+     */
     fun observeUi(payload: Map<String, Any>) = Unit
 }

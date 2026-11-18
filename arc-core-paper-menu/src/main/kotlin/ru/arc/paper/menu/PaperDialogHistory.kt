@@ -80,14 +80,14 @@ internal class PaperDialogHistory(private val state: MutableMap<String, Any>, pr
         try { action() } finally { state["callbackDepth"] = previous }
     }
 
-    /** Returns true when a previous owner was restored, false when the flow ended. */
-    fun back(): Boolean {
+    /** Returns true when an ancestor resume was invoked. It may present its screen later. */
+    fun back(resume: (Runnable) -> Unit = Runnable::run): Boolean {
         val removed = if (visits.isEmpty()) null else visits.removeAt(visits.lastIndex)
         removed?.run("dismiss")
         val previous = current ?: return false
         val wasRestoring = restoring
         state["restoring"] = true
-        try { previous.run("resume") } finally { state["restoring"] = wasRestoring }
+        try { resume(previous.getValue("resume") as Runnable) } finally { state["restoring"] = wasRestoring }
         return true
     }
 

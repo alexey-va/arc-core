@@ -104,8 +104,9 @@ class PaperDialogRuntimeTest : FreeSpec({
                 screen.exitButton?.width shouldBe 200
                 click(PaperDialogActionId.of("shop"))
                 val shopAttempt = observed.single { it["phase"] == "click" }
-                observed.last()["surface"] shouldBe "shop"
-                observed.last()["triggerAttemptId"] shouldBe shopAttempt["attemptId"]
+                val shopOpen = observed.last { it["phase"] == "open" }
+                shopOpen["surface"] shouldBe "shop"
+                shopOpen["triggerAttemptId"] shouldBe shopAttempt["attemptId"]
                 screen.exitButton?.label shouldBe Component.text("‹ ", NamedTextColor.WHITE)
                     .append(Component.translatable("gui.back", NamedTextColor.WHITE))
                 screen.exitButton?.tooltip shouldBe Component.translatable("gui.back", NamedTextColor.WHITE)
@@ -117,10 +118,26 @@ class PaperDialogRuntimeTest : FreeSpec({
                 click(requireNotNull(screen.exitButton).id)
                 screen.id shouldBe "panel"
                 verify(exactly = 0) { player.closeDialog() }
+                val backAttempt = observed.last { it["phase"] == "click" }
+                val backScope = observed.filter { it["attemptId"] == backAttempt["attemptId"] && it["historyFooter"] == true }
+                backScope.map { it["phase"] } shouldBe listOf("dispatch_start", "dispatch_end")
+                val panelOpen = observed.last { it["phase"] == "open" }
+                panelOpen["triggerAttemptId"] shouldBe backAttempt["attemptId"]
+                observed.subList(observed.indexOf(backScope.first()) + 1, observed.indexOf(backScope.last())) shouldBe listOf(panelOpen)
                 click(requireNotNull(screen.exitButton).id)
                 verify(exactly = 1) { player.closeDialog() }
-                observed.last()["phase"] shouldBe "close"
-                observed.last()["reason"] shouldBe "footer_close"
+                observed.single { it["phase"] == "close" }["reason"] shouldBe "footer_close"
+                observed.single { it["phase"] == "result" } shouldBe observed.last { it["phase"] == "click" } + mapOf(
+                    "phase" to "result", "outcome" to "succeeded", "reason" to "footer_close",
+                )
+
+                runtime.beginFlow(player)
+                runtime.open(player, PaperDialogScreen(Component.text("Panel"), buttons = emptyList(), id = "panel"))
+                val closeFailure = IllegalStateException("native close failed")
+                every { player.closeDialog() } throws closeFailure
+                shouldThrow<IllegalStateException> { click(requireNotNull(screen.exitButton).id) } shouldBe closeFailure
+                observed.count { it["phase"] == "close" } shouldBe 1
+                observed.last { it["phase"] == "result" }["outcome"] shouldBe "failed"
             }
         }
     }

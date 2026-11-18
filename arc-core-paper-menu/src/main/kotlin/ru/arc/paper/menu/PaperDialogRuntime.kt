@@ -239,7 +239,10 @@ class PaperDialogRuntime internal constructor(
         val history = history(player, create = false) ?: return false
         if (history.owner != owner) return false
         val observation = observations[player.uniqueId]
-        val restored = history.back()
+        val attempt = if (closeReason == "footer_close") footerAttempt(player, observation) else null
+        val restored = if (attempt == null) history.back() else history.back { resume ->
+            attempt.withDispatchScope(historyFooter = true, action = resume::run)
+        }
         if (!restored) closeNative(player, observation, closeReason)
         return restored
     }
@@ -265,7 +268,13 @@ class PaperDialogRuntime internal constructor(
     private fun closeNative(player: Player, observation: DialogObservation?, reason: String) {
         player.closeDialog()
         observation?.let { observe(player, "close", it, reason) }
+        if (reason == "footer_close") footerAttempt(player, observation)?.reportOutcome("succeeded", reason, null)
     }
+
+    private fun footerAttempt(player: Player, observation: DialogObservation?): PaperMenuAttempt? =
+        observation?.let {
+            PaperMenuObservationPublisher.currentAttempt()?.takeIf { attempt -> attempt.matchesVisit(player.uniqueId, it.visitId) }
+        }
 
     @Suppress("UNCHECKED_CAST")
     private fun history(player: Player, create: Boolean = true): PaperDialogHistory? {

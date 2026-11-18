@@ -20,7 +20,9 @@ class PaperDialogCrossPluginTest : FreeSpec({
         MockBukkitTestRuntime.open().use { paper ->
             val player = spyk(paper.addPlayer("CrossLoader"))
             every { player.closeDialog() } just Runs
-            DialogProbeHandle(paper.createSimplePlugin("DialogA"), player).use { a ->
+            val pluginA = paper.createSimplePlugin("DialogA")
+            val observed = paper.observations(pluginA)
+            DialogProbeHandle(pluginA, player).use { a ->
                 DialogProbeHandle(paper.createSimplePlugin("DialogB"), player).use { b ->
                     a.runtimeClass shouldNotBe b.runtimeClass
                     a.screenClass shouldNotBe b.screenClass
@@ -38,6 +40,13 @@ class PaperDialogCrossPluginTest : FreeSpec({
                     val staleA = a.key("next")
                     a.click("next")
                     b.shown shouldBe listOf("settings")
+                    val fields = observed.single { it["phase"] == "click" }
+                    val scoped = observed.dropWhile { it["phase"] != "dispatch_start" }
+                    scoped.map { it["phase"] } shouldBe listOf("dispatch_start", "open", "dispatch_end")
+                    scoped[0]["attemptId"] shouldBe fields["attemptId"]
+                    scoped[1]["owner"] shouldBe "DialogB"
+                    scoped[1]["triggerAttemptId"] shouldBe null
+                    scoped[2]["attemptId"] shouldBe fields["attemptId"]
                     dismissedA shouldBe 0
                     a.clickKey(staleA) // A's obsolete click cannot navigate while B is active.
                     a.open("late-result")

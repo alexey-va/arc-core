@@ -1,6 +1,7 @@
 package ru.arc.paper.menu
 
 import io.kotest.core.spec.style.FreeSpec
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import org.bukkit.Material
@@ -25,9 +26,56 @@ class PaperMenuObservationTest : FreeSpec({
         val plugin = paper.createSimplePlugin("ObservationAbsent")
         val player = paper.addPlayer("Viewer")
         val service = PaperMenuService(plugin, repository(), BukkitTaskScheduler(plugin))
+        var clicks = 0
 
-        service.open(player, MENU) { content(Material.STONE) }
+        service.open(player, MENU) { content(Material.STONE) { clicks++ } }
+        paper.callEvent(click(player, 4, ClickType.LEFT, InventoryAction.PICKUP_ALL))
+        clicks shouldBe 1
         service.close()
+    }
+
+    "nested dispatch closes each scope on its original sink even when observation and action fail" {
+        val plugin = paper.createSimplePlugin("ObservationScope")
+        val player = paper.addPlayer("Viewer")
+        val observed = mutableListOf<Map<String, Any>>()
+        val sink = object : ArcTelemetryProvider {
+            override fun observeUi(payload: Map<String, Any>) {
+                observed += payload
+                if ((payload["phase"] as String).startsWith("dispatch_")) error("optional sink failure")
+            }
+        }
+        val services = plugin.server.servicesManager
+        services.register(ArcTelemetryProvider::class.java, sink, plugin, ServicePriority.Normal)
+        val fields = mapOf("protocol" to 1, "playerId" to player.uniqueId.toString(), "visitId" to UUID.randomUUID().toString(),
+            "owner" to plugin.name, "surface" to "scope", "revision" to "revision", "button" to "action")
+        val outer = requireNotNull(PaperMenuObservationPublisher.attempt(plugin) { fields })
+        val inner = requireNotNull(PaperMenuObservationPublisher.attempt(plugin) { fields })
+        val failure = IllegalStateException("action failure")
+        var calls = 0
+        outer.start()
+        val result: String? = PaperMenuObservationPublisher.dispatch(outer) {
+            calls++
+            shouldThrow<IllegalStateException> {
+                PaperMenuObservationPublisher.dispatch(inner) {
+                    calls++
+                    throw failure
+                }
+            } shouldBe failure
+            PaperMenuObservationPublisher.currentAttempt() shouldBe outer
+            services.unregister(ArcTelemetryProvider::class.java, sink)
+            null
+        }
+
+        result shouldBe null
+        calls shouldBe 2
+        PaperMenuObservationPublisher.currentAttempt() shouldBe null
+        val scopes = observed.filter { (it["phase"] as String).startsWith("dispatch_") }
+        scopes shouldBe listOf(
+            fields + mapOf("phase" to "dispatch_start", "attemptId" to outer.id, "started" to true),
+            fields + mapOf("phase" to "dispatch_start", "attemptId" to inner.id, "started" to false),
+            fields + mapOf("phase" to "dispatch_end", "attemptId" to inner.id, "started" to false),
+            fields + mapOf("phase" to "dispatch_end", "attemptId" to outer.id, "started" to true),
+        )
     }
 
     "observes open and actual renders, but suppresses unchanged refresh" {

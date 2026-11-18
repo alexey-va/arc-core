@@ -29,12 +29,12 @@ internal object PaperMenuObservationPublisher {
 
     fun currentAttempt(): PaperMenuAttempt? = dispatching.get()
 
-    /** Correlates actual same-player opens within this shaded runtime and this call only. */
+    /** Correlates opens during the synchronous callback, including through a shared telemetry sink. */
     fun <T> dispatch(attempt: PaperMenuAttempt?, action: () -> T): T {
         val previous = dispatching.get()
         dispatching.set(attempt)
         try {
-            return action()
+            return if (attempt == null) action() else attempt.withDispatchScope(action = action)
         } catch (failure: Throwable) {
             attempt?.start("handler_exception") // A failed transfer remains cancelled.
             attempt?.reportOutcome("failed", "handler_exception", null)
@@ -53,6 +53,28 @@ internal class PaperMenuAttempt(private val plugin: Plugin, snapshot: Map<String
     var started = false
         private set
     private var pending: MutableList<Map<String, Any>>? = null
+
+    fun matchesVisit(player: UUID, visit: String): Boolean =
+        playerId == player.toString() && payload["visitId"] == visit
+
+    /** Scope markers are optional and use one captured sink even if its registration changes. */
+    fun <T> withDispatchScope(historyFooter: Boolean = false, action: () -> T): T {
+        val sink = runCatching {
+            if (Bukkit.isPrimaryThread()) plugin.server.servicesManager.load(ArcTelemetryProvider::class.java) else null
+        }.getOrNull()
+        if (sink == null) return action()
+        val scope = buildMap {
+            putAll(payload)
+            put("started", started)
+            if (historyFooter) put("historyFooter", true)
+        }
+        try {
+            runCatching { sink.observeUi(Collections.unmodifiableMap(scope + ("phase" to "dispatch_start"))) }
+            return action()
+        } finally {
+            runCatching { sink.observeUi(Collections.unmodifiableMap(scope + ("phase" to "dispatch_end"))) }
+        }
+    }
 
     fun start(blockedReason: String? = null) {
         if (started) return
