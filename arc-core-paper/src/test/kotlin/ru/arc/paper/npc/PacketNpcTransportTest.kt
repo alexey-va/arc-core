@@ -128,14 +128,28 @@ class PacketNpcTransportTest : FreeSpec({
         backend.ordinary = false
         connection.submit(listOf(first.copy(x = 1.0, swing = 1)))
         backend.runOne()
-        repeat(100) { index -> connection.submit(listOf(first.copy(x = 2.0 + index / 4096.0, swing = 100L + index))) }
+        repeat(100) { index -> connection.submit(listOf(first.copy(x = 2.0 + index / 4096.0,
+            swing = 100L + index, offHandSwing = index % 2 == 1))) }
         backend.tasks.size shouldBe 1
         backend.ordinary = true
         backend.runAll()
         backend.writes.filterIsInstance<WrapperPlayServerEntityRelativeMoveAndRotation>().single().deltaX shouldBe 2.0 + 99 / 4096.0
-        backend.writes.filterIsInstance<WrapperPlayServerEntityAnimation>().size shouldBe 1
+        backend.writes.filterIsInstance<WrapperPlayServerEntityAnimation>().single().type shouldBe
+            WrapperPlayServerEntityAnimation.EntityAnimationType.SWING_OFF_HAND
         backend.writes.filterIsInstance<WrapperPlayServerSpawnEntity>().size shouldBe 0
         java.lang.ref.Reference.reachabilityFence(channel)
+    }
+
+    "entering a dry crawl, replaying it to a new viewer and standing up use native player poses" {
+        val standing = npcFrame()
+        val crawling = standing.copy(pose = PacketNpcPose.SWIMMING, swing = 1, offHandSwing = true)
+        fun pose(packets: List<PacketWrapper<*>>) =
+            packets.filterIsInstance<WrapperPlayServerEntityMetadata>().single().entityMetadata.single { it.index == 6 }.value
+        pose(PacketNpcPackets.update(standing, crawling)) shouldBe EntityPose.SWIMMING
+        val replay = PacketNpcPackets.spawn(crawling)
+        pose(replay) shouldBe EntityPose.SWIMMING
+        replay.filterIsInstance<WrapperPlayServerEntityAnimation>().size shouldBe 0
+        pose(PacketNpcPackets.update(crawling, standing)) shouldBe EntityPose.STANDING
     }
 
     "native scale is sent after spawn and only the latest changed value updates the same actor" {

@@ -25,7 +25,7 @@ data class PacketNpcProfile(val uuid: UUID, val name: String, val texture: Strin
     }
 }
 
-enum class PacketNpcPose { STANDING, CROUCHING, SLEEPING }
+enum class PacketNpcPose { STANDING, CROUCHING, SLEEPING, SWIMMING }
 enum class PacketNpcInteraction { ATTACK, INTERACT }
 
 /**
@@ -51,6 +51,7 @@ class PacketPlayerNpc internal constructor(
     private val hidden = mutableSetOf<UUID>()
     private val shown = mutableSetOf<UUID>()
     private var swing = 0L
+    private var offHandSwing = false
     private var hurt = 0L
     val uniqueId: UUID get() = profile.uuid
     /** Public observer label; profile names remain the immutable packet identity. */
@@ -60,8 +61,18 @@ class PacketPlayerNpc internal constructor(
     val world: World get() { owner.checkThread(); return requireNotNull(position.world) }
     val isValid: Boolean get() = active && !owner.closed
     // Native 1.21.11 keeps SLEEPING_DIMENSIONS fixed; other poses scale their dimensions.
-    val height: Double get() = when (pose) { PacketNpcPose.STANDING -> 1.8 * scale; PacketNpcPose.CROUCHING -> 1.5 * scale; PacketNpcPose.SLEEPING -> 0.2 }
-    val eyeHeight: Double get() = when (pose) { PacketNpcPose.STANDING -> 1.62 * scale; PacketNpcPose.CROUCHING -> 1.27 * scale; PacketNpcPose.SLEEPING -> 0.2 }
+    val height: Double get() = when (pose) {
+        PacketNpcPose.STANDING -> 1.8 * scale
+        PacketNpcPose.CROUCHING -> 1.5 * scale
+        PacketNpcPose.SLEEPING -> 0.2
+        PacketNpcPose.SWIMMING -> 0.6 * scale
+    }
+    val eyeHeight: Double get() = when (pose) {
+        PacketNpcPose.STANDING -> 1.62 * scale
+        PacketNpcPose.CROUCHING -> 1.27 * scale
+        PacketNpcPose.SLEEPING -> 0.2
+        PacketNpcPose.SWIMMING -> 0.4 * scale
+    }
     /** Native minecraft:scale; no display proxy or server entity is created. */
     var scale: Double = 1.0
         set(value) {
@@ -158,7 +169,8 @@ class PacketPlayerNpc internal constructor(
 
     internal fun sceneEquipment(): List<ArcSceneEquipment> = observedEquipment.values.toList()
 
-    fun swingMainHand() { owner.checkThread(); swing++ }
+    fun swingMainHand() { owner.checkThread(); offHandSwing = false; swing++ }
+    fun swingOffHand() { owner.checkThread(); offHandSwing = true; swing++ }
     fun playHurtAnimation() { owner.checkThread(); hurt++ }
     fun showTo(player: Player) = showTo(player.uniqueId)
     fun showTo(playerId: UUID) { owner.checkThread(); hidden.remove(playerId); shown.add(playerId) }
@@ -186,6 +198,7 @@ class PacketPlayerNpc internal constructor(
         angle(bodyYaw), angle(headYaw), angle(pitch), pose,
         bed?.takeIf { pose == PacketNpcPose.SLEEPING }?.let { PacketNpcBed(it.blockX, it.blockY, it.blockZ) },
         equipment, swing, hurt, lifetime, scale = scale, seat = seat, seated = isSeated, usingMainHand = isUsingMainHand,
+        offHandSwing = offHandSwing,
     )
 
     internal fun lease(viewerId: UUID): PacketNpcLease? = owner.lease(viewerId, entityId)
@@ -212,6 +225,7 @@ internal data class PacketNpcFrame(
     val seat: PacketNpcSeat? = null,
     val seated: Boolean = false,
     val usingMainHand: Boolean = false,
+    val offHandSwing: Boolean = false,
 ) {
     val chunkKey: Long get() = (floor(x).toInt().shr(4).toLong() and 0xffffffffL) or (floor(z).toInt().shr(4).toLong() shl 32)
     val teamName: String get() = "arcnpc${entityId.toString(36)}"

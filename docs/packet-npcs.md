@@ -55,13 +55,15 @@ would rewind the first subsequent walking step to the position before the jump.
 `bodyYaw`, `headYaw` and `pitch` are independent presentation controls.
 `scale` defaults to 1.0 and accepts finite values from 0.25 through 2.0. It sends
 the native `minecraft:scale` attribute on spawn and only on later scale changes,
-without replacing the actor or its attached displays. Standing/crouching
+without replacing the actor or its attached displays. Standing, crouching and swimming
 `height`, `eyeHeight` and interaction width follow that scale. As in native
 1.21.11, sleeping dimensions and eye height remain fixed at 0.2 blocks.
+`SWIMMING` is also the native dry crawling pose with a 0.6 block body and
+0.4 block eye height before scaling. The consumer checks clearance for standing.
 `PacketNpcPose.SLEEPING` plus `sleepingBed` supplies the pose and bed position;
 the consumer owns a real, correctly oriented bed and the feet anchor. Waking
-clears the bed metadata. The six player equipment slots, main-hand swing and hurt
-animation are supported. An equipment item is copied on Paper before encoding.
+clears the bed metadata. The six player equipment slots, swings of either hand
+and hurt animation are supported. An equipment item is copied on Paper before encoding.
 
 `isUsingMainHand` starts/stops native continuous item use, including the eating
 pose for held food. Both accessors are main-thread only. The consumer owns the

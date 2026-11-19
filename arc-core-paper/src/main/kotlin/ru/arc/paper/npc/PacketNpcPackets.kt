@@ -14,6 +14,7 @@ import com.github.retrooper.packetevents.util.Vector3d
 import com.github.retrooper.packetevents.util.Vector3i
 import com.github.retrooper.packetevents.wrapper.PacketWrapper
 import com.github.retrooper.packetevents.wrapper.play.server.*
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityAnimation.EntityAnimationType
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoUpdate.Action
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoUpdate.PlayerInfo
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerTeams.*
@@ -80,7 +81,8 @@ internal object PacketNpcPackets {
         }
         if (old.headYaw != frame.headYaw) add(WrapperPlayServerEntityHeadLook(frame.entityId, frame.headYaw))
         // At most one recent gesture survives a coalesced burst, never historical animation replay.
-        if (old.swing != frame.swing) add(WrapperPlayServerEntityAnimation(frame.entityId, WrapperPlayServerEntityAnimation.EntityAnimationType.SWING_MAIN_ARM))
+        if (old.swing != frame.swing) add(WrapperPlayServerEntityAnimation(frame.entityId,
+            if (frame.offHandSwing) EntityAnimationType.SWING_OFF_HAND else EntityAnimationType.SWING_MAIN_ARM))
         if (old.hurt != frame.hurt) add(WrapperPlayServerHurtAnimation(frame.entityId, frame.bodyYaw))
     }
 

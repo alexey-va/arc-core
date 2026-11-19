@@ -205,6 +205,13 @@ class PaperPacketNpcsTest : FreeSpec({
                 actor.pose = PacketNpcPose.CROUCHING
                 actor.height shouldBe .75
                 actor.eyeHeight shouldBe .635
+                actor.pose = PacketNpcPose.SWIMMING
+                actor.height shouldBe .30
+                actor.eyeHeight shouldBe .20
+                actor.swingOffHand()
+                actor.frame().offHandSwing shouldBe true
+                actor.swingMainHand()
+                actor.frame().offHandSwing shouldBe false
                 actor.pose = PacketNpcPose.SLEEPING
                 actor.height shouldBe .2
                 actor.eyeHeight shouldBe .2
