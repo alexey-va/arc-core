@@ -28,11 +28,16 @@ internal class PaperDialogHistory(private val state: MutableMap<String, Any>, pr
         callbackDepth > 0 && !restoring && current != null &&
             (current?.get("owner") != owner || current?.get("key") != key)
 
-    fun show(owner: String, key: String, deactivate: Runnable, dismiss: Runnable, resume: Runnable): Boolean {
-        if (clearing) return false
-        if (callbackDepth == 0 && !restoring && this.owner != owner &&
-            !(current == null && state["acceptRoot"] != false &&
-                (state["rootOwner"] == null || state["rootOwner"] == owner))) return false
+    fun show(
+        owner: String,
+        key: String,
+        deactivate: Runnable,
+        dismiss: Runnable,
+        resume: Runnable,
+        allowImplicitRoot: Boolean = true,
+        reservation: String? = null,
+    ): Boolean {
+        if (!canShow(owner, allowImplicitRoot, reservation)) return false
         val previous = current
         val navigate = navigates(owner, key)
         previous?.run("deactivate")
@@ -64,15 +69,35 @@ internal class PaperDialogHistory(private val state: MutableMap<String, Any>, pr
         if (visits.size > limit) visits.removeAt(0).run("deactivate")
         state["acceptRoot"] = false
         state.remove("rootOwner")
+        state.remove("rootReservation")
         return true
     }
 
-    fun beginFlow(owner: String? = null) {
+    fun canShow(owner: String, allowImplicitRoot: Boolean, reservation: String? = null): Boolean {
+        if (clearing) return false
+        if (reservation != null) return isPendingRoot(owner, reservation)
+        val rootOwner = state["rootOwner"]
+        if (current == null && rootOwner == owner && state["rootReservation"] != null) return false
+        if (callbackDepth > 0 || restoring || this.owner == owner) return true
+        if (current != null) return false
+        return if (allowImplicitRoot) {
+            state["acceptRoot"] != false && (rootOwner == null || rootOwner == owner)
+        } else {
+            state["acceptRoot"] == true && rootOwner == owner
+        }
+    }
+
+    fun beginFlow(owner: String? = null, reservation: String? = null) {
         if (callbackDepth > 0 || restoring || clearing) return
         clear()
         state["acceptRoot"] = true
         if (owner != null) state["rootOwner"] = owner
+        if (reservation != null) state["rootReservation"] = reservation
     }
+
+    fun isPendingRoot(owner: String, reservation: String): Boolean =
+        current == null && state["acceptRoot"] == true &&
+            state["rootOwner"] == owner && state["rootReservation"] == reservation
 
     fun dispatch(action: () -> Unit) {
         val previous = callbackDepth
@@ -96,6 +121,7 @@ internal class PaperDialogHistory(private val state: MutableMap<String, Any>, pr
         visits.clear()
         state["acceptRoot"] = false
         state.remove("rootOwner")
+        state.remove("rootReservation")
         state["clearing"] = true
         try { removed.asReversed().forEach { it.run("dismiss") } }
         finally { state["clearing"] = false }

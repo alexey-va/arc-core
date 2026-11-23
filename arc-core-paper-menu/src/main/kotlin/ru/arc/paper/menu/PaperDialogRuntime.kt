@@ -32,6 +32,9 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CancellationException
 import ru.arc.core.BudgetedTaskQueue
 
+/** One pending dialog entry, tied to the player and runtime that reserved it. */
+class PaperDialogRoot internal constructor(internal val id: String)
+
 /**
  * Shows native Paper dialogs and dispatches their custom-click actions.
  *
@@ -59,13 +62,22 @@ class PaperDialogRuntime internal constructor(
         plugin.server.pluginManager.registerEvents(this, plugin)
     }
 
-    fun open(player: Player, screen: PaperDialogScreen) {
-        open(player, screen, null, {})
+    /** Start from a player command, hotkey, item use or entity interaction. */
+    fun openRoot(
+        player: Player,
+        screen: PaperDialogScreen,
+        reopen: (() -> Unit)? = null,
+        onDismiss: () -> Unit = {},
+        closeOnEscape: Boolean = false,
+    ) {
+        beginFlow(player)
+        openInFlow(player, screen, reopen, onDismiss, closeOnEscape)
     }
 
     /**
-     * A callback transition records a child; an asynchronous completion replaces
-     * the current visit. [reopen] refreshes a restored screen's domain state.
+     * Present in an existing flow or after [beginFlow] on the same runtime.
+     * A callback transition records a child; a later completion replaces the
+     * current visit. [reopen] refreshes a restored screen's domain state.
      * [onDismiss] must invalidate pending work on Back, Close and root reset.
      * It is not called on forward navigation or same-page refresh. Async opens
      * cannot replace a foreign owner's screen or resurrect a closed flow; the
@@ -74,16 +86,45 @@ class PaperDialogRuntime internal constructor(
      * closes the complete flow. Vanilla Escape itself closes on the client, so
      * unlike ordinary buttons it cannot guarantee mouse-position preservation.
      */
-    fun open(player: Player, screen: PaperDialogScreen, reopen: (() -> Unit)?, onDismiss: () -> Unit) {
-        open(player, screen, reopen, onDismiss, false)
+    fun openInFlow(
+        player: Player,
+        screen: PaperDialogScreen,
+        reopen: (() -> Unit)? = null,
+        onDismiss: () -> Unit = {},
+        closeOnEscape: Boolean = false,
+    ) {
+        present(player, screen, reopen, onDismiss, closeOnEscape, allowImplicitRoot = false)
     }
 
-    /** [closeOnEscape] is an explicit user override, independent of a screen's old footer handler. */
+    @Deprecated("Use openRoot for a new entry or openInFlow for navigation.", level = DeprecationLevel.ERROR)
+    fun open(player: Player, screen: PaperDialogScreen) {
+        present(player, screen, null, {}, false, allowImplicitRoot = true)
+    }
+
+    @Deprecated("Use openRoot for a new entry or openInFlow for navigation.", level = DeprecationLevel.ERROR)
+    fun open(player: Player, screen: PaperDialogScreen, reopen: (() -> Unit)?, onDismiss: () -> Unit) {
+        present(player, screen, reopen, onDismiss, false, allowImplicitRoot = true)
+    }
+
+    @Deprecated("Use openRoot for a new entry or openInFlow for navigation.", level = DeprecationLevel.ERROR)
     fun open(player: Player, screen: PaperDialogScreen, reopen: (() -> Unit)?, onDismiss: () -> Unit, closeOnEscape: Boolean) {
+        present(player, screen, reopen, onDismiss, closeOnEscape, allowImplicitRoot = true)
+    }
+
+    private fun present(
+        player: Player,
+        screen: PaperDialogScreen,
+        reopen: (() -> Unit)?,
+        onDismiss: () -> Unit,
+        closeOnEscape: Boolean,
+        allowImplicitRoot: Boolean,
+        root: PaperDialogRoot? = null,
+    ): Boolean {
         requirePrimaryThread()
-        cancelPreparation(player.uniqueId)
-        if (closed || !player.isOnline) return // Ignore late completions after shutdown or quit.
+        if (closed || !player.isOnline) return false
         val history = history(player)!!
+        if (!history.canShow(owner, allowImplicitRoot, root?.id)) return false
+        cancelPreparation(player.uniqueId)
         val visit = Visit(screen, reopen, onDismiss, closeOnEscape)
         val key = if (screen.id == "dialog") screen.title.toString() else screen.id
         if (!history.show(owner, key,
@@ -94,9 +135,10 @@ class PaperDialogRuntime internal constructor(
                         currentVisits[player.uniqueId] = visit
                         if (visit.reopen != null) visit.reopen.invoke() else render(player, visit.screen)
                     }
-                })) return
+                }, allowImplicitRoot, root?.id)) return false
         currentVisits[player.uniqueId] = visit
         render(player, screen)
+        return true
     }
 
     /**
@@ -121,8 +163,11 @@ class PaperDialogRuntime internal constructor(
         closeOnEscape: Boolean = false,
     ): CompletableFuture<Void> {
         requirePrimaryThread()
-        cancelPreparation(player.uniqueId)
         if (closed || !player.isOnline) return CompletableFuture.failedFuture(CancellationException("Dialog owner is unavailable"))
+        if (!isCurrent() || !history(player)!!.canShow(owner, allowImplicitRoot = false)) {
+            return CompletableFuture.failedFuture(CancellationException("Dialog flow changed before preparation"))
+        }
+        cancelPreparation(player.uniqueId)
         val result = CompletableFuture<Void>()
         preparations[player.uniqueId] = result
         val handlers = linkedMapOf<PaperDialogActionId, () -> Unit>()
@@ -185,7 +230,7 @@ class PaperDialogRuntime internal constructor(
                         if (visit.reopen != null) visit.reopen.invoke()
                         else openAsync(player, visit.screen, work, reopen = null, onDismiss = visit.onDismiss, closeOnEscape = visit.closeOnEscape)
                     }
-                })) throw CancellationException("Dialog flow changed before presentation")
+                }, allowImplicitRoot = false)) throw CancellationException("Dialog flow changed before presentation")
             if (closed || !player.isOnline) throw CancellationException("Dialog owner closed during presentation")
             currentVisits[player.uniqueId] = visit
             sessions.publish(player.uniqueId, registration)
@@ -227,6 +272,38 @@ class PaperDialogRuntime internal constructor(
         requirePrimaryThread()
         cancelPreparation(player.uniqueId)
         if (!closed && player.isOnline) history(player)!!.beginFlow(owner)
+    }
+
+    /**
+     * Reserve an external entry before loading the screen. A later command,
+     * entry, close, or quit invalidates the reservation. Inside a callback or
+     * Back restoration, return null and keep the existing flow.
+     */
+    fun reserveRoot(player: Player): PaperDialogRoot? {
+        requirePrimaryThread()
+        if (closed || !player.isOnline) return null
+        val root = PaperDialogRoot(UUID.randomUUID().toString())
+        val history = history(player)!!
+        history.beginFlow(owner, root.id)
+        if (!history.isPendingRoot(owner, root.id)) return null
+        cancelPreparation(player.uniqueId)
+        return root
+    }
+
+    /** Show a reserved entry once, only while it is still pending for this player. */
+    fun openReservedRoot(
+        player: Player,
+        root: PaperDialogRoot,
+        screen: PaperDialogScreen,
+        reopen: (() -> Unit)? = null,
+        onDismiss: () -> Unit = {},
+        closeOnEscape: Boolean = false,
+    ): Boolean = present(player, screen, reopen, onDismiss, closeOnEscape, allowImplicitRoot = false, root = root)
+
+    /** Whether this runtime owns the current visit, excluding pending roots and hidden ancestors. */
+    fun ownsCurrentVisit(player: Player): Boolean {
+        requirePrimaryThread()
+        return !closed && player.isOnline && history(player, create = false)?.owner == owner
     }
 
     /** Return after a completed child action without adding the parent to history again. */

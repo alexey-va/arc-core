@@ -19,6 +19,69 @@ import org.bukkit.event.player.PlayerCommandPreprocessEvent
 import ru.arc.paper.testing.MockBukkitTestRuntime
 
 class PaperDialogRuntimeTest : FreeSpec({
+    "fresh player interactions reopen after the footer closes and continuations stay fenced" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val player = spyk(paper.addPlayer("RepeatEntry"))
+            every { player.closeDialog() } just Runs
+            val connection = mockk<PlayerGameConnection> { every { this@mockk.player } returns player }
+            val shown = mutableListOf<String>()
+            lateinit var shownScreen: PaperDialogScreen
+            lateinit var registration: PaperDialogSessionRegistration
+            PaperDialogRuntime(paper.createSimplePlugin("RepeatEntry")) { _, screen, registered ->
+                shown += screen.id
+                shownScreen = screen
+                registration = registered
+            }.use { runtime ->
+                val entry = PaperDialogScreen(Component.text("Trainer"), id = "trainer", buttons = emptyList())
+                val late = entry.copy(id = "late")
+                runtime.openInFlow(player, late)
+                shown shouldBe emptyList()
+                repeat(2) {
+                    runtime.openRoot(player, entry)
+                    val exit = registration.key(requireNotNull(shownScreen.exitButton).id)
+                    runtime.onCustomClick(mockk {
+                        every { commonConnection } returns connection
+                        every { identifier } returns Key.key(exit)
+                        every { dialogResponseView } returns null
+                    })
+                    runtime.openInFlow(player, late)
+                }
+                runtime.onCommand(PlayerCommandPreprocessEvent(player, "/unrelated"))
+                runtime.openInFlow(player, late)
+                shown shouldBe listOf("trainer", "trainer")
+                verify(exactly = 2) { player.closeDialog() }
+            }
+        }
+    }
+
+    "reserved root presents once and loses ownership to a newer entry or close" {
+        MockBukkitTestRuntime.open().use { paper ->
+            val player = spyk(paper.addPlayer("ReservedEntry"))
+            val other = paper.addPlayer("OtherPlayer")
+            every { player.closeDialog() } just Runs
+            val shown = mutableListOf<String>()
+            PaperDialogRuntime(paper.createSimplePlugin("ReservedEntry")) { _, screen, _ ->
+                shown += screen.id
+            }.use { runtime ->
+                val reward = PaperDialogScreen(Component.text("Voucher"), id = "voucher", buttons = emptyList())
+                val old = requireNotNull(runtime.reserveRoot(player))
+                runtime.openInFlow(player, reward)
+                runtime.openReservedRoot(other, old, reward) shouldBe false
+                shown shouldBe emptyList()
+
+                runtime.openRoot(player, reward.copy(id = "newer"))
+                runtime.openReservedRoot(player, old, reward) shouldBe false
+                val canceled = requireNotNull(runtime.reserveRoot(player))
+                runtime.close(player)
+                runtime.openReservedRoot(player, canceled, reward) shouldBe false
+                val current = requireNotNull(runtime.reserveRoot(player))
+                runtime.openReservedRoot(player, current, reward) shouldBe true
+                runtime.openReservedRoot(player, current, reward) shouldBe false
+                shown shouldBe listOf("newer", "voucher")
+            }
+        }
+    }
+
     "number-range responses are exposed through the typed click context" {
         MockBukkitTestRuntime.open().use { paper ->
             val player = paper.addPlayer("SliderTester")
@@ -33,7 +96,7 @@ class PaperDialogRuntimeTest : FreeSpec({
                 registration = registered
             }.use { runtime ->
                 runtime.beginFlow(player)
-                runtime.open(player, PaperDialogScreen(
+                runtime.openInFlow(player, PaperDialogScreen(
                     Component.text("Slider"),
                     numberInputs = listOf(PaperDialogNumberRangeInput(
                         quantity, Component.text("Quantity"), 1f, 64f, initial = 1f, step = 1f,
@@ -81,9 +144,9 @@ class PaperDialogRuntimeTest : FreeSpec({
                 fun button(id: String, action: () -> Unit) = PaperDialogButton(
                     PaperDialogActionId.of(id), Component.text(id), onClick = { action() })
                 fun shop() {
-                    runtime.open(player, PaperDialogScreen(Component.text("Shop"), id = "shop", buttons = listOf(
+                    runtime.openInFlow(player, PaperDialogScreen(Component.text("Shop"), id = "shop", buttons = listOf(
                         button("confirm") {
-                            runtime.open(player, PaperDialogScreen(Component.text("Confirm"), id = "confirm", buttons = listOf(
+                            runtime.openInFlow(player, PaperDialogScreen(Component.text("Confirm"), id = "confirm", buttons = listOf(
                                 button("buy") { shop() },
                             )))
                         },
@@ -98,7 +161,7 @@ class PaperDialogRuntimeTest : FreeSpec({
                     })
                 }
                 runtime.beginFlow(player)
-                runtime.open(player, PaperDialogScreen(Component.text("Panel"), id = "panel", buttons = listOf(button("shop") { shop() })))
+                runtime.openInFlow(player, PaperDialogScreen(Component.text("Panel"), id = "panel", buttons = listOf(button("shop") { shop() })))
                 screen.exitButton?.label shouldBe Component.translatable("mco.selectServer.close", NamedTextColor.WHITE)
                 screen.exitButton?.tooltip shouldBe screen.exitButton?.label
                 screen.exitButton?.width shouldBe 200
@@ -132,7 +195,7 @@ class PaperDialogRuntimeTest : FreeSpec({
                 )
 
                 runtime.beginFlow(player)
-                runtime.open(player, PaperDialogScreen(Component.text("Panel"), buttons = emptyList(), id = "panel"))
+                runtime.openInFlow(player, PaperDialogScreen(Component.text("Panel"), buttons = emptyList(), id = "panel"))
                 val closeFailure = IllegalStateException("native close failed")
                 every { player.closeDialog() } throws closeFailure
                 shouldThrow<IllegalStateException> { click(requireNotNull(screen.exitButton).id) } shouldBe closeFailure
@@ -156,7 +219,7 @@ class PaperDialogRuntimeTest : FreeSpec({
                     runtime.beginFlow(player)
                     val customLabel = Component.text("Back", NamedTextColor.WHITE).font(Key.key("test:custom_footer"))
                     val customTooltip = Component.text("Configured return")
-                    runtime.open(player, PaperDialogScreen(Component.text("Information"), buttons = emptyList(),
+                    runtime.openInFlow(player, PaperDialogScreen(Component.text("Information"), buttons = emptyList(),
                         exitButton = if (customFooter) PaperDialogButton(PaperDialogActionId.of("back"), customLabel, customTooltip, 178) {
                             error("Semantic footer must be replaced by actual history")
                         } else null))
@@ -207,11 +270,11 @@ class PaperDialogRuntimeTest : FreeSpec({
                 fun button(id: String, action: () -> Unit) =
                     PaperDialogButton(PaperDialogActionId.of(id), Component.text(id)) { action() }
                 fun root() {
-                    runtime.open(player, PaperDialogScreen(Component.text("Saved $value"), id = "saved",
+                    runtime.openInFlow(player, PaperDialogScreen(Component.text("Saved $value"), id = "saved",
                         buttons = listOf(button("settings") {
                             // Public entry helpers called from a menu must not reset its history.
                             runtime.beginFlow(player)
-                            runtime.open(player, PaperDialogScreen(Component.text("Settings"), id = "settings",
+                            runtime.openInFlow(player, PaperDialogScreen(Component.text("Settings"), id = "settings",
                                 buttons = listOf(button("change") { value = 60 }),
                                 exitButton = button("back") { semanticParentCalls++ }),
                                 null, { dismissed++ })
@@ -234,7 +297,7 @@ class PaperDialogRuntimeTest : FreeSpec({
                 root()
                 click("settings")
                 runtime.onCommand(PlayerCommandPreprocessEvent(player, "/settings"))
-                runtime.open(player, PaperDialogScreen(Component.text("Direct settings"), id = "settings",
+                runtime.openRoot(player, PaperDialogScreen(Component.text("Direct settings"), id = "settings",
                     buttons = listOf(button("noop") {}), exitButton = button("back") { semanticParentCalls++ }))
                 click("back")
                 verify(exactly = 2) { player.closeDialog() }
@@ -243,7 +306,7 @@ class PaperDialogRuntimeTest : FreeSpec({
                 runtime.beginFlow(player)
                 root()
                 click("settings")
-                runtime.open(player, displayed.copy(exitButton = null), null, {}, true)
+                runtime.openInFlow(player, displayed.copy(exitButton = null), null, {}, true)
                 displayed.exitButton?.label shouldBe Component.translatable("mco.selectServer.close", NamedTextColor.WHITE)
                 displayed.exitButton?.tooltip shouldBe displayed.exitButton?.label
                 click(requireNotNull(displayed.exitButton).id.value)

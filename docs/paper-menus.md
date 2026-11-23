@@ -43,8 +43,7 @@ val nameInput = PaperDialogInputId.of("land_name")
 val quantityInput = PaperDialogInputId.of("quantity")
 
 fun openCreate(player: Player) {
-    dialogs.beginFlow(player)
-    dialogs.open(
+    dialogs.openRoot(
         player,
         PaperDialogScreen(
             title = messages.component("lands.create.title"),
@@ -100,15 +99,23 @@ a versioned JDK-only collection/Runnable boundary; screen DTOs stay in the ownin
 plugin. Every participant holds its own metadata handle so unloading an inactive
 parent cannot discard another plugin's active screen.
 
-Direct player commands clear the old flow. Call
-`beginFlow(player)` for programmatic command/hotkey roots (calls from an existing
-dialog action or a Back reopener deliberately preserve the flow). Call it before
-starting asynchronous root loading, and show a loading screen synchronously for
-child navigation. Later completions replace that visit. Async `open` cannot
-replace a foreign owner's screen or resurrect a closed flow. Consumers still
-must reject obsolete domain generations within their own runtime.
+Open a new screen from a command, hotkey, item, world interaction or inventory
+button with `openRoot`. A public entry invoked by a dialog button or Back
+preserves its current history. Use `openInFlow` for navigation and refreshes.
+When domain state must be initialized after dismissing the old visit, call
+`beginFlow(player)` before that initialization and then use `openInFlow`.
 
-The four-argument `open` accepts
+For a direct entry whose first screen needs data, use `reserveRoot(player)`
+before loading and `openReservedRoot` with the returned reservation. The
+reservation can present once for that player and is invalid after a new flow,
+close or disconnect. For asynchronous child navigation, show a loading screen
+synchronously inside the callback. Later completions replace that visit.
+Consumers still guard obsolete requests within an active domain session.
+
+The older `open` overloads retain their JVM signatures for compiled consumers.
+Kotlin callers choose `openRoot` or `openInFlow` when rebuilding on this version.
+
+The explicit open methods accept
 a reopener for fresh domain data and an `onDismiss` callback to invalidate async
 work on Back, Close and root reset. Forward transitions and same-page refreshes
 only deactivate the old click session; they do not call `onDismiss`, because the

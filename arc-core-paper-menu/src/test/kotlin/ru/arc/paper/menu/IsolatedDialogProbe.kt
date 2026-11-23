@@ -18,7 +18,7 @@ class IsolatedDialogProbe(private val plugin: Plugin, private val player: Player
     }
 
     fun open(id: String, action: Runnable?, reopen: Runnable?, dismiss: Runnable?, closeOnEscape: Boolean) {
-        runtime.open(player, PaperDialogScreen(Component.text(id), id = id,
+        runtime.openInFlow(player, PaperDialogScreen(Component.text(id), id = id,
             buttons = listOf(PaperDialogButton(PaperDialogActionId.of("next"), Component.text("Next")) { action?.run() }),
             exitButton = PaperDialogButton(PaperDialogActionId.of("back"), Component.text("Back")) {
                 error("Legacy semantic parent must not run")
@@ -26,6 +26,7 @@ class IsolatedDialogProbe(private val plugin: Plugin, private val player: Player
     }
 
     fun beginFlow() = runtime.beginFlow(player)
+    fun ownsCurrentVisit(): Boolean = runtime.ownsCurrentVisit(player)
     fun closePlayer() = runtime.close(player)
     fun shutdown() = runtime.close()
     fun quit() = runtime.onQuit(mockk { every { this@mockk.player } returns this@IsolatedDialogProbe.player })

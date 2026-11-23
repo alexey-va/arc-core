@@ -37,8 +37,12 @@ class PaperDialogCrossPluginTest : FreeSpec({
                         }, Runnable { root() }, Runnable { dismissedA++ })
                     }
                     root()
+                    a.ownsCurrentVisit() shouldBe true
+                    b.ownsCurrentVisit() shouldBe false
                     val staleA = a.key("next")
                     a.click("next")
+                    a.ownsCurrentVisit() shouldBe false
+                    b.ownsCurrentVisit() shouldBe true
                     b.shown shouldBe listOf("settings")
                     val fields = observed.single { it["phase"] == "click" }
                     val scoped = observed.dropWhile { it["phase"] != "dispatch_start" }
@@ -54,6 +58,8 @@ class PaperDialogCrossPluginTest : FreeSpec({
                     b.open("settings", dismiss = Runnable { dismissedB++ })
                     value = 60
                     b.click("back")
+                    a.ownsCurrentVisit() shouldBe true
+                    b.ownsCurrentVisit() shouldBe false
                     a.shown shouldBe listOf("saved-120", "saved-60")
                     dismissedB shouldBe 1
                     dismissedA shouldBe 0
@@ -75,6 +81,7 @@ class PaperDialogCrossPluginTest : FreeSpec({
             DialogProbeHandle(paper.createSimplePlugin("DialogA"), player).use { a ->
                 DialogProbeHandle(paper.createSimplePlugin("DialogB"), player).use { b ->
                     var restored = 0
+                    a.beginFlow()
                     a.open("root", Runnable { b.open("child") }, Runnable { restored++ })
                     a.click("next")
                     b.beginFlow()
@@ -104,6 +111,7 @@ class PaperDialogCrossPluginTest : FreeSpec({
                 DialogProbeHandle(pluginB, player).use { b ->
                     var dismissedA = 0
                     var dismissedB = 0
+                    a.beginFlow()
                     a.open("root", Runnable { b.open("child", dismiss = Runnable { dismissedB++ }) },
                         dismiss = Runnable { dismissedA++ })
                     a.click("next")
@@ -133,6 +141,7 @@ class PaperDialogCrossPluginTest : FreeSpec({
                 DialogProbeHandle(pluginB, player).use { b ->
                     var dismissed = 0
                     var oldClicks = 0
+                    a.beginFlow()
                     a.open("root", Runnable { oldClicks++; b.open("child", dismiss = Runnable { dismissed++ }) },
                         dismiss = Runnable { dismissed++ })
                     val obsolete = a.key("next")
@@ -186,6 +195,7 @@ private class DialogProbeHandle(plugin: Plugin, player: Player) : AutoCloseable 
     fun click(id: String) { type.getMethod("click", String::class.java).invoke(probe, id) }
     fun clickKey(key: String) { type.getMethod("clickKey", String::class.java).invoke(probe, key) }
     fun beginFlow() { type.getMethod("beginFlow").invoke(probe) }
+    fun ownsCurrentVisit(): Boolean = type.getMethod("ownsCurrentVisit").invoke(probe) as Boolean
     fun closePlayer() { type.getMethod("closePlayer").invoke(probe) }
     fun shutdown() { type.getMethod("shutdown").invoke(probe) }
     fun quit() { type.getMethod("quit").invoke(probe) }

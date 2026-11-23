@@ -71,7 +71,7 @@ class PaperDialogAsyncTest : FreeSpec({
             }.use { runtime ->
                 val back = PaperDialogActionId.of("back")
                 runtime.beginFlow(player)
-                runtime.open(player, PaperDialogScreen(Component.text("Pending"), buttons = emptyList(),
+                runtime.openInFlow(player, PaperDialogScreen(Component.text("Pending"), buttons = emptyList(),
                     exitButton = PaperDialogButton(back, Component.text("Back")) {}))
                 val result = runtime.openAsync(player, largeScreen { clicks++ }, work)
                 scheduler.tick()
@@ -103,6 +103,9 @@ class PaperDialogAsyncTest : FreeSpec({
                 runtime.beginFlow(player)
                 val first = runtime.openAsync(player, largeScreen(), work)
                 scheduler.tick()
+                val stale = runtime.openAsync(player, largeScreen(), work, isCurrent = { false })
+                stale.isCompletedExceptionally shouldBe true
+                first.isCompletedExceptionally shouldBe false
                 val second = runtime.openAsync(player, largeScreen(), work)
                 first.isCompletedExceptionally shouldBe true
                 runtime.beginFlow(player)
