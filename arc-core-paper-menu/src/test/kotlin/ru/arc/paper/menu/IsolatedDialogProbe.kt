@@ -27,6 +27,7 @@ class IsolatedDialogProbe(private val plugin: Plugin, private val player: Player
 
     fun beginFlow() = runtime.beginFlow(player)
     fun ownsCurrentVisit(): Boolean = runtime.ownsCurrentVisit(player)
+    fun hasCurrentVisit(): Boolean = runtime.hasCurrentVisit(player)
     fun closePlayer() = runtime.close(player)
     fun shutdown() = runtime.close()
     fun quit() = runtime.onQuit(mockk { every { this@mockk.player } returns this@IsolatedDialogProbe.player })

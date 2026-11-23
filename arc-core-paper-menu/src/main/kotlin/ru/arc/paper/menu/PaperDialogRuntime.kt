@@ -306,6 +306,12 @@ class PaperDialogRuntime internal constructor(
         return !closed && player.isOnline && history(player, create = false)?.owner == owner
     }
 
+    /** Whether any participating runtime owns a visible visit for this player. */
+    fun hasCurrentVisit(player: Player): Boolean {
+        requirePrimaryThread()
+        return !closed && player.isOnline && history(player, create = false)?.owner != null
+    }
+
     /** Return after a completed child action without adding the parent to history again. */
     fun back(player: Player): Boolean = back(player, "censored")
 

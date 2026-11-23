@@ -42,6 +42,7 @@ class PaperDialogCrossPluginTest : FreeSpec({
                     val staleA = a.key("next")
                     a.click("next")
                     a.ownsCurrentVisit() shouldBe false
+                    a.hasCurrentVisit() shouldBe true
                     b.ownsCurrentVisit() shouldBe true
                     b.shown shouldBe listOf("settings")
                     val fields = observed.single { it["phase"] == "click" }
@@ -65,6 +66,8 @@ class PaperDialogCrossPluginTest : FreeSpec({
                     dismissedA shouldBe 0
                     verify(exactly = 0) { player.closeDialog() }
                     a.click("back")
+                    a.hasCurrentVisit() shouldBe false
+                    b.hasCurrentVisit() shouldBe false
                     verify(exactly = 1) { player.closeDialog() }
                     dismissedA shouldBe 1
                     a.open("closed-flow-late-result")
@@ -196,6 +199,7 @@ private class DialogProbeHandle(plugin: Plugin, player: Player) : AutoCloseable 
     fun clickKey(key: String) { type.getMethod("clickKey", String::class.java).invoke(probe, key) }
     fun beginFlow() { type.getMethod("beginFlow").invoke(probe) }
     fun ownsCurrentVisit(): Boolean = type.getMethod("ownsCurrentVisit").invoke(probe) as Boolean
+    fun hasCurrentVisit(): Boolean = type.getMethod("hasCurrentVisit").invoke(probe) as Boolean
     fun closePlayer() { type.getMethod("closePlayer").invoke(probe) }
     fun shutdown() { type.getMethod("shutdown").invoke(probe) }
     fun quit() { type.getMethod("quit").invoke(probe) }
